@@ -124,7 +124,7 @@ final class LocalVLMAnalyzerTests: XCTestCase {
     func testDefaultModelId() {
         XCTAssertEqual(
             LocalVLMAnalyzer.defaultModelId,
-            "mlx-community/Qwen2.5-VL-3B-Instruct-4bit"
+            "mlx-community/Qwen3-VL-4B-Instruct-4bit"
         )
     }
 

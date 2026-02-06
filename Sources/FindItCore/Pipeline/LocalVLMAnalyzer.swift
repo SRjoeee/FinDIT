@@ -4,7 +4,7 @@ import MLXVLM
 
 /// 本地视觉语言模型分析器
 ///
-/// 使用 Qwen2.5-VL-3B (4-bit MLX) 在本地设备上分析视频帧，
+/// 使用 Qwen3-VL-4B (4-bit MLX) 在本地设备上分析视频帧，
 /// 生成与 Gemini `AnalysisResult` 相同的 9 字段结构化输出。
 ///
 /// 特点：
@@ -12,12 +12,13 @@ import MLXVLM
 /// - ~3 GB 模型磁盘占用（首次使用时自动下载）
 /// - Apple Silicon Metal GPU 加速
 /// - 中文质量 ~8-9/10
+/// - 质量接近 Qwen2.5-VL-7B，256K 上下文，改进的空间理解
 ///
 /// 分析质量约为 Gemini 2.5 Flash 的 75-80%，适合离线使用或作为 Gemini 的降级方案。
 public enum LocalVLMAnalyzer {
 
     /// 默认模型 ID
-    public static let defaultModelId = "mlx-community/Qwen2.5-VL-3B-Instruct-4bit"
+    public static let defaultModelId = "mlx-community/Qwen3-VL-4B-Instruct-4bit"
 
     /// 模型容器缓存 actor（线程安全）
     private actor ModelCache {
@@ -40,7 +41,7 @@ public enum LocalVLMAnalyzer {
             .appendingPathComponent("huggingface")
             .appendingPathComponent("models")
             .appendingPathComponent("mlx-community")
-            .appendingPathComponent("Qwen2.5-VL-3B-Instruct-4bit")
+            .appendingPathComponent("Qwen3-VL-4B-Instruct-4bit")
         return FileManager.default.fileExists(atPath: modelDir.path)
     }
 

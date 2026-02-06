@@ -351,6 +351,55 @@ public enum STTProcessor {
         return (segments, srtPath)
     }
 
+    /// 使用最优可用引擎转录音频
+    ///
+    /// macOS 26+: 优先使用 Apple SpeechAnalyzer（更快，系统管理模型）
+    /// 较旧 macOS: 回退到 WhisperKit
+    ///
+    /// - Parameters:
+    ///   - audioPath: WAV 音频文件路径
+    ///   - language: 语言代码（ISO 639-1），nil = 自动检测
+    ///   - whisperKit: WhisperKit 实例（SpeechAnalyzer 不可用时使用）
+    ///   - config: STT 配置
+    ///   - onProgress: 进度回调
+    /// - Returns: (segments: 转录片段, engine: 使用的引擎名称)
+    public static func transcribeWithBestAvailable(
+        audioPath: String,
+        language: String?,
+        whisperKit: WhisperKit?,
+        config: Config = .default,
+        onProgress: ((String) -> Void)? = nil
+    ) async throws -> (segments: [TranscriptSegment], engine: String) {
+        // macOS 26+: 尝试 SpeechAnalyzer
+        if #available(macOS 26.0, *) {
+            let available = await SpeechAnalyzerBridge.isAvailable(language: language)
+            if available {
+                let segments = try await SpeechAnalyzerBridge.transcribe(
+                    audioPath: audioPath,
+                    language: language,
+                    onProgress: onProgress
+                )
+                if !segments.isEmpty {
+                    return (segments, "SpeechAnalyzer")
+                }
+                // 空结果降级到 WhisperKit
+            }
+        }
+
+        // 回退到 WhisperKit
+        guard let whisperKit = whisperKit else {
+            throw STTError.modelLoadFailed(detail: "无可用 STT 引擎")
+        }
+        var sttConfig = config
+        sttConfig.language = language
+        let segments = try await transcribe(
+            audioPath: audioPath,
+            whisperKit: whisperKit,
+            config: sttConfig
+        )
+        return (segments, "WhisperKit")
+    }
+
     /// 将 WhisperKit TranscriptionSegment 转换为内部 TranscriptSegment
     ///
     /// 过滤空白段，清理 WhisperKit 内部 token，分配 1-based 索引。

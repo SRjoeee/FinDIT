@@ -290,7 +290,10 @@ public enum PipelineManager {
         }
 
         // 3. STT 阶段
-        if whisperKit != nil && currentStage.isBefore(.sttDone) {
+        //    macOS 26+: 优先 SpeechAnalyzer（即使 whisperKit 为 nil）
+        //    较旧 macOS: 需要 whisperKit
+        let sttAvailable = await isSttAvailable(whisperKit: whisperKit)
+        if sttAvailable && currentStage.isBefore(.sttDone) {
             do {
                 try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .sttRunning)
 
@@ -312,28 +315,35 @@ public enum PipelineManager {
                     )
                 }
 
-                // 语言检测
-                progress("检测语言中...")
-                let langResult = try await STTProcessor.detectLanguage(
-                    audioPath: audioPath,
-                    scenes: sceneSegments,
-                    whisperKit: whisperKit!
-                )
-                progress("检测到语言: \(langResult.language)")
+                // 语言检测（仅当 WhisperKit 可用时）
+                var detectedLanguage: String?
+                if let wk = whisperKit {
+                    progress("检测语言中...")
+                    let langResult = try await STTProcessor.detectLanguage(
+                        audioPath: audioPath,
+                        scenes: sceneSegments,
+                        whisperKit: wk
+                    )
+                    detectedLanguage = langResult.language
+                    progress("检测到语言: \(langResult.language)")
+                }
 
-                // 转录
+                // 转录（自动选择最优引擎）
                 progress("语音转录中...")
-                var sttConfig = STTProcessor.Config.default
-                sttConfig.language = langResult.language
-
-                let (segments, generatedSrtPath) = try await STTProcessor.transcribeAndSaveSRT(
+                let (segments, engine) = try await STTProcessor.transcribeWithBestAvailable(
                     audioPath: audioPath,
-                    videoPath: videoPath,
-                    whisperKit: whisperKit!,
-                    config: sttConfig
+                    language: detectedLanguage,
+                    whisperKit: whisperKit,
+                    onProgress: onProgress
+                )
+                progress("转录完成 [\(engine)]: \(segments.count) 条字幕")
+
+                // 保存 SRT
+                let srtContent = STTProcessor.generateSRT(from: segments)
+                let generatedSrtPath = try STTProcessor.writeSRT(
+                    content: srtContent, videoPath: videoPath
                 )
                 srtPath = generatedSrtPath
-                progress("转录完成: \(segments.count) 条字幕")
 
                 // 映射转录文本到 clips
                 let mappedTexts = STTProcessor.mapTranscriptToClips(
@@ -366,7 +376,7 @@ public enum PipelineManager {
                 // 仍然推进到 sttDone 以允许 vision 继续
                 try? updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .sttDone)
             }
-        } else if whisperKit == nil && currentStage.isBefore(.sttDone) {
+        } else if !sttAvailable && currentStage.isBefore(.sttDone) {
             // 跳过 STT
             try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .sttDone)
         }
@@ -689,6 +699,18 @@ public enum PipelineManager {
                 arguments: [data, model, clipId]
             )
         }
+    }
+
+    /// 检查是否有可用的 STT 引擎
+    ///
+    /// macOS 26+: SpeechAnalyzer 可用则返回 true（即使 whisperKit 为 nil）
+    /// 较旧 macOS: 需要 whisperKit 不为 nil
+    static func isSttAvailable(whisperKit: WhisperKit?) async -> Bool {
+        if whisperKit != nil { return true }
+        if #available(macOS 26.0, *) {
+            return await SpeechAnalyzerBridge.isAvailable()
+        }
+        return false
     }
 
     /// 从已有缩略图目录加载帧路径（恢复模式用）

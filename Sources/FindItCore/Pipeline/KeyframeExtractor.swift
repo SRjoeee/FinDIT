@@ -49,6 +49,9 @@ public enum KeyframeExtractor {
 
     /// 为一组场景片段提取关键帧
     ///
+    /// 每个场景使用单次 FFmpeg 调用批量提取所有关键帧，
+    /// 避免逐帧启动子进程的开销（10 场景 × 3 帧 = 30 次降为 10 次调用）。
+    ///
     /// - Parameters:
     ///   - inputPath: 视频文件路径
     ///   - segments: 场景片段数组（由 SceneDetector 生成）
@@ -78,26 +81,50 @@ public enum KeyframeExtractor {
         for (sceneIndex, segment) in segments.enumerated() {
             let frameCount = framesPerScene(duration: segment.duration, config: config)
             let timestamps = frameTimestamps(segment: segment, frameCount: frameCount)
+            guard !timestamps.isEmpty else { continue }
 
-            for (frameIndex, timestamp) in timestamps.enumerated() {
-                let fileName = String(format: "scene_%03d_frame_%02d.jpg", sceneIndex, frameIndex)
+            if timestamps.count == 1 {
+                // 单帧：沿用 -ss seek 模式（最快）
+                let fileName = String(format: "scene_%03d_frame_%02d.jpg", sceneIndex, 0)
                 let outputPath = (outputDirectory as NSString).appendingPathComponent(fileName)
-
                 let args = buildExtractArguments(
                     inputPath: inputPath,
-                    timestamp: timestamp,
+                    timestamp: timestamps[0],
                     outputPath: outputPath,
                     config: config
                 )
-
                 _ = try FFmpegBridge.run(arguments: args, config: ffmpegConfig)
-
                 if FileManager.default.fileExists(atPath: outputPath) {
                     frames.append(ExtractedFrame(
                         sceneIndex: sceneIndex,
-                        timestamp: timestamp,
+                        timestamp: timestamps[0],
                         filePath: outputPath
                     ))
+                }
+            } else {
+                // 多帧：单次 FFmpeg 调用批量提取
+                let outputPattern = (outputDirectory as NSString)
+                    .appendingPathComponent(String(format: "scene_%03d_frame_%%02d.jpg", sceneIndex))
+                let args = buildBatchExtractArguments(
+                    inputPath: inputPath,
+                    segment: segment,
+                    timestamps: timestamps,
+                    outputPattern: outputPattern,
+                    config: config
+                )
+                _ = try FFmpegBridge.run(arguments: args, config: ffmpegConfig)
+
+                // 收集实际生成的文件
+                for (frameIndex, timestamp) in timestamps.enumerated() {
+                    let fileName = String(format: "scene_%03d_frame_%02d.jpg", sceneIndex, frameIndex)
+                    let outputPath = (outputDirectory as NSString).appendingPathComponent(fileName)
+                    if FileManager.default.fileExists(atPath: outputPath) {
+                        frames.append(ExtractedFrame(
+                            sceneIndex: sceneIndex,
+                            timestamp: timestamp,
+                            filePath: outputPath
+                        ))
+                    }
                 }
             }
         }
@@ -151,6 +178,41 @@ public enum KeyframeExtractor {
             "-q:v", String(config.jpegQuality),
             "-y",
             outputPath
+        ]
+    }
+
+    /// 构建多帧批量提取的 FFmpeg 命令参数
+    ///
+    /// 使用 `-ss`/`-to` 限定场景范围，`select` 滤镜按时间戳选帧，
+    /// 单次 FFmpeg 调用输出场景内所有关键帧。
+    /// 输出文件名通过 `%02d` 自动编号（从 00 开始）。
+    static func buildBatchExtractArguments(
+        inputPath: String,
+        segment: SceneSegment,
+        timestamps: [Double],
+        outputPattern: String,
+        config: Config
+    ) -> [String] {
+        let edge = config.thumbnailShortEdge
+        let scaleFilter = "scale='if(lt(iw,ih),\(edge),-2)':'if(lt(iw,ih),-2,\(edge))'"
+
+        // 构建 select 表达式：对每个目标时间戳选取最近的帧
+        // select='lt(abs(t-T0),0.05)+lt(abs(t-T1),0.05)+...'
+        // 用 0.05s 容差确保命中
+        let selectParts = timestamps.map { t in
+            String(format: "lt(abs(t-%.3f)\\,0.05)", t)
+        }
+        let selectExpr = selectParts.joined(separator: "+")
+
+        return [
+            "-ss", String(format: "%.3f", segment.startTime),
+            "-to", String(format: "%.3f", segment.endTime),
+            "-i", inputPath,
+            "-vf", "select='\(selectExpr)',\(scaleFilter)",
+            "-fps_mode", "vfr",
+            "-q:v", String(config.jpegQuality),
+            "-y",
+            outputPattern
         ]
     }
 }

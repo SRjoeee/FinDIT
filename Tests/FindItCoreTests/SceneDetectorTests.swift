@@ -205,16 +205,20 @@ final class SceneDetectorTests: XCTestCase {
             inputPath: "/video/test.mp4",
             threshold: 0.3
         )
-        XCTAssertEqual(args[0], "-i")
-        XCTAssertEqual(args[1], "/video/test.mp4")
+        // hwaccel 前置
+        XCTAssertEqual(args[0], "-hwaccel")
+        XCTAssertEqual(args[1], "videotoolbox")
+        XCTAssertEqual(args[2], "-i")
+        XCTAssertEqual(args[3], "/video/test.mp4")
         XCTAssertTrue(args.contains("-fps_mode"))
         XCTAssertTrue(args.contains("vfr"))
         XCTAssertTrue(args.contains("-f"))
         XCTAssertTrue(args.contains("null"))
 
-        // -vf 参数应包含阈值
+        // -vf 参数应包含 fps=5 降采样和场景阈值
         if let vfIndex = args.firstIndex(of: "-vf"), vfIndex + 1 < args.count {
             let vfValue = args[vfIndex + 1]
+            XCTAssertTrue(vfValue.contains("fps=5"), "应包含 fps=5 降采样")
             XCTAssertTrue(vfValue.contains("scene,0.3"), "应包含场景阈值")
             XCTAssertTrue(vfValue.contains("showinfo"), "应包含 showinfo")
         } else {

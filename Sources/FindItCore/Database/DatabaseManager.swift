@@ -9,6 +9,8 @@ public enum StorageError: LocalizedError {
     case cannotCreateIndexDirectory(String)
     /// 数据库打开失败
     case openFailed(underlying: Error)
+    /// 无法获取 Application Support 目录
+    case appSupportNotFound
 
     public var errorDescription: String? {
         switch self {
@@ -18,6 +20,8 @@ public enum StorageError: LocalizedError {
             return "无法创建索引目录: \(path)"
         case .openFailed(let error):
             return "数据库打开失败: \(error.localizedDescription)"
+        case .appSupportNotFound:
+            return "无法获取 Application Support 目录"
         }
     }
 }
@@ -36,10 +40,11 @@ public final class DatabaseManager {
     static let globalFileName = "search.sqlite"
 
     /// App 的 Application Support 目录
-    private static var appSupportDirectory: URL {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("FindIt", isDirectory: true)
-        return url
+    private static func appSupportDirectory() throws -> URL {
+        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            throw StorageError.appSupportNotFound
+        }
+        return base.appendingPathComponent("FindIt", isDirectory: true)
     }
 
     // MARK: - 文件夹级数据库
@@ -84,7 +89,7 @@ public final class DatabaseManager {
     ///
     /// - Returns: 配置好 WAL 模式的数据库连接池
     public static func openGlobalDatabase() throws -> DatabasePool {
-        let dir = appSupportDirectory
+        let dir = try appSupportDirectory()
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         } catch {

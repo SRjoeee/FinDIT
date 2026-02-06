@@ -263,12 +263,17 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
 
     // MARK: - Private
 
-    /// 生成与 SQLite `datetime('now')` 兼容的 UTC 时间字符串
-    static func sqliteDatetime() -> String {
+    /// 复用的 UTC 日期格式化器（避免每次调用重新创建）
+    private static let utcFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         formatter.timeZone = TimeZone(identifier: "UTC")
-        return formatter.string(from: Date())
+        return formatter
+    }()
+
+    /// 生成与 SQLite `datetime('now')` 兼容的 UTC 时间字符串
+    static func sqliteDatetime() -> String {
+        utcFormatter.string(from: Date())
     }
 }
 

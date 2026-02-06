@@ -108,10 +108,16 @@ public enum SceneDetector {
     // MARK: - Internal 纯函数
 
     /// 构建场景检测 FFmpeg 命令参数
+    ///
+    /// 性能优化:
+    /// - `-hwaccel videotoolbox`: Apple Silicon 硬件解码，释放 CPU
+    /// - `fps=5`: 降采样到 5fps，减少 ~6x 需解码的帧数
+    ///   （对硬切检测精度影响极小，硬切边界误差 ≤ 0.2s）
     static func buildDetectionArguments(inputPath: String, threshold: Double) -> [String] {
         [
+            "-hwaccel", "videotoolbox",
             "-i", inputPath,
-            "-vf", "select='gt(scene,\(threshold))',showinfo",
+            "-vf", "fps=5,select='gt(scene,\(threshold))',showinfo",
             "-fps_mode", "vfr",
             "-f", "null",
             "-"

@@ -271,3 +271,97 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
         return formatter.string(from: Date())
     }
 }
+
+// MARK: - WatchedFolder 查询
+
+extension WatchedFolder {
+
+    /// 按文件夹路径查找
+    public static func fetchByPath(_ db: Database, path: String) throws -> WatchedFolder? {
+        try WatchedFolder.filter(Column("folder_path") == path).fetchOne(db)
+    }
+
+    /// 获取所有监控文件夹
+    public static func fetchAllFolders(_ db: Database) throws -> [WatchedFolder] {
+        try WatchedFolder.order(Column("folder_id")).fetchAll(db)
+    }
+
+    /// 更新可用状态
+    public mutating func updateAvailability(_ db: Database, isAvailable: Bool) throws {
+        self.isAvailable = isAvailable
+        self.lastSeenAt = isAvailable ? Clip.sqliteDatetime() : lastSeenAt
+        try update(db)
+    }
+
+    /// 更新索引进度计数
+    public mutating func updateProgress(_ db: Database, totalFiles: Int, indexedFiles: Int) throws {
+        self.totalFiles = totalFiles
+        self.indexedFiles = indexedFiles
+        try update(db)
+    }
+}
+
+// MARK: - Video 查询
+
+extension Video {
+
+    /// 按文件路径查找（唯一）
+    public static func fetchByPath(_ db: Database, path: String) throws -> Video? {
+        try Video.filter(Column("file_path") == path).fetchOne(db)
+    }
+
+    /// 获取指定文件夹下的所有视频
+    public static func fetchAll(forFolder folderId: Int64, in db: Database) throws -> [Video] {
+        try Video.filter(Column("folder_id") == folderId)
+            .order(Column("video_id"))
+            .fetchAll(db)
+    }
+
+    /// 按索引状态获取视频（用于管线调度）
+    public static func fetchByStatus(_ db: Database, status: String, limit: Int? = nil) throws -> [Video] {
+        var request = Video.filter(Column("index_status") == status)
+            .order(Column("priority").desc, Column("video_id"))
+        if let limit = limit {
+            request = request.limit(limit)
+        }
+        return try request.fetchAll(db)
+    }
+
+    /// 更新索引状态
+    public mutating func updateIndexStatus(_ db: Database, status: String, error: String? = nil) throws {
+        self.indexStatus = status
+        self.indexError = error
+        if status == "completed" {
+            self.indexedAt = Clip.sqliteDatetime()
+        }
+        try update(db)
+    }
+
+    /// 获取 rowid 大于指定值的视频（增量同步用）
+    public static func fetchAfterRowId(_ db: Database, rowId: Int64, limit: Int = 100) throws -> [Video] {
+        try Video.filter(Column("video_id") > rowId)
+            .order(Column("video_id"))
+            .limit(limit)
+            .fetchAll(db)
+    }
+}
+
+// MARK: - Clip 查询
+
+extension Clip {
+
+    /// 获取指定视频的所有片段
+    public static func fetchAll(forVideo videoId: Int64, in db: Database) throws -> [Clip] {
+        try Clip.filter(Column("video_id") == videoId)
+            .order(Column("start_time"))
+            .fetchAll(db)
+    }
+
+    /// 获取 rowid 大于指定值的片段（增量同步用）
+    public static func fetchAfterRowId(_ db: Database, rowId: Int64, limit: Int = 100) throws -> [Clip] {
+        try Clip.filter(Column("clip_id") > rowId)
+            .order(Column("clip_id"))
+            .limit(limit)
+            .fetchAll(db)
+    }
+}

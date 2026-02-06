@@ -1,0 +1,39 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+*.playground/
+DerivedData/
+
+# macOS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# IDE
+.vscode/
+.idea/
+
+# Environment / Secrets
+.env
+*.key
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# WhisperKit models (large, download at runtime)
+Models/
+
+# ONNX models
+*.onnx
+
+# Test outputs
+TestOutput/

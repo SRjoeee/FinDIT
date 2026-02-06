@@ -1,4 +1,5 @@
 import Foundation
+import WhisperKit
 
 // MARK: - TranscriptSegment
 
@@ -85,6 +86,110 @@ public enum STTProcessor {
             self.language = language
             self.wordTimestamps = wordTimestamps
         }
+    }
+
+    // MARK: - WhisperKit 异步方法
+
+    /// 初始化 WhisperKit 实例并加载模型
+    ///
+    /// 首次调用会下载模型文件（large-v3 约 1.5GB）。
+    /// 调用方应创建一次实例并复用于多次转录。
+    ///
+    /// - Parameter config: STT 配置
+    /// - Returns: 已初始化的 WhisperKit 实例
+    public static func initializeWhisperKit(config: Config = .default) async throws -> WhisperKit {
+        do {
+            let whisperConfig = WhisperKitConfig(
+                model: config.modelName,
+                verbose: false,
+                logLevel: .error
+            )
+            return try await WhisperKit(whisperConfig)
+        } catch {
+            throw STTError.modelLoadFailed(detail: error.localizedDescription)
+        }
+    }
+
+    /// 转录音频文件
+    ///
+    /// - Parameters:
+    ///   - audioPath: WAV 音频文件路径（建议 16kHz mono）
+    ///   - whisperKit: 已初始化的 WhisperKit 实例
+    ///   - config: STT 配置
+    /// - Returns: 转录片段数组
+    public static func transcribe(
+        audioPath: String,
+        whisperKit: WhisperKit,
+        config: Config = .default
+    ) async throws -> [TranscriptSegment] {
+        guard FileManager.default.fileExists(atPath: audioPath) else {
+            throw STTError.audioFileNotFound(path: audioPath)
+        }
+
+        let options = DecodingOptions(
+            language: config.language,
+            wordTimestamps: config.wordTimestamps
+        )
+
+        let results = try await whisperKit.transcribe(
+            audioPath: audioPath,
+            decodeOptions: options
+        )
+
+        guard let result = results.first, !result.segments.isEmpty else {
+            throw STTError.emptyTranscription
+        }
+
+        return convertSegments(result.segments)
+    }
+
+    /// 完整流水线：转录音频 → 生成 SRT → 保存文件
+    ///
+    /// - Parameters:
+    ///   - audioPath: WAV 音频路径
+    ///   - videoPath: 原始视频路径（用于 SRT 路径解析）
+    ///   - whisperKit: 已初始化的 WhisperKit 实例
+    ///   - config: STT 配置
+    /// - Returns: (segments: 转录片段, srtPath: SRT 文件实际路径)
+    public static func transcribeAndSaveSRT(
+        audioPath: String,
+        videoPath: String,
+        whisperKit: WhisperKit,
+        config: Config = .default
+    ) async throws -> (segments: [TranscriptSegment], srtPath: String) {
+        let segments = try await transcribe(
+            audioPath: audioPath,
+            whisperKit: whisperKit,
+            config: config
+        )
+
+        let srtContent = generateSRT(from: segments)
+        let srtPath = try writeSRT(content: srtContent, videoPath: videoPath)
+
+        return (segments, srtPath)
+    }
+
+    /// 将 WhisperKit TranscriptionSegment 转换为内部 TranscriptSegment
+    ///
+    /// 过滤空白段，分配 1-based 索引。
+    static func convertSegments(_ whisperSegments: [TranscriptionSegment]) -> [TranscriptSegment] {
+        var result: [TranscriptSegment] = []
+        var index = 1
+
+        for seg in whisperSegments {
+            let text = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+
+            result.append(TranscriptSegment(
+                index: index,
+                startTime: Double(seg.start),
+                endTime: Double(seg.end),
+                text: text
+            ))
+            index += 1
+        }
+
+        return result
     }
 
     // MARK: - SRT 时间戳格式化

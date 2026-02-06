@@ -138,21 +138,10 @@ public enum LocalVLMAnalyzer {
 
     // MARK: - Internal
 
-    /// 分析提示词
-    static let analysisPrompt = """
-    Analyze this video frame and return a JSON object with these fields:
-    - scene: scene type (e.g. "indoor", "outdoor", "beach", "city", "forest")
-    - description: one-sentence description in the same language as any visible text, or Chinese
-    - subjects: array of people/characters (e.g. ["man", "woman", "child"])
-    - actions: array of actions happening (e.g. ["walking", "talking", "running"])
-    - objects: array of notable objects (e.g. ["car", "table", "phone"])
-    - mood: overall mood (e.g. "cheerful", "tense", "calm", "dramatic")
-    - shot_type: camera shot type (e.g. "wide shot", "close-up", "medium shot")
-    - lighting: lighting condition (e.g. "natural", "dark", "bright", "golden hour")
-    - colors: dominant color description (e.g. "warm tones", "blue and white")
-
-    Return ONLY valid JSON, no markdown or explanation.
-    """
+    /// 分析提示词（由 VisionField 数据驱动生成）
+    static var analysisPrompt: String {
+        VisionField.buildVLMPrompt()
+    }
 
     /// 创建空的 AnalysisResult
     static func emptyResult() -> AnalysisResult {

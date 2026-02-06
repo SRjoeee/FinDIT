@@ -77,56 +77,34 @@ public enum EmbeddingUtils {
 
     /// 从 Clip 的各字段合成待嵌入文本
     ///
-    /// 合成顺序: scene + description + subjects/actions/objects + transcript
+    /// 按 EmbeddingGroup 分组拼接视觉字段，然后追加 transcript 和 tags。
     /// 空字段自动跳过，确保输出文本非空且有意义。
     ///
-    /// - Parameter clip: 视频片段记录
+    /// - Parameters:
+    ///   - clip: 视频片段记录
+    ///   - fields: 要包含的视觉字段（默认 allActive）
     /// - Returns: 合成后的文本
-    public static func composeClipText(clip: Clip) -> String {
+    public static func composeClipText(
+        clip: Clip,
+        fields: [VisionField] = VisionField.allActive
+    ) -> String {
         var parts: [String] = []
 
-        // 场景 + 描述（最重要的语义信息）
-        if let scene = clip.scene, !scene.isEmpty {
-            parts.append(scene)
-        }
-        if let desc = clip.clipDescription, !desc.isEmpty {
-            parts.append(desc)
-        }
-
-        // 主体、动作、道具（结构化信息拼接）
-        var detailParts: [String] = []
-        if let subjects = clip.subjects, !subjects.isEmpty {
-            detailParts.append(subjects)
-        }
-        if let actions = clip.actions, !actions.isEmpty {
-            detailParts.append(actions)
-        }
-        if let objects = clip.objects, !objects.isEmpty {
-            detailParts.append(objects)
-        }
-        if !detailParts.isEmpty {
-            parts.append(detailParts.joined(separator: ", "))
+        // 按 EmbeddingGroup 分组遍历视觉字段
+        for group in VisionField.EmbeddingGroup.allCases {
+            let fieldsInGroup = fields.filter { $0.embeddingGroup == group }
+            var groupParts: [String] = []
+            for field in fieldsInGroup {
+                if let v = clip.visionValue(for: field), !v.isEmpty {
+                    groupParts.append(v)
+                }
+            }
+            if !groupParts.isEmpty {
+                parts.append(groupParts.joined(separator: group.separator))
+            }
         }
 
-        // 氛围、镜头、光线、色调（补充信息）
-        var metaParts: [String] = []
-        if let mood = clip.mood, !mood.isEmpty {
-            metaParts.append(mood)
-        }
-        if let shotType = clip.shotType, !shotType.isEmpty {
-            metaParts.append(shotType)
-        }
-        if let lighting = clip.lighting, !lighting.isEmpty {
-            metaParts.append(lighting)
-        }
-        if let colors = clip.colors, !colors.isEmpty {
-            metaParts.append(colors)
-        }
-        if !metaParts.isEmpty {
-            parts.append(metaParts.joined(separator: ", "))
-        }
-
-        // 转录文本（台词）
+        // 转录文本（台词）— 非视觉字段，单独处理
         if let transcript = clip.transcript, !transcript.isEmpty {
             parts.append(transcript)
         }

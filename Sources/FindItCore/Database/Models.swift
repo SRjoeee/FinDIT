@@ -281,6 +281,29 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
     }
 }
 
+// MARK: - Clip + VisionField
+
+extension Clip {
+
+    /// 按 VisionField 获取视觉分析字段值
+    ///
+    /// 注意: Clip 中数组字段以 JSON 字符串存储（如 `["man","woman"]`），
+    /// 此方法直接返回原始字符串值。
+    public func visionValue(for field: VisionField) -> String? {
+        switch field {
+        case .scene:       return scene
+        case .subjects:    return subjects
+        case .actions:     return actions
+        case .objects:     return objects
+        case .mood:        return mood
+        case .shotType:    return shotType
+        case .lighting:    return lighting
+        case .colors:      return colors
+        case .description: return clipDescription
+        }
+    }
+}
+
 // MARK: - WatchedFolder 查询
 
 extension WatchedFolder {

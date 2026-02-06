@@ -696,15 +696,11 @@ struct AnalyzeCommand: AsyncParsableCommand {
 
         for (sceneIndex, result) in results {
             print("── 场景 \(sceneIndex) ──")
-            if let scene = result.scene { print("  场景: \(scene)") }
-            if !result.subjects.isEmpty { print("  主体: \(result.subjects.joined(separator: ", "))") }
-            if !result.actions.isEmpty { print("  动作: \(result.actions.joined(separator: ", "))") }
-            if !result.objects.isEmpty { print("  物体: \(result.objects.joined(separator: ", "))") }
-            if let mood = result.mood { print("  氛围: \(mood)") }
-            if let shotType = result.shotType { print("  镜头: \(shotType)") }
-            if let lighting = result.lighting { print("  光线: \(lighting)") }
-            if let colors = result.colors { print("  色调: \(colors)") }
-            if let desc = result.description { print("  描述: \(desc)") }
+            for field in VisionField.allActive {
+                if let value = result.stringValue(for: field), !value.isEmpty {
+                    print("  \(field.displayLabel): \(value)")
+                }
+            }
             print("  标签: \(result.tags.joined(separator: ", "))")
             print()
         }

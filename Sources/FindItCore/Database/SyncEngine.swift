@@ -93,6 +93,27 @@ public enum SyncEngine {
             }
             guard !batch.isEmpty else { break }
 
+            // 动态生成 vision 列名和 SQL（循环外构建一次）
+            let visionCols = VisionField.sqlColumnNames()
+            let allCols = ["source_folder", "source_clip_id", "video_id",
+                           "start_time", "end_time", "thumbnail_path"]
+                + visionCols
+                + ["tags", "transcript", "embedding", "embedding_model"]
+            let placeholders = allCols.map { _ in "?" }.joined(separator: ", ")
+            let conflictSet = (["video_id", "start_time", "end_time", "thumbnail_path"]
+                + visionCols
+                + ["tags", "transcript", "embedding", "embedding_model"])
+                .map { "\($0) = excluded.\($0)" }
+                .joined(separator: ",\n                            ")
+            let clipSQL = """
+                INSERT INTO clips
+                    (\(allCols.joined(separator: ", ")))
+                VALUES (\(placeholders))
+                ON CONFLICT(source_folder, source_clip_id) DO UPDATE SET
+                    \(conflictSet)
+                """
+            let activeFields = VisionField.allActive
+
             try globalDB.write { db in
                 for clip in batch {
                     let globalVideoId = try Int64.fetchOne(db, sql: """
@@ -102,42 +123,22 @@ public enum SyncEngine {
 
                     let tagsForFTS = convertTagsForFTS(clip.tags)
 
-                    try db.execute(sql: """
-                        INSERT INTO clips
-                            (source_folder, source_clip_id, video_id, start_time, end_time,
-                             thumbnail_path, scene, subjects, actions, objects,
-                             mood, shot_type, lighting, colors,
-                             description, tags, transcript, embedding, embedding_model)
-                        VALUES (?, ?, ?, ?, ?,
-                                ?, ?, ?, ?, ?,
-                                ?, ?, ?, ?,
-                                ?, ?, ?, ?, ?)
-                        ON CONFLICT(source_folder, source_clip_id) DO UPDATE SET
-                            video_id = excluded.video_id,
-                            start_time = excluded.start_time,
-                            end_time = excluded.end_time,
-                            thumbnail_path = excluded.thumbnail_path,
-                            scene = excluded.scene,
-                            subjects = excluded.subjects,
-                            actions = excluded.actions,
-                            objects = excluded.objects,
-                            mood = excluded.mood,
-                            shot_type = excluded.shot_type,
-                            lighting = excluded.lighting,
-                            colors = excluded.colors,
-                            description = excluded.description,
-                            tags = excluded.tags,
-                            transcript = excluded.transcript,
-                            embedding = excluded.embedding,
-                            embedding_model = excluded.embedding_model
-                        """, arguments: [
-                            folderPath, clip.clipId, globalVideoId,
-                            clip.startTime, clip.endTime,
-                            clip.thumbnailPath, clip.scene, clip.subjects, clip.actions, clip.objects,
-                            clip.mood, clip.shotType, clip.lighting, clip.colors,
-                            clip.clipDescription, tagsForFTS, clip.transcript, clip.embedding,
-                            clip.embeddingModel
-                        ])
+                    var args: [DatabaseValueConvertible?] = []
+                    args.append(folderPath)
+                    args.append(clip.clipId)
+                    args.append(globalVideoId)
+                    args.append(clip.startTime)
+                    args.append(clip.endTime)
+                    args.append(clip.thumbnailPath)
+                    for field in activeFields {
+                        args.append(clip.visionValue(for: field))
+                    }
+                    args.append(tagsForFTS)
+                    args.append(clip.transcript)
+                    args.append(clip.embedding)
+                    args.append(clip.embeddingModel)
+
+                    try db.execute(sql: clipSQL, arguments: StatementArguments(args))
                     if let cid = clip.clipId, cid > currentClipRowId {
                         currentClipRowId = cid
                     }

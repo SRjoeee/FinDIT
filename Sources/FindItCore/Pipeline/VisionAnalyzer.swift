@@ -151,6 +151,76 @@ public struct AnalysisResult: Equatable, Codable {
     }
 }
 
+// MARK: - AnalysisResult + VisionField
+
+extension AnalysisResult {
+
+    /// 按 VisionField 获取字段的字符串值
+    ///
+    /// 数组字段用逗号拼接为单个字符串。
+    public func stringValue(for field: VisionField) -> String? {
+        switch field {
+        case .scene:       return scene
+        case .subjects:    return subjects.isEmpty ? nil : subjects.joined(separator: ", ")
+        case .actions:     return actions.isEmpty ? nil : actions.joined(separator: ", ")
+        case .objects:     return objects.isEmpty ? nil : objects.joined(separator: ", ")
+        case .mood:        return mood
+        case .shotType:    return shotType
+        case .lighting:    return lighting
+        case .colors:      return colors
+        case .description: return description
+        }
+    }
+
+    /// 按 VisionField 获取字段的数组值
+    ///
+    /// 字符串字段包为单元素数组（nil → 空数组）。
+    public func arrayValue(for field: VisionField) -> [String] {
+        switch field {
+        case .scene:       return scene.map { [$0] } ?? []
+        case .subjects:    return subjects
+        case .actions:     return actions
+        case .objects:     return objects
+        case .mood:        return mood.map { [$0] } ?? []
+        case .shotType:    return shotType.map { [$0] } ?? []
+        case .lighting:    return lighting.map { [$0] } ?? []
+        case .colors:      return colors.map { [$0] } ?? []
+        case .description: return description.map { [$0] } ?? []
+        }
+    }
+
+    /// 数据驱动的 composeTags
+    ///
+    /// 从指定字段列表中收集值，去重后返回标签数组。
+    /// 默认只处理 `includeInTags == true` 的字段（排除 description）。
+    public static func composeTags(
+        from result: AnalysisResult,
+        fields: [VisionField] = VisionField.allActive.filter(\.includeInTags)
+    ) -> [String] {
+        var seen = Set<String>()
+        var tags: [String] = []
+
+        func add(_ value: String?) {
+            guard let v = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !v.isEmpty, !seen.contains(v) else { return }
+            seen.insert(v)
+            tags.append(v)
+        }
+
+        for field in fields {
+            if field.isArray {
+                for item in result.arrayValue(for: field) {
+                    add(item)
+                }
+            } else {
+                add(result.stringValue(for: field))
+            }
+        }
+
+        return tags
+    }
+}
+
 // MARK: - VisionAnalyzer
 
 /// Gemini Flash 视觉分析器
@@ -289,22 +359,10 @@ public enum VisionAnalyzer {
     // MARK: - Response Schema
 
     /// 构建 Gemini response_schema（结构化输出）
+    ///
+    /// 委托 VisionField.buildResponseSchema() 实现数据驱动。
     static func buildResponseSchema() -> [String: Any] {
-        [
-            "type": "object",
-            "properties": [
-                "scene": ["type": "string", "description": "场景描述（如：室内办公室、户外海滩）"],
-                "subjects": ["type": "array", "items": ["type": "string"], "description": "主体列表"],
-                "actions": ["type": "array", "items": ["type": "string"], "description": "动作列表"],
-                "objects": ["type": "array", "items": ["type": "string"], "description": "道具/物体列表"],
-                "mood": ["type": "string", "description": "整体氛围/情绪"],
-                "shot_type": ["type": "string", "description": "镜头类型（如：特写、中景、全景、航拍）"],
-                "lighting": ["type": "string", "description": "光线条件"],
-                "colors": ["type": "string", "description": "主要色调"],
-                "description": ["type": "string", "description": "用 1-2 句自然语言总结这个片段"],
-            ],
-            "required": ["scene", "subjects", "actions", "objects", "mood", "shot_type", "lighting", "colors", "description"],
-        ]
+        VisionField.buildResponseSchema()
     }
 
     // MARK: - 请求构建

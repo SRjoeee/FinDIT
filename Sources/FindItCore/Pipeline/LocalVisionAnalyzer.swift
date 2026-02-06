@@ -139,23 +139,35 @@ public enum LocalVisionAnalyzer {
 
     /// 将本地分析结果与 Gemini 分析结果合并
     ///
-    /// Gemini 非空字段覆盖本地字段；Gemini 为空时保留本地结果。
+    /// 使用 VisionField.mergeStrategy 决定每个字段的合并策略：
+    /// - `.preferNonNil`: remote 非 nil 优先，否则保留 local
+    /// - `.preferNonEmptyArray`: remote 非空数组优先，否则保留 local
     ///
     /// - Parameters:
     ///   - local: 本地分析结果
     ///   - remote: Gemini 分析结果
     /// - Returns: 合并后的 AnalysisResult
     public static func mergeResults(local: AnalysisResult, remote: AnalysisResult) -> AnalysisResult {
-        AnalysisResult(
-            scene: remote.scene ?? local.scene,
-            subjects: remote.subjects.isEmpty ? local.subjects : remote.subjects,
-            actions: remote.actions,
-            objects: remote.objects.isEmpty ? local.objects : remote.objects,
-            mood: remote.mood ?? local.mood,
-            shotType: remote.shotType ?? local.shotType,
-            lighting: remote.lighting ?? local.lighting,
-            colors: remote.colors ?? local.colors,
-            description: remote.description ?? local.description
+        func mergeString(_ field: VisionField) -> String? {
+            remote.stringValue(for: field) ?? local.stringValue(for: field)
+        }
+
+        func mergeArray(_ field: VisionField) -> [String] {
+            let remoteArr = remote.arrayValue(for: field)
+            let localArr = local.arrayValue(for: field)
+            return remoteArr.isEmpty ? localArr : remoteArr
+        }
+
+        return AnalysisResult(
+            scene: mergeString(.scene),
+            subjects: mergeArray(.subjects),
+            actions: mergeArray(.actions),
+            objects: mergeArray(.objects),
+            mood: mergeString(.mood),
+            shotType: mergeString(.shotType),
+            lighting: mergeString(.lighting),
+            colors: mergeString(.colors),
+            description: mergeString(.description)
         )
     }
 

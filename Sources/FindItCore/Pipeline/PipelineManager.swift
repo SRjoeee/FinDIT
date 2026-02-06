@@ -705,31 +705,30 @@ public enum PipelineManager {
     }
 
     /// 更新 clip 的视觉分析结果
+    ///
+    /// 使用 VisionField 动态生成 SQL SET 子句和参数。
     static func updateClipVision(
         clipId: Int64,
         result: AnalysisResult,
         folderDB: DatabaseWriter
     ) throws {
+        let fields = VisionField.allActive
+        let setClause = VisionField.sqlSetClause(fields: fields)
+        let sql = "UPDATE clips SET \(setClause), tags = ? WHERE clip_id = ?"
+
+        var args: [DatabaseValueConvertible?] = []
+        for field in fields {
+            if field.isArray {
+                args.append(encodeJSONArray(result.arrayValue(for: field)))
+            } else {
+                args.append(result.stringValue(for: field))
+            }
+        }
+        args.append(encodeJSONArray(result.tags))
+        args.append(clipId)
+
         try folderDB.write { db in
-            try db.execute(sql: """
-                UPDATE clips SET
-                    scene = ?, subjects = ?, actions = ?, objects = ?,
-                    mood = ?, shot_type = ?, lighting = ?, colors = ?,
-                    description = ?, tags = ?
-                WHERE clip_id = ?
-                """, arguments: [
-                    result.scene,
-                    encodeJSONArray(result.subjects),
-                    encodeJSONArray(result.actions),
-                    encodeJSONArray(result.objects),
-                    result.mood,
-                    result.shotType,
-                    result.lighting,
-                    result.colors,
-                    result.description,
-                    encodeJSONArray(result.tags),
-                    clipId
-                ])
+            try db.execute(sql: sql, arguments: StatementArguments(args))
         }
     }
 

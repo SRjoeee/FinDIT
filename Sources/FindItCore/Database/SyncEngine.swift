@@ -104,11 +104,11 @@ public enum SyncEngine {
                             (source_folder, source_clip_id, video_id, start_time, end_time,
                              thumbnail_path, scene, subjects, actions, objects,
                              mood, shot_type, lighting, colors,
-                             description, tags, transcript, embedding)
+                             description, tags, transcript, embedding, embedding_model)
                         VALUES (?, ?, ?, ?, ?,
                                 ?, ?, ?, ?, ?,
                                 ?, ?, ?, ?,
-                                ?, ?, ?, ?)
+                                ?, ?, ?, ?, ?)
                         ON CONFLICT(source_folder, source_clip_id) DO UPDATE SET
                             video_id = excluded.video_id,
                             start_time = excluded.start_time,
@@ -125,13 +125,15 @@ public enum SyncEngine {
                             description = excluded.description,
                             tags = excluded.tags,
                             transcript = excluded.transcript,
-                            embedding = excluded.embedding
+                            embedding = excluded.embedding,
+                            embedding_model = excluded.embedding_model
                         """, arguments: [
                             folderPath, clip.clipId, globalVideoId,
                             clip.startTime, clip.endTime,
                             clip.thumbnailPath, clip.scene, clip.subjects, clip.actions, clip.objects,
                             clip.mood, clip.shotType, clip.lighting, clip.colors,
-                            clip.clipDescription, tagsForFTS, clip.transcript, clip.embedding
+                            clip.clipDescription, tagsForFTS, clip.transcript, clip.embedding,
+                            clip.embeddingModel
                         ])
                     if let cid = clip.clipId, cid > currentClipRowId {
                         currentClipRowId = cid

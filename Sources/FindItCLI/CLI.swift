@@ -23,6 +23,7 @@ struct FindItCLI: AsyncParsableCommand {
             TranscribeCommand.self,
             AnalyzeCommand.self,
             IndexCommand.self,
+            EmbedCommand.self,
         ]
     )
 }
@@ -247,23 +248,79 @@ struct SyncCommand: ParsableCommand {
 
 // MARK: - search
 
-struct SearchCommand: ParsableCommand {
+struct SearchCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "search",
-        abstract: "在全局索引中搜索视频片段"
+        abstract: "在全局索引中搜索视频片段（支持 FTS5 + 向量混合搜索）"
     )
 
-    @Argument(help: "搜索关键词（支持 FTS5 语法）")
+    @Argument(help: "搜索关键词")
     var query: String
 
     @Option(name: .shortAndLong, help: "最大结果数")
     var limit: Int = 20
 
-    func run() throws {
+    @Option(name: .long, help: "搜索模式: fts, vector, hybrid, auto (默认 auto)")
+    var mode: String = "auto"
+
+    @Option(name: .long, help: "Gemini API Key (用于向量搜索的查询嵌入)")
+    var apiKey: String?
+
+    func run() async throws {
         let globalDB = try DatabaseManager.openGlobalDatabase()
 
-        let results = try globalDB.read { db in
-            try SearchEngine.search(db, query: query, limit: limit)
+        // 解析搜索模式
+        let searchMode: SearchEngine.SearchMode
+        switch mode.lowercased() {
+        case "fts":     searchMode = .fts
+        case "vector":  searchMode = .vector
+        case "hybrid":  searchMode = .hybrid
+        default:        searchMode = .auto
+        }
+
+        // 准备查询向量（如果需要语义搜索）
+        var queryEmbedding: [Float]?
+        var embeddingModel: String?
+
+        if searchMode != .fts {
+            // 尝试 Gemini embedding
+            if let apiKey = try? VisionAnalyzer.resolveAPIKey(override: apiKey) {
+                let provider = GeminiEmbeddingProvider(apiKey: apiKey)
+                if provider.isAvailable() {
+                    do {
+                        queryEmbedding = try await provider.embed(text: query)
+                        embeddingModel = provider.name
+                    } catch {
+                        print("警告: Gemini 嵌入失败: \(error.localizedDescription)")
+                    }
+                }
+            }
+
+            // Gemini 不可用则尝试 NLEmbedding
+            if queryEmbedding == nil {
+                let nlProvider = NLEmbeddingProvider()
+                if nlProvider.isAvailable() {
+                    do {
+                        queryEmbedding = try await nlProvider.embed(text: query)
+                        embeddingModel = nlProvider.name
+                    } catch {
+                        // NLEmbedding 也失败，退化为纯 FTS
+                    }
+                }
+            }
+        }
+
+        let finalQueryEmbedding = queryEmbedding
+        let finalEmbeddingModel = embeddingModel
+        let results = try await globalDB.read { db in
+            try SearchEngine.hybridSearch(
+                db,
+                query: query,
+                queryEmbedding: finalQueryEmbedding,
+                embeddingModel: finalEmbeddingModel,
+                mode: searchMode,
+                limit: limit
+            )
         }
 
         if results.isEmpty {
@@ -271,7 +328,8 @@ struct SearchCommand: ParsableCommand {
             return
         }
 
-        print("找到 \(results.count) 个结果:\n")
+        let modeDesc = queryEmbedding != nil ? "混合(\(embeddingModel ?? "?"))" : "FTS5"
+        print("找到 \(results.count) 个结果 (模式: \(modeDesc)):\n")
 
         for (i, r) in results.enumerated() {
             let timeRange = formatTime(r.startTime) + " → " + formatTime(r.endTime)
@@ -288,12 +346,25 @@ struct SearchCommand: ParsableCommand {
             if let transcript = r.transcript {
                 print("    转录: \(transcript)")
             }
-            print("    相关度: \(String(format: "%.4f", r.rank))")
+            // 显示分数
+            var scores: [String] = []
+            if r.rank != 0 {
+                scores.append("FTS5: \(String(format: "%.4f", r.rank))")
+            }
+            if let sim = r.similarity {
+                scores.append("相似度: \(String(format: "%.4f", sim))")
+            }
+            if let final_ = r.finalScore {
+                scores.append("综合: \(String(format: "%.4f", final_))")
+            }
+            if !scores.isEmpty {
+                print("    分数: \(scores.joined(separator: " | "))")
+            }
             print()
         }
 
         // 记录搜索历史
-        try globalDB.write { db in
+        try await globalDB.write { db in
             try SearchEngine.recordSearch(db, query: query, resultCount: results.count)
         }
     }
@@ -843,5 +914,114 @@ struct IndexCommand: AsyncParsableCommand {
         let timeStr = minutes > 0 ? "\(minutes)分\(seconds)秒" : "\(seconds)秒"
 
         print("完成! 处理了 \(processedCount) 个视频, \(totalClips) 个片段, 分析了 \(totalAnalyzed) 个场景, 耗时 \(timeStr)")
+    }
+}
+
+// MARK: - embed
+
+struct EmbedCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "embed",
+        abstract: "为已索引的视频片段计算向量嵌入"
+    )
+
+    @Option(name: .long, help: "素材文件夹路径")
+    var folder: String
+
+    @Option(name: .long, help: "嵌入提供者: gemini, nl (默认 gemini)")
+    var provider: String = "gemini"
+
+    @Option(name: .long, help: "Gemini API Key")
+    var apiKey: String?
+
+    @Flag(name: .long, help: "强制重新计算已有嵌入的片段")
+    var force: Bool = false
+
+    func run() async throws {
+        let folderPath = (folder as NSString).standardizingPath
+
+        let folderDB = try DatabaseManager.openFolderDatabase(at: folderPath)
+
+        // 选择 provider
+        let embProvider: EmbeddingProvider
+        switch provider.lowercased() {
+        case "nl":
+            let p = NLEmbeddingProvider()
+            guard p.isAvailable() else {
+                print("错误: NLEmbedding 不可用（缺少语言模型）")
+                throw ExitCode.failure
+            }
+            embProvider = p
+            print("使用 NLEmbedding (512 维, 离线)")
+        default:
+            let key = try VisionAnalyzer.resolveAPIKey(override: apiKey)
+            let p = GeminiEmbeddingProvider(apiKey: key)
+            guard p.isAvailable() else {
+                print("错误: Gemini API Key 无效")
+                throw ExitCode.failure
+            }
+            embProvider = p
+            print("使用 Gemini text-embedding-004 (768 维)")
+        }
+
+        // 查找需要计算嵌入的 clips
+        let clips = try await folderDB.read { db -> [Clip] in
+            if force {
+                return try Clip.fetchAll(db)
+            } else {
+                return try Clip
+                    .filter(Column("embedding") == nil)
+                    .order(Column("clip_id"))
+                    .fetchAll(db)
+            }
+        }
+
+        guard !clips.isEmpty else {
+            print("无需计算嵌入的片段" + (force ? "" : " (使用 --force 重新计算)"))
+            return
+        }
+
+        print("待处理: \(clips.count) 个片段\n")
+
+        var embedded = 0
+        var failed = 0
+
+        for (i, clip) in clips.enumerated() {
+            guard let clipId = clip.clipId else { continue }
+            let text = EmbeddingUtils.composeClipText(clip: clip)
+
+            if text.isEmpty {
+                print("[\(i + 1)/\(clips.count)] clip \(clipId): 无可嵌入文本, 跳过")
+                continue
+            }
+
+            do {
+                let vector = try await embProvider.embed(text: text)
+                let data = EmbeddingUtils.serializeEmbedding(vector)
+                try await folderDB.write { db in
+                    try db.execute(
+                        sql: "UPDATE clips SET embedding = ?, embedding_model = ? WHERE clip_id = ?",
+                        arguments: [data, embProvider.name, clipId]
+                    )
+                }
+                embedded += 1
+                let preview = text.prefix(40)
+                print("[\(i + 1)/\(clips.count)] clip \(clipId): ✓ (\(vector.count) 维) \"\(preview)...\"")
+            } catch {
+                failed += 1
+                print("[\(i + 1)/\(clips.count)] clip \(clipId): ✗ \(error.localizedDescription)")
+            }
+        }
+
+        print("\n完成! 嵌入 \(embedded) 个片段, 失败 \(failed) 个")
+
+        // 同步到全局库
+        let globalDB = try DatabaseManager.openGlobalDatabase()
+        let syncResult = try SyncEngine.sync(
+            folderPath: folderPath,
+            folderDB: folderDB,
+            globalDB: globalDB
+        )
+        print("同步到全局索引: \(syncResult.syncedClips) 个片段")
     }
 }

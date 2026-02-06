@@ -54,6 +54,8 @@ public enum PipelineManager {
         public let clipsCreated: Int
         /// 已完成视觉分析的 clip 数量
         public let clipsAnalyzed: Int
+        /// 已完成嵌入计算的 clip 数量
+        public let clipsEmbedded: Int
         /// SRT 文件路径（如有）
         public let srtPath: String?
         /// 同步结果（如有）
@@ -140,6 +142,7 @@ public enum PipelineManager {
     ///   - apiKey: Gemini API Key（nil = 跳过视觉分析）
     ///   - rateLimiter: Gemini 限速器（nil = 不限速）
     ///   - whisperKit: WhisperKit 实例（nil = 跳过 STT）
+    ///   - embeddingProvider: 向量嵌入提供者（nil = 跳过嵌入）
     ///   - ffmpegConfig: FFmpeg 配置
     ///   - onProgress: 进度回调
     /// - Returns: 处理结果
@@ -151,6 +154,7 @@ public enum PipelineManager {
         apiKey: String? = nil,
         rateLimiter: GeminiRateLimiter? = nil,
         whisperKit: WhisperKit? = nil,
+        embeddingProvider: EmbeddingProvider? = nil,
         ffmpegConfig: FFmpegConfig = .default,
         onProgress: ((String) -> Void)? = nil
     ) async throws -> ProcessingResult {
@@ -169,7 +173,7 @@ public enum PipelineManager {
             progress("已完成，跳过")
             return ProcessingResult(
                 videoId: videoId, clipsCreated: 0, clipsAnalyzed: 0,
-                srtPath: video.srtPath, syncResult: nil
+                clipsEmbedded: 0, srtPath: video.srtPath, syncResult: nil
             )
         }
 
@@ -205,7 +209,7 @@ public enum PipelineManager {
                     try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .completed)
                     return ProcessingResult(
                         videoId: videoId, clipsCreated: 0, clipsAnalyzed: 0,
-                        srtPath: nil, syncResult: nil
+                        clipsEmbedded: 0, srtPath: nil, syncResult: nil
                     )
                 }
 
@@ -409,7 +413,33 @@ public enum PipelineManager {
             try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .completed)
         }
 
-        // 5. 同步到全局索引
+        // 5. 向量嵌入（非致命，失败不影响 completed 状态）
+        var clipsEmbedded = 0
+        if let provider = embeddingProvider {
+            progress("计算向量嵌入中...")
+            let allClips = try await folderDB.read { db in
+                try Clip.fetchAll(forVideo: videoId, in: db)
+            }
+            for clip in allClips {
+                guard let cid = clip.clipId else { continue }
+                let text = EmbeddingUtils.composeClipText(clip: clip)
+                guard !text.isEmpty else { continue }
+                do {
+                    let vector = try await provider.embed(text: text)
+                    let data = EmbeddingUtils.serializeEmbedding(vector)
+                    try updateClipEmbedding(
+                        clipId: cid, data: data,
+                        model: provider.name, folderDB: folderDB
+                    )
+                    clipsEmbedded += 1
+                } catch {
+                    progress("clip \(cid) 嵌入失败: \(error.localizedDescription)")
+                }
+            }
+            progress("嵌入完成: \(clipsEmbedded)/\(allClips.count)")
+        }
+
+        // 6. 同步到全局索引
         var syncResult: SyncEngine.SyncResult?
         if let globalDB = globalDB {
             progress("同步到全局索引...")
@@ -425,6 +455,7 @@ public enum PipelineManager {
             videoId: videoId,
             clipsCreated: clipsCreated,
             clipsAnalyzed: clipsAnalyzed,
+            clipsEmbedded: clipsEmbedded,
             srtPath: srtPath,
             syncResult: syncResult
         )
@@ -586,6 +617,21 @@ public enum PipelineManager {
                     encodeJSONArray(result.tags),
                     clipId
                 ])
+        }
+    }
+
+    /// 更新 clip 的嵌入向量
+    static func updateClipEmbedding(
+        clipId: Int64,
+        data: Data,
+        model: String,
+        folderDB: DatabaseWriter
+    ) throws {
+        try folderDB.write { db in
+            try db.execute(
+                sql: "UPDATE clips SET embedding = ?, embedding_model = ? WHERE clip_id = ?",
+                arguments: [data, model, clipId]
+            )
         }
     }
 

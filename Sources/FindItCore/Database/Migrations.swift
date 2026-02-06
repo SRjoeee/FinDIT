@@ -73,6 +73,12 @@ public enum Migrations {
             }
         }
 
+        migrator.registerMigration("v2_addEmbeddingModel") { db in
+            try db.alter(table: "clips") { t in
+                t.add(column: "embedding_model", .text)
+            }
+        }
+
         return migrator
     }
 
@@ -176,6 +182,12 @@ public enum Migrations {
                 t.column("last_synced_clip_rowid", .integer).defaults(to: 0)
                 t.column("last_synced_video_rowid", .integer).defaults(to: 0)
                 t.column("last_synced_at", .text)
+            }
+        }
+
+        migrator.registerMigration("v2_addEmbeddingModel") { db in
+            try db.alter(table: "clips") { t in
+                t.add(column: "embedding_model", .text)
             }
         }
 

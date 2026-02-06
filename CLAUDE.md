@@ -7,7 +7,7 @@
 ## 构建与运行
 
 - `swift build` — 编译项目
-- `swift test` — 运行全部测试
+- `swift test` — 运行全部测试（**需要安装完整 Xcode**，CLT 不含 XCTest）
 - `swift run findit-cli <subcommand>` — CLI 验证工具
 - FFmpeg 路径: `~/.local/bin/ffmpeg`
 - FFprobe 路径: `~/.local/bin/ffprobe`
@@ -15,6 +15,7 @@
 ## 编码规范
 
 - Swift 6.0，Package 声明最低 macOS 14，macOS 15+ API 通过 `@available` 使用
+- swift-tools-version: 5.9（6.0 的 `.macOS(.v15)` 在当前 CLT 下不可用）
 - 使用 async/await 处理异步操作，避免回调
 - 错误处理：定义明确的 Error enum，禁止 try! / force unwrap
 - 命名遵循 Swift API Design Guidelines（驼峰命名）
@@ -23,10 +24,22 @@
 ## 依赖管理
 
 严格控制第三方依赖数量，优先使用系统框架：
-- SQLite: GRDB.swift v6.29.x
+- SQLite: GRDB.swift **v6.29.x**（v7 需 swiftLanguageModes 支持，当前 CLT 不兼容）
 - CLI 框架: swift-argument-parser
 - STT: WhisperKit（Stage 2 启用）
 - 向量推理: onnxruntime（Stage 3 启用）
+
+## 存储架构：双层 SQLite
+
+- **文件夹级库** `<素材文件夹>/.clip-index/index.sqlite` — Source of truth，存原始索引数据，便携
+- **全局搜索索引** `~/Library/Application Support/FindIt/search.sqlite` — 聚合缓存，含 FTS5 + 向量 + search_history
+- 全局库删了可从文件夹库重建；文件夹库随素材文件夹移动
+
+## 数据格式约定
+
+- `clips.tags` 存储为 JSON 数组: `["海滩", "户外", "全景"]`
+- FTS5 同步时 tags 展开为空格分隔文本
+- SRT 文件优先写视频同目录，失败降级到 `~/Library/Application Support/FindIt/srt/`
 
 ## 测试规范
 

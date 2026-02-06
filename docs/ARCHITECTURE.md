@@ -28,7 +28,15 @@
 │   │ 卷监听/离线  │  │  EDL / FCPXML      │   │
 │   └────────────┘  └────────────────────┘   │
 ├─────────────────────────────────────────────┤
-│   SQLite 单文件 (.clip-index/index.sqlite)   │
+│   双层 SQLite 存储                           │
+│                                             │
+│   文件夹级库 (source of truth):              │
+│     <素材文件夹>/.clip-index/index.sqlite    │
+│     → watched_folders, videos, clips        │
+│                                             │
+│   全局搜索索引 (聚合缓存):                    │
+│     ~/Library/App Support/FindIt/search.db  │
+│     → clips_fts, 向量索引, search_history    │
 └─────────────────────────────────────────────┘
 ```
 
@@ -37,10 +45,11 @@
 ```
 Sources/FindItCore/
 ├── Database/
-│   ├── DatabaseManager.swift       # 连接管理 + WAL 模式
+│   ├── DatabaseManager.swift       # 连接管理 + WAL 模式（文件夹库 + 全局库）
 │   ├── Models.swift                # WatchedFolder, Video, Clip 数据模型
-│   ├── Migrations.swift            # 版本化建表迁移
-│   └── SearchEngine.swift          # FTS5 + 向量混合搜索
+│   ├── Migrations.swift            # 版本化建表迁移（两种 schema）
+│   ├── SearchEngine.swift          # FTS5 + 向量混合搜索（操作全局库）
+│   └── SyncEngine.swift            # 文件夹库 → 全局搜索索引同步
 ├── Pipeline/
 │   ├── PipelineManager.swift       # 统一管线调度 + 状态机
 │   ├── FFmpegBridge.swift          # FFmpeg 子进程调用封装
@@ -57,8 +66,9 @@ Sources/FindItCore/
 
 | 模块 | 职责 | 外部依赖 |
 |------|------|---------|
-| **Database** | 连接管理、建表迁移、CRUD、事务 | GRDB.swift |
-| **SearchEngine** | FTS5 搜索、向量余弦相似度、融合排序 | Database |
+| **Database** | 连接管理、建表迁移、CRUD、事务（文件夹库 + 全局库） | GRDB.swift |
+| **SyncEngine** | 文件夹库 → 全局搜索索引的数据同步、增量更新 | Database |
+| **SearchEngine** | FTS5 搜索、向量余弦相似度、融合排序（操作全局库） | Database |
 | **FFmpegBridge** | 构建 FFmpeg/FFprobe 命令、解析输出、临时文件管理 | Foundation (Process) |
 | **STTProcessor** | WhisperKit 初始化/转录、SRT 生成 | WhisperKit |
 | **VisionAnalyzer** | Gemini API 调用、图片 Base64 编码、JSON 解析 | Foundation (URLSession) |
@@ -85,10 +95,18 @@ Sources/FindItCore/
                         └──→ JSON 描述 (scene, subjects, actions...)
                                   │
                                   ▼
-                           Database (SQLite)
+                        文件夹级 SQLite (source of truth)
                       ┌─────────────────────┐
-                      │ clips 表 + FTS5 索引  │
-                      │ + 向量 BLOB (BGE-M3)  │
+                      │ videos + clips 表    │
+                      └──────────┬──────────┘
+                                 │
+                           SyncEngine (同步)
+                                 │
+                                 ▼
+                        全局搜索索引 SQLite
+                      ┌─────────────────────┐
+                      │ clips_fts + 向量索引  │
+                      │ + search_history     │
                       └──────────┬──────────┘
                                  │
                            SearchEngine
@@ -98,11 +116,142 @@ Sources/FindItCore/
                            搜索结果列表
 ```
 
+## 双层 SQLite 存储策略
+
+### 文件夹级库（Source of Truth）
+
+每个被监控的素材文件夹内创建 `.clip-index/index.sqlite`：
+
+- 存储该文件夹下所有视频的原始索引数据
+- 随文件夹移动/拷贝，天然便携（外接硬盘换电脑直接可用）
+- 删除后可从原始素材重新索引
+
+### 全局搜索索引（聚合缓存）
+
+`~/Library/Application Support/FindIt/search.sqlite`：
+
+- 聚合所有文件夹库的数据，支持跨文件夹搜索
+- 包含 FTS5 全文索引、向量索引、搜索历史
+- 删除后可从所有在线文件夹库重建
+
+### 同步机制
+
+- App 启动时检查各文件夹库版本，增量同步到全局库
+- 索引完成后立即同步新数据
+- 文件夹库新增/删除时全量重建受影响部分
+
 ## 数据库 Schema
 
-详见产品说明书 v0.2 第四章。核心表：
+### 文件夹级库 Schema
 
-- **watched_folders**: 监控文件夹，含卷 UUID、在线状态
-- **videos**: 视频文件元数据，含索引状态机 (pending → completed)
-- **clips**: 片段（搜索对象），含场景描述、标签、台词、向量
-- **clips_fts**: FTS5 虚拟表，索引 tags + description + transcript
+```sql
+-- 监控文件夹表
+CREATE TABLE watched_folders (
+    folder_id       INTEGER PRIMARY KEY,
+    folder_path     TEXT NOT NULL,
+    volume_name     TEXT,                    -- 卷名（如 "素材盘A"）
+    volume_uuid     TEXT,                    -- 卷 UUID（唯一标识，不随挂载点变化）
+    is_available    INTEGER DEFAULT 1,       -- 当前是否可访问
+    last_seen_at    TEXT,                    -- 上次可访问时间
+    total_files     INTEGER DEFAULT 0,
+    indexed_files   INTEGER DEFAULT 0
+);
+
+-- 视频文件表
+CREATE TABLE videos (
+    video_id        INTEGER PRIMARY KEY,
+    folder_id       INTEGER REFERENCES watched_folders(folder_id),
+    file_path       TEXT UNIQUE NOT NULL,
+    file_name       TEXT NOT NULL,
+    duration        REAL,                    -- 视频总时长（秒）
+    file_size       INTEGER,                 -- 文件大小（字节）
+    file_hash       TEXT,                    -- 快速哈希（头尾各 1MB SHA256）
+    file_modified   TEXT,                    -- 文件修改时间
+    created_at      TEXT,
+    indexed_at      TEXT,
+    index_status    TEXT DEFAULT 'pending',  -- pending / stt_running / stt_done
+                                             -- / vision_running / completed
+                                             -- / failed / orphaned
+    index_error     TEXT,                    -- 失败原因
+    orphaned_at     TEXT,                    -- 标记为 orphaned 的时间
+    priority        INTEGER DEFAULT 0,       -- 用户可调优先级
+    last_processed_clip INTEGER,             -- 视觉分析断点（恢复用）
+    srt_path        TEXT                     -- SRT 文件实际路径（可能降级存储）
+);
+
+-- 片段表（核心搜索对象）
+CREATE TABLE clips (
+    clip_id         INTEGER PRIMARY KEY,
+    video_id        INTEGER REFERENCES videos(video_id),
+    start_time      REAL NOT NULL,           -- 起始时间码（秒）
+    end_time        REAL NOT NULL,           -- 结束时间码（秒）
+    thumbnail_path  TEXT,                    -- 缩略图缓存路径
+    scene           TEXT,                    -- 场景描述
+    subjects        TEXT,                    -- 主体（JSON 数组）
+    actions         TEXT,                    -- 动作（JSON 数组）
+    objects         TEXT,                    -- 道具/物体（JSON 数组）
+    mood            TEXT,                    -- 氛围/情绪
+    shot_type       TEXT,                    -- 镜头类型
+    lighting        TEXT,                    -- 光线
+    colors          TEXT,                    -- 色调
+    description     TEXT,                    -- 自然语言描述
+    tags            TEXT,                    -- 所有标签（JSON 数组，供 FTS 搜索）
+    transcript      TEXT,                    -- 该时间段内的台词
+    embedding       BLOB                     -- BGE-M3 向量（1024维 float32）
+);
+```
+
+### 全局搜索索引 Schema
+
+```sql
+-- FTS5 全文搜索虚拟表（从文件夹库 clips 同步）
+CREATE VIRTUAL TABLE clips_fts USING fts5(
+    tags,                                    -- JSON 数组展开为空格分隔文本
+    description,
+    transcript,
+    content='clips',
+    content_rowid='clip_id'
+);
+
+-- 搜索历史表
+CREATE TABLE search_history (
+    id          INTEGER PRIMARY KEY,
+    query       TEXT NOT NULL,
+    searched_at TEXT NOT NULL DEFAULT (datetime('now')),
+    result_count INTEGER DEFAULT 0
+);
+
+-- 全局 clips 镜像表（从各文件夹库聚合）
+-- schema 同文件夹级 clips 表，额外增加来源信息
+CREATE TABLE clips (
+    clip_id         INTEGER PRIMARY KEY,
+    video_id        INTEGER,
+    folder_path     TEXT,                    -- 来源文件夹路径（便于定位文件夹库）
+    start_time      REAL NOT NULL,
+    end_time        REAL NOT NULL,
+    thumbnail_path  TEXT,
+    scene           TEXT,
+    subjects        TEXT,
+    actions         TEXT,
+    objects         TEXT,
+    mood            TEXT,
+    shot_type       TEXT,
+    lighting        TEXT,
+    colors          TEXT,
+    description     TEXT,
+    tags            TEXT,
+    transcript      TEXT,
+    embedding       BLOB
+);
+
+-- 全局 videos 镜像表
+CREATE TABLE videos (
+    video_id        INTEGER PRIMARY KEY,
+    folder_path     TEXT,
+    file_path       TEXT UNIQUE NOT NULL,
+    file_name       TEXT NOT NULL,
+    duration        REAL,
+    file_size       INTEGER,
+    srt_path        TEXT
+);
+```

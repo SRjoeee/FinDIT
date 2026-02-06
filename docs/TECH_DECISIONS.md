@@ -80,3 +80,93 @@
   - 无需引入 Python (PySceneDetect) 运行时
 - **路径**: `~/.local/bin/ffmpeg`, `~/.local/bin/ffprobe`
 - **日期**: 2026-02-06
+
+## ADR-008: 双层 SQLite 存储策略
+
+- **决策**: 文件夹级 SQLite + 全局搜索索引
+- **文件夹库**: `<素材文件夹>/.clip-index/index.sqlite`
+  - 存储原始数据：watched_folders, videos, clips
+  - 随文件夹移动 / 拷贝，天然便携
+  - 删除后可从原始素材重新索引
+- **全局搜索索引**: `~/Library/Application Support/FindIt/search.sqlite`
+  - 聚合所有文件夹库的数据
+  - 包含 FTS5 虚拟表 + 向量索引
+  - 包含 search_history 表
+  - 删除后可从所有文件夹库重建
+- **同步机制**: App 启动时 / 索引完成后，从文件夹库同步到全局库
+- **原因**:
+  - 用户需要便携性（外接硬盘拷贝到新电脑直接可用）
+  - 又需要跨文件夹搜索的效率（单次查询一个 SQLite 而非扫描多个）
+  - 全局库可视为缓存，文件夹库是 source of truth
+- **日期**: 2026-02-06
+
+## ADR-009: 融合排序归一化方案
+
+- **决策**: FTS5 rank 与余弦相似度做 min-max 归一化后加权融合
+- **公式**: `final = α × normalize(fts_rank) + β × cosine_similarity`
+  - FTS5 rank（负 BM25 值）做 min-max 归一化映射到 [0, 1]
+  - 余弦相似度天然在 [0, 1] 范围内
+  - α, β 权重可调，初始建议 α=0.4, β=0.6
+- **原因**:
+  - FTS5 的 `rank` 返回负 BM25 值（越小越相关），与余弦相似度（越大越相关）量纲不同
+  - 直接相加没有意义，必须先归一化到统一区间
+- **日期**: 2026-02-06
+
+## ADR-010: tags 字段存储为 JSON 数组
+
+- **决策**: `clips.tags` 存储为 JSON 数组
+- **格式**: `["海滩", "户外", "全景", "暖色调", "女性", "行走"]`
+- **来源**: 从 Gemini 返回的 JSON 中提取 scene / subjects / actions / objects / mood / shot_type / lighting / colors 各字段，去重后合成 tags 数组
+- **FTS5 同步**: 写入 clips_fts 时，将 JSON 数组展开为空格分隔的文本
+  - 例: `"海滩 户外 全景 暖色调 女性 行走"`
+- **原因**:
+  - 每个 tag 是独立的字符串，方便统计高频词、UI 展示
+  - JSON 数组在 Swift 中解码简单（`JSONDecoder` / `JSONSerialization`）
+  - FTS5 需要纯文本，展开为空格分隔即可
+- **日期**: 2026-02-06
+
+## ADR-011: Gemini API 额度管理
+
+- **决策**: 主动管理 API 调用额度，避免超限导致索引中断
+- **策略**:
+  - 索引前估算所需 API 调用次数，提示用户预计耗时
+  - 运行时追踪当日已用调用次数
+  - 接近免费额度限制（250 RPD）时自动暂停，提示"明日继续"
+  - 设置页显示当日已用 / 剩余调用次数
+- **原因**:
+  - Gemini Flash 免费额度有限（10 RPM, 250 RPD）
+  - 不做管理会导致 429 错误频发，用户体验差
+  - 付费用户额度充足，仅免费用户需要此机制
+- **日期**: 2026-02-06
+
+## ADR-012: SRT 文件存储降级策略
+
+- **决策**: SRT 文件优先写视频同目录，失败时降级到 App 目录
+- **路径优先级**:
+  1. `<视频文件所在目录>/<视频文件名>.srt` — 优先
+  2. `~/Library/Application Support/FindIt/srt/<video_hash>.srt` — 降级
+- **数据库记录**: `videos` 表增加 `srt_path` 字段记录 SRT 实际存储路径
+- **原因**:
+  - 外接硬盘或只读卷无法在视频同目录写入
+  - 降级到 App 目录确保 SRT 不会丢失
+  - 记录实际路径便于后续读取
+- **日期**: 2026-02-06
+
+## ADR-013: 搜索历史表
+
+- **决策**: 在全局搜索库新增 `search_history` 表
+- **Schema**:
+  ```sql
+  CREATE TABLE search_history (
+      id          INTEGER PRIMARY KEY,
+      query       TEXT NOT NULL,
+      searched_at TEXT NOT NULL DEFAULT (datetime('now')),
+      result_count INTEGER DEFAULT 0
+  );
+  ```
+- **热门标签**: 从 `clips.tags` 统计 TOP N 高频词，无需额外表
+- **原因**:
+  - 支持搜索历史展示（最近搜过的）
+  - 支持搜索分析（什么查询最热门）
+  - 热门标签直接从现有数据统计，不增加冗余
+- **日期**: 2026-02-06

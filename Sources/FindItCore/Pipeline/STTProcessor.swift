@@ -72,13 +72,13 @@ public enum STTProcessor {
         public var wordTimestamps: Bool
 
         public static let `default` = Config(
-            modelName: "large-v3",
+            modelName: "openai_whisper-large-v3-v20240930",
             language: nil,
             wordTimestamps: true
         )
 
         public init(
-            modelName: String = "large-v3",
+            modelName: String = "openai_whisper-large-v3-v20240930",
             language: String? = nil,
             wordTimestamps: Bool = true
         ) {
@@ -92,7 +92,7 @@ public enum STTProcessor {
 
     /// 初始化 WhisperKit 实例并加载模型
     ///
-    /// 首次调用会下载模型文件（large-v3 约 1.5GB）。
+    /// 首次调用会下载模型文件（turbo 约 1.6GB）。
     /// 调用方应创建一次实例并复用于多次转录。
     ///
     /// - Parameter config: STT 配置

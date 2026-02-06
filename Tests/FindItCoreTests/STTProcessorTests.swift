@@ -244,7 +244,7 @@ final class STTProcessorTests: XCTestCase {
 
     func testDefaultConfig() {
         let config = STTProcessor.Config.default
-        XCTAssertEqual(config.modelName, "large-v3")
+        XCTAssertEqual(config.modelName, "openai_whisper-large-v3-v20240930")
         XCTAssertNil(config.language)
         XCTAssertTrue(config.wordTimestamps)
     }

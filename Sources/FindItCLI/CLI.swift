@@ -538,8 +538,8 @@ struct TranscribeCommand: AsyncParsableCommand {
     @Option(name: .long, help: "WAV 音频路径 (默认: 自动从视频提取)")
     var audio: String?
 
-    @Option(name: .long, help: "WhisperKit 模型名 (默认: large-v3)")
-    var model: String = "large-v3"
+    @Option(name: .long, help: "WhisperKit 模型名 (默认: turbo)")
+    var model: String = "openai_whisper-large-v3-v20240930"
 
     @Option(name: .long, help: "语言代码，如 zh/en (默认: 自动检测)")
     var language: String?
@@ -760,7 +760,7 @@ struct IndexCommand: AsyncParsableCommand {
     var apiKey: String?
 
     @Option(name: .long, help: "WhisperKit 模型名称")
-    var model: String = "large-v3"
+    var model: String = "openai_whisper-large-v3-v20240930"
 
     @Flag(name: .long, help: "跳过语音转录")
     var skipStt: Bool = false

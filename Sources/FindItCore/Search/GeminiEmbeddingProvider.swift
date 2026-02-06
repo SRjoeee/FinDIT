@@ -2,10 +2,10 @@ import Foundation
 
 // MARK: - GeminiEmbedding
 
-/// Gemini text-embedding-004 嵌入引擎
+/// Gemini 嵌入引擎
 ///
 /// 调用 Google Gemini REST API 计算文本向量嵌入。
-/// 输出 768 维 float32 向量，支持中英文多语言。
+/// 默认使用 gemini-embedding-001 模型，通过 outputDimensionality 控制输出维度（默认 768）。
 ///
 /// 所有方法为 static，遵循项目 enum + static 模式。
 /// 复用 `VisionAnalyzer.resolveAPIKey()` 的 Key 管理逻辑。
@@ -15,6 +15,8 @@ public enum GeminiEmbedding {
     public struct Config {
         /// 嵌入模型名称
         public var model: String
+        /// 输出向量维度（gemini-embedding-001 原生 3072，可降维到 768）
+        public var outputDimensionality: Int
         /// HTTP 请求超时（秒）
         public var requestTimeoutSeconds: Double
         /// 最大重试次数
@@ -23,27 +25,30 @@ public enum GeminiEmbedding {
         public var maxBatchSize: Int
 
         public static let `default` = Config(
-            model: "text-embedding-004",
+            model: "gemini-embedding-001",
+            outputDimensionality: 768,
             requestTimeoutSeconds: 30.0,
             maxRetries: 3,
             maxBatchSize: 100
         )
 
         public init(
-            model: String = "text-embedding-004",
+            model: String = "gemini-embedding-001",
+            outputDimensionality: Int = 768,
             requestTimeoutSeconds: Double = 30.0,
             maxRetries: Int = 3,
             maxBatchSize: Int = 100
         ) {
             self.model = model
+            self.outputDimensionality = outputDimensionality
             self.requestTimeoutSeconds = requestTimeoutSeconds
             self.maxRetries = maxRetries
             self.maxBatchSize = maxBatchSize
         }
     }
 
-    /// 输出向量维度
-    public static let dimensions = 768
+    /// 默认输出向量维度（通过 Config.outputDimensionality 可调）
+    public static let defaultDimensions = 768
 
     // MARK: - 请求构建
 
@@ -52,12 +57,13 @@ public enum GeminiEmbedding {
         text: String,
         config: Config = .default
     ) throws -> Data {
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": "models/\(config.model)",
             "content": [
                 "parts": [["text": text]]
             ]
         ]
+        body["outputDimensionality"] = config.outputDimensionality
         return try JSONSerialization.data(withJSONObject: body)
     }
 
@@ -71,7 +77,8 @@ public enum GeminiEmbedding {
                 "model": "models/\(config.model)",
                 "content": [
                     "parts": [["text": text]]
-                ]
+                ],
+                "outputDimensionality": config.outputDimensionality
             ] as [String: Any]
         }
         let body: [String: Any] = ["requests": requests]
@@ -216,7 +223,7 @@ public enum GeminiEmbedding {
     ///   - text: 待嵌入文本
     ///   - apiKey: Gemini API Key
     ///   - config: API 配置
-    /// - Returns: 768 维嵌入向量
+    /// - Returns: 嵌入向量（维度由 Config.outputDimensionality 决定，默认 768）
     public static func embed(
         text: String,
         apiKey: String,
@@ -281,7 +288,7 @@ public class GeminiEmbeddingProvider: EmbeddingProvider {
     private let config: GeminiEmbedding.Config
 
     public let name = "gemini"
-    public let dimensions = GeminiEmbedding.dimensions
+    public let dimensions: Int
 
     /// 创建 Gemini 嵌入提供者
     ///
@@ -291,6 +298,7 @@ public class GeminiEmbeddingProvider: EmbeddingProvider {
     public init(apiKey: String, config: GeminiEmbedding.Config = .default) {
         self.apiKey = apiKey
         self.config = config
+        self.dimensions = config.outputDimensionality
     }
 
     public func isAvailable() -> Bool {

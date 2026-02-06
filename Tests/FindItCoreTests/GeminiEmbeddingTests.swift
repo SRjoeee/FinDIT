@@ -7,7 +7,8 @@ final class GeminiEmbeddingTests: XCTestCase {
 
     func testConfigDefaults() {
         let config = GeminiEmbedding.Config.default
-        XCTAssertEqual(config.model, "text-embedding-004")
+        XCTAssertEqual(config.model, "gemini-embedding-001")
+        XCTAssertEqual(config.outputDimensionality, 768)
         XCTAssertEqual(config.requestTimeoutSeconds, 30.0)
         XCTAssertEqual(config.maxRetries, 3)
         XCTAssertEqual(config.maxBatchSize, 100)
@@ -27,7 +28,7 @@ final class GeminiEmbeddingTests: XCTestCase {
     // MARK: - Dimensions
 
     func testDimensions() {
-        XCTAssertEqual(GeminiEmbedding.dimensions, 768)
+        XCTAssertEqual(GeminiEmbedding.defaultDimensions, 768)
     }
 
     // MARK: - buildEmbedRequestBody
@@ -37,7 +38,8 @@ final class GeminiEmbeddingTests: XCTestCase {
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
 
         XCTAssertNotNil(json)
-        XCTAssertEqual(json?["model"] as? String, "models/text-embedding-004")
+        XCTAssertEqual(json?["model"] as? String, "models/gemini-embedding-001")
+        XCTAssertEqual(json?["outputDimensionality"] as? Int, 768)
 
         let content = json?["content"] as? [String: Any]
         let parts = content?["parts"] as? [[String: Any]]
@@ -61,7 +63,7 @@ final class GeminiEmbeddingTests: XCTestCase {
         XCTAssertEqual(requests?.count, 2)
 
         let first = requests?.first
-        XCTAssertEqual(first?["model"] as? String, "models/text-embedding-004")
+        XCTAssertEqual(first?["model"] as? String, "models/gemini-embedding-001")
     }
 
     func testBuildBatchRequestBodyEmpty() throws {

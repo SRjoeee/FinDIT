@@ -108,10 +108,20 @@ public enum FFmpegBridge {
         process.standardOutput = Pipe() // 丢弃 stdout
 
         try process.run()
-        process.waitUntilExit()
 
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+        // 在后台线程读取管道，防止大输出时管道缓冲区满导致死锁
+        let group = DispatchGroup()
+        var stderrResult = Data()
+        group.enter()
+        DispatchQueue.global().async {
+            stderrResult = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
+
+        process.waitUntilExit()
+        group.wait()
+
+        let stderr = String(data: stderrResult, encoding: .utf8) ?? ""
 
         guard let duration = parseDuration(from: stderr) else {
             throw FFmpegError.outputParsingFailed(detail: "未找到 Duration 信息")
@@ -158,13 +168,30 @@ public enum FFmpegBridge {
             execute: timeoutItem
         )
 
+        // 在后台线程并发读取 stdout/stderr，防止管道缓冲区 (64KB) 满时
+        // 进程阻塞在写管道、而主线程阻塞在 waitUntilExit 导致死锁。
+        // 场景检测对长视频的 stderr 可达数 MB。
+        let group = DispatchGroup()
+        var stdoutResult = Data()
+        var stderrResult = Data()
+
+        group.enter()
+        DispatchQueue.global().async {
+            stdoutResult = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
+        group.enter()
+        DispatchQueue.global().async {
+            stderrResult = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
+
         process.waitUntilExit()
         timeoutItem.cancel()
+        group.wait()
 
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+        let stdout = String(data: stdoutResult, encoding: .utf8) ?? ""
+        let stderr = String(data: stderrResult, encoding: .utf8) ?? ""
 
         // 检查是否因超时被终止
         if process.terminationReason == .uncaughtSignal {

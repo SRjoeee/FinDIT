@@ -583,10 +583,14 @@ struct AnalyzeCommand: AsyncParsableCommand {
         print("视频: \(input)")
         print()
 
-        // 3. 逐场景分析
+        // 3. 逐场景分析（使用限速器控制 Gemini API 请求频率）
+        let rateLimiter = GeminiRateLimiter()
         var results: [(sceneIndex: Int, result: AnalysisResult)] = []
 
-        for (i, (sceneIndex, framePaths)) in sceneGroups.enumerated() {
+        for (_, (sceneIndex, framePaths)) in sceneGroups.enumerated() {
+            // 等待限速器许可（滑动窗口 + 429 退避）
+            try await rateLimiter.waitForPermission()
+
             print("  场景 \(sceneIndex): \(framePaths.count) 帧...", terminator: "")
 
             do {
@@ -596,14 +600,15 @@ struct AnalyzeCommand: AsyncParsableCommand {
                     config: config
                 )
                 results.append((sceneIndex, result))
+                await rateLimiter.reportSuccess()
                 print(" ✓")
+            } catch let error as VisionAnalyzerError {
+                if case .rateLimitExceeded = error {
+                    await rateLimiter.reportRateLimit()
+                }
+                print(" ✗ \(error.localizedDescription)")
             } catch {
                 print(" ✗ \(error.localizedDescription)")
-            }
-
-            // 速率控制: 7 秒间隔 (10 RPM 限制)
-            if i < sceneGroups.count - 1 {
-                try await Task.sleep(nanoseconds: 7_000_000_000)
             }
         }
 

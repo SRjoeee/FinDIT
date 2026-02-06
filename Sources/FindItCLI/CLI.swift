@@ -18,6 +18,7 @@ struct FindItCLI: ParsableCommand {
             FFmpegCheckCommand.self,
             ExtractAudioCommand.self,
             DetectScenesCommand.self,
+            ExtractKeyframesCommand.self,
         ]
     )
 }
@@ -393,5 +394,53 @@ struct DetectScenesCommand: ParsableCommand {
         let s = Int(seconds) % 60
         let ms = Int((seconds.truncatingRemainder(dividingBy: 1)) * 100)
         return String(format: "%d:%02d.%02d", m, s, ms)
+    }
+}
+
+// MARK: - extract-keyframes
+
+struct ExtractKeyframesCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "extract-keyframes",
+        abstract: "提取场景关键帧缩略图"
+    )
+
+    @Option(name: .long, help: "视频文件路径")
+    var input: String
+
+    @Option(name: .long, help: "输出目录 (默认: 同目录下 <视频名>_frames/)")
+    var outputDir: String?
+
+    @Option(name: .long, help: "场景检测阈值")
+    var threshold: Double = 0.3
+
+    func run() throws {
+        let inputPath = (input as NSString).standardizingPath
+
+        let outDir = outputDir ?? {
+            let url = URL(fileURLWithPath: inputPath)
+            let name = url.deletingPathExtension().lastPathComponent
+            return url.deletingLastPathComponent().appendingPathComponent("\(name)_frames").path
+        }()
+
+        // 1. 场景检测
+        print("场景检测中...")
+        let sceneConfig = SceneDetector.Config(threshold: threshold)
+        let segments = try SceneDetector.detectScenes(inputPath: inputPath, config: sceneConfig)
+        print("  检测到 \(segments.count) 个场景")
+
+        // 2. 关键帧提取
+        print("提取关键帧...")
+        let frames = try KeyframeExtractor.extractKeyframes(
+            inputPath: inputPath,
+            segments: segments,
+            outputDirectory: outDir
+        )
+
+        print("✓ 提取 \(frames.count) 个关键帧到: \(outDir)")
+        for frame in frames {
+            let ts = String(format: "%.2f", frame.timestamp)
+            print("  场景\(frame.sceneIndex): \(ts)s → \(URL(fileURLWithPath: frame.filePath).lastPathComponent)")
+        }
     }
 }

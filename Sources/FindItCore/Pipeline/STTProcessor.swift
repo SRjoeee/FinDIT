@@ -198,7 +198,7 @@ public enum STTProcessor {
     ///
     /// - Parameter seconds: 时间（秒），负值会被钳位到 0
     /// - Returns: 格式化字符串，如 "01:02:03,456"
-    static func formatSRTTimestamp(_ seconds: Double) -> String {
+    public static func formatSRTTimestamp(_ seconds: Double) -> String {
         let totalSeconds = max(0, seconds)
         let hours = Int(totalSeconds) / 3600
         let minutes = (Int(totalSeconds) % 3600) / 60

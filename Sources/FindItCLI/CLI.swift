@@ -4,7 +4,7 @@ import FindItCore
 import GRDB
 
 @main
-struct FindItCLI: ParsableCommand {
+struct FindItCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "findit-cli",
         abstract: "FindIt 命令行工具 — 视频素材索引与搜索",
@@ -19,6 +19,7 @@ struct FindItCLI: ParsableCommand {
             ExtractAudioCommand.self,
             DetectScenesCommand.self,
             ExtractKeyframesCommand.self,
+            TranscribeCommand.self,
         ]
     )
 }
@@ -441,6 +442,75 @@ struct ExtractKeyframesCommand: ParsableCommand {
         for frame in frames {
             let ts = String(format: "%.2f", frame.timestamp)
             print("  场景\(frame.sceneIndex): \(ts)s → \(URL(fileURLWithPath: frame.filePath).lastPathComponent)")
+        }
+    }
+}
+
+// MARK: - transcribe
+
+struct TranscribeCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "transcribe",
+        abstract: "转录视频音频为 SRT 字幕文件"
+    )
+
+    @Option(name: .long, help: "视频文件路径")
+    var input: String
+
+    @Option(name: .long, help: "WAV 音频路径 (默认: 自动从视频提取)")
+    var audio: String?
+
+    @Option(name: .long, help: "WhisperKit 模型名 (默认: large-v3)")
+    var model: String = "large-v3"
+
+    @Option(name: .long, help: "语言代码，如 zh/en (默认: 自动检测)")
+    var language: String?
+
+    func run() async throws {
+        let inputPath = (input as NSString).standardizingPath
+
+        // 1. 提取或使用提供的音频
+        let audioPath: String
+        if let providedAudio = audio {
+            audioPath = (providedAudio as NSString).standardizingPath
+        } else {
+            let url = URL(fileURLWithPath: inputPath)
+            let wavPath = url.deletingPathExtension().appendingPathExtension("wav").path
+            print("提取音频: \(inputPath)")
+            try AudioExtractor.extractAudio(inputPath: inputPath, outputPath: wavPath)
+            audioPath = wavPath
+            print("✓ 音频提取完成")
+        }
+
+        // 2. 初始化 WhisperKit
+        let config = STTProcessor.Config(modelName: model, language: language)
+        print("初始化 WhisperKit (模型: \(config.modelName))...")
+        let whisperKit = try await STTProcessor.initializeWhisperKit(config: config)
+        print("✓ 模型加载完成")
+
+        // 3. 转录并保存 SRT
+        print("转录中...")
+        let (segments, srtPath) = try await STTProcessor.transcribeAndSaveSRT(
+            audioPath: audioPath,
+            videoPath: inputPath,
+            whisperKit: whisperKit,
+            config: config
+        )
+
+        print("✓ 转录完成: \(segments.count) 个片段")
+        print("  SRT 文件: \(srtPath)")
+
+        // 4. 预览前几个片段
+        let preview = segments.prefix(5)
+        print()
+        for seg in preview {
+            let start = STTProcessor.formatSRTTimestamp(seg.startTime)
+            let end = STTProcessor.formatSRTTimestamp(seg.endTime)
+            print("  [\(seg.index)] \(start) --> \(end)")
+            print("    \(seg.text)")
+        }
+        if segments.count > 5 {
+            print("  ... 共 \(segments.count) 个片段")
         }
     }
 }

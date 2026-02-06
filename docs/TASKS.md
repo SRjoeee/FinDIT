@@ -6,6 +6,10 @@ _尚未开始_
 
 ## 待办
 
+### 前置验证
+- [ ] 验证 `swift test` 在已安装 Xcode 环境下通过
+- [ ] 验证 `swift build` 仍正常
+
 ### 1a: 文件夹级 SQLite
 - [ ] 创建 DatabaseManager.swift — 连接管理、WAL 模式、路径解析
 - [ ] 创建 Migrations.swift — DatabaseMigrator 版本化迁移

@@ -35,7 +35,7 @@
 │     → watched_folders, videos, clips        │
 │                                             │
 │   全局搜索索引 (聚合缓存):                    │
-│     ~/Library/App Support/FindIt/search.db  │
+│     ~/Library/App Support/FindIt/search.sqlite │
 │     → clips_fts, 向量索引, search_history    │
 └─────────────────────────────────────────────┘
 ```
@@ -181,7 +181,7 @@ CREATE TABLE videos (
 
 -- 片段表（核心搜索对象）
 CREATE TABLE clips (
-    clip_id         INTEGER PRIMARY KEY,
+    clip_id         INTEGER PRIMARY KEY AUTOINCREMENT,
     video_id        INTEGER REFERENCES videos(video_id),
     start_time      REAL NOT NULL,           -- 起始时间码（秒）
     end_time        REAL NOT NULL,           -- 结束时间码（秒）
@@ -197,14 +197,54 @@ CREATE TABLE clips (
     description     TEXT,                    -- 自然语言描述
     tags            TEXT,                    -- 所有标签（JSON 数组，供 FTS 搜索）
     transcript      TEXT,                    -- 该时间段内的台词
-    embedding       BLOB                     -- BGE-M3 向量（1024维 float32）
+    embedding       BLOB,                    -- BGE-M3 向量（1024维 float32）
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))  -- 用于增量同步
 );
 ```
 
 ### 全局搜索索引 Schema
 
+**ID 策略**：全局库的 clip_id / video_id 由全局库自动分配（AUTOINCREMENT），不复用文件夹库的 ID。通过 `source_folder + source_clip_id` 复合字段追溯到文件夹库原始记录。
+
 ```sql
--- FTS5 全文搜索虚拟表（从文件夹库 clips 同步）
+-- 全局 clips 镜像表（从各文件夹库聚合）
+CREATE TABLE clips (
+    clip_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_folder   TEXT NOT NULL,           -- 来源文件夹路径（定位文件夹库）
+    source_clip_id  INTEGER NOT NULL,        -- 文件夹库中的原始 clip_id
+    video_id        INTEGER,                 -- 全局库中的 video_id
+    start_time      REAL NOT NULL,
+    end_time        REAL NOT NULL,
+    thumbnail_path  TEXT,
+    scene           TEXT,
+    subjects        TEXT,
+    actions         TEXT,
+    objects         TEXT,
+    mood            TEXT,
+    shot_type       TEXT,
+    lighting        TEXT,
+    colors          TEXT,
+    description     TEXT,
+    tags            TEXT,
+    transcript      TEXT,
+    embedding       BLOB,
+    UNIQUE(source_folder, source_clip_id)    -- 防止重复同步
+);
+
+-- 全局 videos 镜像表
+CREATE TABLE videos (
+    video_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_folder   TEXT NOT NULL,
+    source_video_id INTEGER NOT NULL,
+    file_path       TEXT UNIQUE NOT NULL,
+    file_name       TEXT NOT NULL,
+    duration        REAL,
+    file_size       INTEGER,
+    srt_path        TEXT,
+    UNIQUE(source_folder, source_video_id)
+);
+
+-- FTS5 全文搜索虚拟表
 CREATE VIRTUAL TABLE clips_fts USING fts5(
     tags,                                    -- JSON 数组展开为空格分隔文本
     description,
@@ -221,37 +261,11 @@ CREATE TABLE search_history (
     result_count INTEGER DEFAULT 0
 );
 
--- 全局 clips 镜像表（从各文件夹库聚合）
--- schema 同文件夹级 clips 表，额外增加来源信息
-CREATE TABLE clips (
-    clip_id         INTEGER PRIMARY KEY,
-    video_id        INTEGER,
-    folder_path     TEXT,                    -- 来源文件夹路径（便于定位文件夹库）
-    start_time      REAL NOT NULL,
-    end_time        REAL NOT NULL,
-    thumbnail_path  TEXT,
-    scene           TEXT,
-    subjects        TEXT,
-    actions         TEXT,
-    objects         TEXT,
-    mood            TEXT,
-    shot_type       TEXT,
-    lighting        TEXT,
-    colors          TEXT,
-    description     TEXT,
-    tags            TEXT,
-    transcript      TEXT,
-    embedding       BLOB
-);
-
--- 全局 videos 镜像表
-CREATE TABLE videos (
-    video_id        INTEGER PRIMARY KEY,
-    folder_path     TEXT,
-    file_path       TEXT UNIQUE NOT NULL,
-    file_name       TEXT NOT NULL,
-    duration        REAL,
-    file_size       INTEGER,
-    srt_path        TEXT
+-- 同步元数据表（记录每个文件夹的同步进度）
+CREATE TABLE sync_meta (
+    folder_path     TEXT PRIMARY KEY,
+    last_synced_clip_rowid  INTEGER DEFAULT 0,  -- 上次同步到的 clip rowid
+    last_synced_video_rowid INTEGER DEFAULT 0,  -- 上次同步到的 video rowid
+    last_synced_at  TEXT                        -- 上次同步时间
 );
 ```

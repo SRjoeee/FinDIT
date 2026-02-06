@@ -14,8 +14,8 @@
 
 ## 编码规范
 
-- Swift 6.0，Package 声明最低 macOS 14，macOS 15+ API 通过 `@available` 使用
-- swift-tools-version: 5.9（6.0 的 `.macOS(.v15)` 在当前 CLT 下不可用）
+- Swift 编译器 6.0.0-dev，但 swift-tools-version 为 **5.9**（6.0 的 `.macOS(.v15)` 在当前 CLT 下不可用）
+- Package 声明最低 macOS 14，macOS 15+ API 通过 `@available` 使用
 - 使用 async/await 处理异步操作，避免回调
 - 错误处理：定义明确的 Error enum，禁止 try! / force unwrap
 - 命名遵循 Swift API Design Guidelines（驼峰命名）

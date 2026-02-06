@@ -163,6 +163,56 @@
 
 ---
 
+## Stage 3.5: 管线性能优化 ✓
+
+**Tag: `v0.3.1-perf`** — 已完成
+
+### WhisperKit Turbo 模型
+
+- STTProcessor 默认模型 large-v3 → openai_whisper-large-v3-v20240930 (turbo)
+- 809M 参数 (vs 1.5B)，5-8x 加速，WER 仅增 ~0.6%
+
+### Apple Vision 本地分析器
+
+- LocalVisionAnalyzer: VNClassifyImageRequest + VNDetectFace/HumanRectanglesRequest
+- 填充 6/9 个 AnalysisResult 字段 (scene, subjects, objects, shotType, lighting, colors)
+- CIAreaAverage (亮度) + CIKMeans (主色提取)，~10-30ms/帧，零网络依赖
+
+### 管线并行化
+
+- 音频提取与场景检测并行 (async let)
+- LocalVisionAnalyzer 在 clip 创建后立即运行
+- 批量嵌入: embedBatch() 替代逐个 embed()
+
+### FFmpeg 单次调用优化
+
+- detectScenesOptimized(): 场景检测 + 时长解析 + 可选音频提取合一
+- 消除独立 videoDuration() 调用
+
+### 配置优化
+
+- maxFramesPerScene: 5 → 3，减少 40% 关键帧和 Vision API 调用
+
+### Apple SpeechAnalyzer (macOS 26+)
+
+- SpeechAnalyzerBridge: @available(macOS 26.0, *) 封装 Speech 框架
+- 支持 41 种语言，比 WhisperKit turbo 快 ~2.2x
+- STTProcessor.transcribeWithBestAvailable(): 自动选择最优引擎
+
+### 本地 VLM (Qwen2.5-VL-3B)
+
+- LocalVLMAnalyzer: mlx-swift-lm 集成 (MLXVLM + MLXLMCommon)
+- Qwen2.5-VL-3B-Instruct-4bit (~3 GB, 懒下载)
+- Vision 策略: Gemini > LocalVLM > LocalVisionAnalyzer
+
+**验收标准：** 全部通过 ✓
+
+- 378 个测试全部通过 (317 + 61 新增)
+- 预估总耗时从 ~5:25 降至 ~1:20（约 4x 提速）
+- 所有 clip 均有可搜索元数据（不再被 Gemini 限速跳过）
+
+---
+
 ## Stage 4: macOS App
 
 **Tag: `v0.4-app**`

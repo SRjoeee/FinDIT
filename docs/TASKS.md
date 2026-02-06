@@ -13,6 +13,59 @@
 - 缩略图网格视图
 - BGE-M3 ONNX 本地嵌入 (可选增强)
 
+## 已完成（Stage 3.5: 管线性能优化）
+
+### Step 1: WhisperKit Turbo 模型切换
+
+- STTProcessor.Config 默认模型: `large-v3` → `openai_whisper-large-v3-v20240930`
+- 809M 参数 (vs 1.5B)，5-8x 加速，WER 降低 ~0.6%
+- CLI `--model` 默认值同步更新
+
+### Step 2: Apple Vision 本地分析器
+
+- LocalVisionAnalyzer: VNClassifyImageRequest + VNDetectFace/HumanRectanglesRequest
+- 填充 6/9 个 AnalysisResult 字段 (scene, subjects, objects, shotType, lighting, colors)
+- CIAreaAverage (亮度分类) + CIKMeans (主色提取)
+- 零网络依赖，~10-30ms/帧，33 个单元测试
+
+### Step 3: 管线并行化
+
+- PipelineManager: 音频提取与场景检测并行 (Task)
+- LocalVisionAnalyzer 在 clip 创建后立即运行
+- 批量嵌入: embedBatch() 替代逐个 embed()，降级回退
+
+### Step 4: FFmpeg 优化
+
+- detectScenesOptimized(): 单次 FFmpeg 调用 = 场景检测 + 时长解析 + 可选音频提取
+- 消除独立 videoDuration() 调用
+- CombinedDetectionResult 类型，4 个测试
+
+### Step 5: 配置优化
+
+- maxFramesPerScene: 5 → 3，减少 40% 关键帧和 Vision API 调用
+
+### Step 6: Apple SpeechAnalyzer (macOS 26+)
+
+- SpeechAnalyzerBridge: @available(macOS 26.0, *) 封装 Speech 框架
+- 支持 41 种语言 (含中/日/英)，比 WhisperKit turbo 快 ~2.2x
+- STTProcessor.transcribeWithBestAvailable(): 自动选择最优引擎
+- PipelineManager: macOS 26+ 无需 WhisperKit 即可做 STT
+- 11 个测试
+
+### Step 7: 本地 VLM (Qwen2.5-VL-3B)
+
+- LocalVLMAnalyzer: mlx-swift-lm 集成 (MLXVLM + MLXLMCommon)
+- Qwen2.5-VL-3B-Instruct-4bit (~3 GB, 懒下载)
+- ChatSession API 结构化 JSON 输出
+- Vision 策略: Gemini > LocalVLM > LocalVisionAnalyzer
+- PipelineManager 新增 vlmContainer 参数
+- 11 个测试
+
+### 验收
+
+- 378 个测试全部通过 (317 + 61 新增)
+- Tag: `v0.3.1-perf`
+
 ## 已完成（Stage 3: 搜索引擎）
 
 ### EmbeddingProvider 协议 + EmbeddingUtils

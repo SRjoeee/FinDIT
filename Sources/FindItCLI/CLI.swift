@@ -16,6 +16,7 @@ struct FindItCLI: ParsableCommand {
             SyncCommand.self,
             SearchCommand.self,
             FFmpegCheckCommand.self,
+            ExtractAudioCommand.self,
         ]
     )
 }
@@ -316,5 +317,35 @@ struct FFmpegCheckCommand: ParsableCommand {
         let version = try FFmpegBridge.version(config: config)
         print("✓ \(version)")
         print("  路径: \(config.ffmpegPath)")
+    }
+}
+
+// MARK: - extract-audio
+
+struct ExtractAudioCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "extract-audio",
+        abstract: "从视频提取 16kHz mono WAV 音频"
+    )
+
+    @Option(name: .long, help: "视频文件路径")
+    var input: String
+
+    @Option(name: .long, help: "输出 WAV 路径 (默认: 同目录同名.wav)")
+    var output: String?
+
+    func run() throws {
+        let inputPath = (input as NSString).standardizingPath
+        let outputPath = output ?? {
+            let url = URL(fileURLWithPath: inputPath)
+            return url.deletingPathExtension().appendingPathExtension("wav").path
+        }()
+
+        print("提取音频: \(inputPath)")
+        let result = try AudioExtractor.extractAudio(inputPath: inputPath, outputPath: outputPath)
+
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: result)[.size] as? Int64) ?? 0
+        let sizeMB = String(format: "%.1f", Double(fileSize) / 1_000_000)
+        print("✓ 输出: \(result) (\(sizeMB) MB)")
     }
 }

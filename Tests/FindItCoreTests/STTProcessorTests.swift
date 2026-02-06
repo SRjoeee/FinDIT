@@ -425,4 +425,18 @@ final class STTProcessorTests: XCTestCase {
         let result = STTProcessor.majorityVote(votes)
         XCTAssertEqual(result?.language, "ja")
     }
+
+    // MARK: - detectLanguageViaNL
+
+    func testDetectLanguageViaNLAvailableOnMacOS26() async {
+        // 仅验证方法存在且不崩溃（实际检测需要音频文件）
+        if #available(macOS 26.0, *) {
+            let (lang, segs) = await STTProcessor.detectLanguageViaNL(
+                audioPath: "/nonexistent/audio.wav"
+            )
+            // 文件不存在应返回 nil 和空数组
+            XCTAssertNil(lang)
+            XCTAssertTrue(segs.isEmpty)
+        }
+    }
 }

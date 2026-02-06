@@ -13,6 +13,37 @@
 - 缩略图网格视图
 - BGE-M3 ONNX 本地嵌入 (可选增强)
 
+## 已完成（Stage 3.6: 管线修复）
+
+### Fix 1: 批量关键帧提取时间戳 bug
+
+- `buildBatchExtractArguments` 中 `-ss` 输入选项导致 FFmpeg 时间戳重置
+- `select` 表达式使用绝对时间戳，与重置后的 `t` 不匹配
+- 修复: 将绝对时间戳转为 segment-relative
+- 增加安全网: 批量提取 0 帧时用单帧模式在中点补提
+- 4 个新测试
+
+### Fix 2: 音频提取门控
+
+- `needsAudio = whisperKit != nil` 改为 `await isSttAvailable(whisperKit:)`
+- 确保 macOS 26+ 纯 SpeechAnalyzer 路径也能预提取音频
+
+### Fix 3: 语言检测不依赖 WhisperKit
+
+- 新增 `STTProcessor.detectLanguageViaNL`: SpeechAnalyzer + NLLanguageRecognizer
+- PipelineManager: WhisperKit nil 时用 NL 方案检测语言
+- 英语结果可复用，避免二次转录
+- 1 个新测试
+
+### Fix 4: CLI WhisperKit 初始化降级
+
+- IndexCommand WhisperKit 初始化包裹 do-catch
+- 失败时打印警告，降级到 SpeechAnalyzer
+
+### 验收
+
+- 383 个测试全部通过 (378 + 5 新增)
+
 ## 已完成（Stage 3.5: 管线性能优化）
 
 ### Step 1: WhisperKit Turbo 模型切换

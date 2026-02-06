@@ -165,7 +165,7 @@
 
 ## Stage 3.5: 管线性能优化 ✓
 
-**Tag: `v0.3.1-perf`** — 已完成
+**Tag: `v0.3.1-perf**` — 已完成
 
 ### WhisperKit Turbo 模型
 
@@ -210,6 +210,24 @@
 - 378 个测试全部通过 (317 + 61 新增)
 - 预估总耗时从 ~5:25 降至 ~1:20（约 4x 提速）
 - 所有 clip 均有可搜索元数据（不再被 Gemini 限速跳过）
+
+---
+
+## Stage 3.6: 管线修复 ✓
+
+**已完成**
+
+E2E 测试暴露的 4 个管线 bug 修复：
+
+- 批量关键帧提取时间戳 bug（-ss 输入选项导致 t 重置，select 用绝对值不匹配）
+- 音频提取门控只检查 WhisperKit（应同时检查 SpeechAnalyzer）
+- 语言检测完全依赖 WhisperKit（新增 NLLanguageRecognizer 方案）
+- CLI WhisperKit 初始化崩溃（do-catch 降级）
+
+**验收标准：** 全部通过 ✓
+
+- 383 个测试全部通过 (378 + 5 新增)
+- 所有 clip 应有 ≥1 帧关键帧
 
 ---
 

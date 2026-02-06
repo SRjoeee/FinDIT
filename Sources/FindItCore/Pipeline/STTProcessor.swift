@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 import WhisperKit
 
 // MARK: - TranscriptSegment
@@ -290,6 +291,40 @@ public enum STTProcessor {
             confidence: winner.confidence,
             votes: votes
         )
+    }
+
+    /// 使用 NLLanguageRecognizer 检测音频语言（无需 WhisperKit）
+    ///
+    /// macOS 26+ 专用：先用 SpeechAnalyzer + en_US 快速转录，
+    /// 再用 NLLanguageRecognizer 分析文本判断实际语言。
+    /// 如果检测到英语，返回的 segments 可直接复用，避免二次转录。
+    ///
+    /// - Parameter audioPath: WAV 音频文件路径
+    /// - Returns: (language: ISO 639-1 代码, segments: 英语转录结果)
+    @available(macOS 26.0, *)
+    public static func detectLanguageViaNL(
+        audioPath: String
+    ) async -> (language: String?, segments: [TranscriptSegment]) {
+        do {
+            let segments = try await SpeechAnalyzerBridge.transcribe(
+                audioPath: audioPath,
+                language: "en"
+            )
+            guard !segments.isEmpty else { return (nil, []) }
+
+            let text = segments.map(\.text).joined(separator: " ")
+            guard text.count > 10 else { return (nil, []) }
+
+            let recognizer = NLLanguageRecognizer()
+            recognizer.processString(text)
+            guard let dominant = recognizer.dominantLanguage else {
+                return (nil, segments)
+            }
+
+            return (dominant.rawValue, segments)
+        } catch {
+            return (nil, [])
+        }
     }
 
     /// 转录音频文件

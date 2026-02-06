@@ -835,10 +835,24 @@ struct IndexCommand: AsyncParsableCommand {
         // 4. 初始化 WhisperKit（如需 STT）
         var whisperKit: WhisperKit? = nil
         if !skipStt {
-            print("初始化 WhisperKit (模型: \(model))...")
-            let sttConfig = STTProcessor.Config(modelName: model)
-            whisperKit = try await STTProcessor.initializeWhisperKit(config: sttConfig)
-            print("✓ WhisperKit 就绪")
+            do {
+                print("初始化 WhisperKit (模型: \(model))...")
+                let sttConfig = STTProcessor.Config(modelName: model)
+                whisperKit = try await STTProcessor.initializeWhisperKit(config: sttConfig)
+                print("✓ WhisperKit 就绪")
+            } catch {
+                print("⚠ WhisperKit 初始化失败: \(error.localizedDescription)")
+                if #available(macOS 26.0, *) {
+                    let saAvailable = await SpeechAnalyzerBridge.isAvailable()
+                    if saAvailable {
+                        print("  将使用 Apple SpeechAnalyzer 替代")
+                    } else {
+                        print("  将跳过语音转录")
+                    }
+                } else {
+                    print("  将跳过语音转录")
+                }
+            }
         }
 
         // 5. 解析 API Key（如需 Vision）

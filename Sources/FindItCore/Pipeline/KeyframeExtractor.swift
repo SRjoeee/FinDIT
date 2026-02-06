@@ -115,6 +115,7 @@ public enum KeyframeExtractor {
                 _ = try FFmpegBridge.run(arguments: args, config: ffmpegConfig)
 
                 // 收集实际生成的文件
+                var batchFrameCount = 0
                 for (frameIndex, timestamp) in timestamps.enumerated() {
                     let fileName = String(format: "scene_%03d_frame_%02d.jpg", sceneIndex, frameIndex)
                     let outputPath = (outputDirectory as NSString).appendingPathComponent(fileName)
@@ -123,6 +124,28 @@ public enum KeyframeExtractor {
                             sceneIndex: sceneIndex,
                             timestamp: timestamp,
                             filePath: outputPath
+                        ))
+                        batchFrameCount += 1
+                    }
+                }
+
+                // 安全网：批量提取产出 0 帧时，用单帧模式在场景中点补提 1 帧
+                if batchFrameCount == 0 {
+                    let midpoint = (segment.startTime + segment.endTime) / 2
+                    let fallbackName = String(format: "scene_%03d_frame_00.jpg", sceneIndex)
+                    let fallbackPath = (outputDirectory as NSString).appendingPathComponent(fallbackName)
+                    let fallbackArgs = buildExtractArguments(
+                        inputPath: inputPath,
+                        timestamp: midpoint,
+                        outputPath: fallbackPath,
+                        config: config
+                    )
+                    _ = try? FFmpegBridge.run(arguments: fallbackArgs, config: ffmpegConfig)
+                    if FileManager.default.fileExists(atPath: fallbackPath) {
+                        frames.append(ExtractedFrame(
+                            sceneIndex: sceneIndex,
+                            timestamp: midpoint,
+                            filePath: fallbackPath
                         ))
                     }
                 }
@@ -197,10 +220,12 @@ public enum KeyframeExtractor {
         let scaleFilter = "scale='if(lt(iw,ih),\(edge),-2)':'if(lt(iw,ih),-2,\(edge))'"
 
         // 构建 select 表达式：对每个目标时间戳选取最近的帧
+        // 注意: -ss 作为输入选项会将流时间戳重置为 ~0，
+        // 因此 select 中必须使用相对于 segment.startTime 的时间戳
         // select='lt(abs(t-T0),0.05)+lt(abs(t-T1),0.05)+...'
-        // 用 0.05s 容差确保命中
         let selectParts = timestamps.map { t in
-            String(format: "lt(abs(t-%.3f)\\,0.05)", t)
+            let relativeT = t - segment.startTime
+            return String(format: "lt(abs(t-%.3f)\\,0.05)", relativeT)
         }
         let selectExpr = selectParts.joined(separator: "+")
 

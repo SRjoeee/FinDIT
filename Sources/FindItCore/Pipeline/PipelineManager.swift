@@ -193,7 +193,7 @@ public enum PipelineManager {
             do {
                 // 场景检测 + 时长获取 + 可选音频提取（单次 FFmpeg 调用）
                 progress("场景检测中...")
-                let needsAudio = whisperKit != nil
+                let needsAudio = await isSttAvailable(whisperKit: whisperKit)
                 var audioOutputPath: String?
                 if needsAudio {
                     let tmpDir = tmpDirectory(folderPath: folderPath)
@@ -318,9 +318,12 @@ public enum PipelineManager {
                     )
                 }
 
-                // 语言检测（仅当 WhisperKit 可用时）
+                // 语言检测
                 var detectedLanguage: String?
+                var preTranscribedSegments: [TranscriptSegment]?
+
                 if let wk = whisperKit {
+                    // WhisperKit 多采样投票检测
                     progress("检测语言中...")
                     let langResult = try await STTProcessor.detectLanguage(
                         audioPath: audioPath,
@@ -329,17 +332,43 @@ public enum PipelineManager {
                     )
                     detectedLanguage = langResult.language
                     progress("检测到语言: \(langResult.language)")
+                } else if #available(macOS 26.0, *) {
+                    // 无 WhisperKit：用 NLLanguageRecognizer 检测
+                    progress("检测语言中 (NL)...")
+                    let (lang, segs) = await STTProcessor.detectLanguageViaNL(
+                        audioPath: audioPath
+                    )
+                    detectedLanguage = lang
+                    // 英语结果可直接复用，避免二次转录
+                    if lang == "en" {
+                        preTranscribedSegments = segs
+                    }
+                    if let lang {
+                        progress("检测到语言: \(lang)")
+                    }
                 }
 
                 // 转录（自动选择最优引擎）
-                progress("语音转录中...")
-                let (segments, engine) = try await STTProcessor.transcribeWithBestAvailable(
-                    audioPath: audioPath,
-                    language: detectedLanguage,
-                    whisperKit: whisperKit,
-                    onProgress: onProgress
-                )
-                progress("转录完成 [\(engine)]: \(segments.count) 条字幕")
+                let segments: [TranscriptSegment]
+                let engine: String
+
+                if let preSegs = preTranscribedSegments, !preSegs.isEmpty {
+                    // 复用语言检测阶段的英语转录结果
+                    segments = preSegs
+                    engine = "SpeechAnalyzer"
+                    progress("转录完成 [\(engine)]: \(segments.count) 条字幕（复用检测结果）")
+                } else {
+                    progress("语音转录中...")
+                    let result = try await STTProcessor.transcribeWithBestAvailable(
+                        audioPath: audioPath,
+                        language: detectedLanguage,
+                        whisperKit: whisperKit,
+                        onProgress: onProgress
+                    )
+                    segments = result.segments
+                    engine = result.engine
+                    progress("转录完成 [\(engine)]: \(segments.count) 条字幕")
+                }
 
                 // 保存 SRT
                 let srtContent = STTProcessor.generateSRT(from: segments)

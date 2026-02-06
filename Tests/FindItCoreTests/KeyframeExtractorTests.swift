@@ -138,6 +138,122 @@ final class KeyframeExtractorTests: XCTestCase {
         }
     }
 
+    // MARK: - buildBatchExtractArguments (相对时间戳)
+
+    func testBatchExtractUsesRelativeTimestamps() {
+        // 场景 [10.0, 25.0], 绝对时间戳 [12.5, 17.5, 22.5]
+        // -ss 10.0 使 FFmpeg t 从 ~0 开始，select 必须用相对时间戳
+        let segment = SceneSegment(startTime: 10.0, endTime: 25.0)
+        let timestamps = [12.5, 17.5, 22.5]  // 绝对
+        let args = KeyframeExtractor.buildBatchExtractArguments(
+            inputPath: "/video.mp4",
+            segment: segment,
+            timestamps: timestamps,
+            outputPattern: "/out/scene_%02d.jpg",
+            config: .default
+        )
+
+        // 找到 -vf 参数中的 select 表达式
+        guard let vfIndex = args.firstIndex(of: "-vf"),
+              vfIndex + 1 < args.count else {
+            XCTFail("应包含 -vf 参数")
+            return
+        }
+        let filter = args[vfIndex + 1]
+
+        // 应使用相对时间戳: 12.5-10.0=2.5, 17.5-10.0=7.5, 22.5-10.0=12.5
+        XCTAssertTrue(filter.contains("2.500"), "应包含相对时间戳 2.500 (12.5-10.0)")
+        XCTAssertTrue(filter.contains("7.500"), "应包含相对时间戳 7.500 (17.5-10.0)")
+        XCTAssertTrue(filter.contains("12.500"), "应包含相对时间戳 12.500 (22.5-10.0)")
+
+        // 不应包含原始绝对时间戳 17.500 或 22.500（注意 12.500 碰巧与相对值重合）
+        // 验证没有 17.500 和 22.500（这些是绝对值）
+        // 但 17.500 不应出现因为 17.5-10=7.5
+        XCTAssertFalse(filter.contains("17.500"), "不应包含绝对时间戳 17.500")
+        XCTAssertFalse(filter.contains("22.500"), "不应包含绝对时间戳 22.500")
+    }
+
+    func testBatchExtractFromZeroStartTime() {
+        // 场景 [0, 15], 时间戳 [2.5, 7.5, 12.5]
+        // startTime=0 时绝对 == 相对
+        let segment = SceneSegment(startTime: 0, endTime: 15.0)
+        let timestamps = [2.5, 7.5, 12.5]
+        let args = KeyframeExtractor.buildBatchExtractArguments(
+            inputPath: "/video.mp4",
+            segment: segment,
+            timestamps: timestamps,
+            outputPattern: "/out/scene_%02d.jpg",
+            config: .default
+        )
+
+        guard let vfIndex = args.firstIndex(of: "-vf"),
+              vfIndex + 1 < args.count else {
+            XCTFail("应包含 -vf 参数")
+            return
+        }
+        let filter = args[vfIndex + 1]
+
+        // startTime=0，相对值 == 绝对值
+        XCTAssertTrue(filter.contains("2.500"))
+        XCTAssertTrue(filter.contains("7.500"))
+        XCTAssertTrue(filter.contains("12.500"))
+    }
+
+    func testBatchExtractSelectTolerance() {
+        let segment = SceneSegment(startTime: 5.0, endTime: 20.0)
+        let timestamps = [7.5, 12.5]
+        let args = KeyframeExtractor.buildBatchExtractArguments(
+            inputPath: "/video.mp4",
+            segment: segment,
+            timestamps: timestamps,
+            outputPattern: "/out/%02d.jpg",
+            config: .default
+        )
+
+        guard let vfIndex = args.firstIndex(of: "-vf"),
+              vfIndex + 1 < args.count else {
+            XCTFail("应包含 -vf 参数")
+            return
+        }
+        let filter = args[vfIndex + 1]
+
+        // 验证 0.05s 容差存在
+        XCTAssertTrue(filter.contains("0.05"), "select 表达式应包含 0.05s 容差")
+        // 验证使用相对时间戳: 7.5-5.0=2.5, 12.5-5.0=7.5
+        XCTAssertTrue(filter.contains("2.500"), "应包含相对时间戳 2.500")
+        XCTAssertTrue(filter.contains("7.500"), "应包含相对时间戳 7.500")
+    }
+
+    func testBatchExtractHasCorrectStructure() {
+        let segment = SceneSegment(startTime: 30.0, endTime: 60.0)
+        let timestamps = [35.0, 45.0, 55.0]
+        let args = KeyframeExtractor.buildBatchExtractArguments(
+            inputPath: "/video.mp4",
+            segment: segment,
+            timestamps: timestamps,
+            outputPattern: "/out/%02d.jpg",
+            config: .default
+        )
+
+        // -ss 在 -i 之前
+        let ssIndex = args.firstIndex(of: "-ss")!
+        let iIndex = args.firstIndex(of: "-i")!
+        XCTAssertTrue(ssIndex < iIndex, "-ss 应在 -i 之前")
+
+        // -to 在 -i 之前
+        let toIndex = args.firstIndex(of: "-to")!
+        XCTAssertTrue(toIndex < iIndex, "-to 应在 -i 之前")
+
+        // 包含 -fps_mode vfr
+        XCTAssertTrue(args.contains("-fps_mode"))
+        XCTAssertTrue(args.contains("vfr"))
+
+        // -ss 值应为 segment.startTime
+        XCTAssertEqual(args[ssIndex + 1], "30.000")
+        // -to 值应为 segment.endTime
+        XCTAssertEqual(args[toIndex + 1], "60.000")
+    }
+
     // MARK: - Config
 
     func testDefaultConfig() {

@@ -2,6 +2,7 @@ import ArgumentParser
 import Foundation
 import FindItCore
 import GRDB
+import WhisperKit
 
 @main
 struct FindItCLI: AsyncParsableCommand {
@@ -21,6 +22,7 @@ struct FindItCLI: AsyncParsableCommand {
             ExtractKeyframesCommand.self,
             TranscribeCommand.self,
             AnalyzeCommand.self,
+            IndexCommand.self,
         ]
     )
 }
@@ -662,5 +664,184 @@ struct AnalyzeCommand: AsyncParsableCommand {
         }
 
         return groups.sorted { $0.key < $1.key }
+    }
+}
+
+// MARK: - index
+
+struct IndexCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "index",
+        abstract: "索引视频文件（完整管线: 场景检测 → 关键帧 → STT → 视觉分析 → 入库）"
+    )
+
+    @Option(name: .long, help: "素材文件夹路径")
+    var folder: String
+
+    @Option(name: .long, help: "视频文件路径 (单文件模式，省略则扫描整个文件夹)")
+    var input: String?
+
+    @Option(name: .long, help: "Gemini API Key (覆盖 ~/.config/findit/gemini-api-key.txt)")
+    var apiKey: String?
+
+    @Option(name: .long, help: "WhisperKit 模型名称")
+    var model: String = "large-v3"
+
+    @Flag(name: .long, help: "跳过语音转录")
+    var skipStt: Bool = false
+
+    @Flag(name: .long, help: "跳过视觉分析")
+    var skipVision: Bool = false
+
+    @Flag(name: .long, help: "强制重新索引已完成的视频")
+    var force: Bool = false
+
+    func run() async throws {
+        let startTime = CFAbsoluteTimeGetCurrent()
+        let folderPath = (folder as NSString).standardizingPath
+
+        // 1. 打开数据库
+        let folderDB = try DatabaseManager.openFolderDatabase(at: folderPath)
+        let globalDB = try DatabaseManager.openGlobalDatabase()
+
+        // 确保文件夹已注册
+        try await folderDB.write { db in
+            if try WatchedFolder.fetchByPath(db, path: folderPath) == nil {
+                var wf = WatchedFolder(folderPath: folderPath)
+                try wf.insert(db)
+            }
+        }
+
+        // 2. 确定待处理的视频列表
+        let videoPaths: [String]
+        if let inputFile = input {
+            let path = (inputFile as NSString).standardizingPath
+            guard FileManager.default.fileExists(atPath: path) else {
+                print("错误: 文件不存在: \(path)")
+                throw ExitCode.failure
+            }
+            videoPaths = [path]
+        } else {
+            print("扫描文件夹: \(folderPath)")
+            videoPaths = try FileScanner.scanVideoFiles(in: folderPath)
+            print("发现 \(videoPaths.count) 个视频文件")
+        }
+
+        guard !videoPaths.isEmpty else {
+            print("无视频文件需要处理")
+            return
+        }
+
+        // 3. 过滤已完成的视频（除非 --force）
+        let filteredPaths: [String]
+        if force {
+            filteredPaths = videoPaths
+        } else {
+            var pending: [String] = []
+            for path in videoPaths {
+                let existing = try await folderDB.read { db in
+                    try Video.fetchByPath(db, path: path)
+                }
+                if existing?.indexStatus != "completed" {
+                    pending.append(path)
+                }
+            }
+            filteredPaths = pending
+            if filteredPaths.count < videoPaths.count {
+                print("跳过 \(videoPaths.count - filteredPaths.count) 个已完成的视频")
+            }
+        }
+
+        guard !filteredPaths.isEmpty else {
+            print("所有视频已索引完成")
+            return
+        }
+
+        // 4. 初始化 WhisperKit（如需 STT）
+        var whisperKit: WhisperKit? = nil
+        if !skipStt {
+            print("初始化 WhisperKit (模型: \(model))...")
+            let sttConfig = STTProcessor.Config(modelName: model)
+            whisperKit = try await STTProcessor.initializeWhisperKit(config: sttConfig)
+            print("✓ WhisperKit 就绪")
+        }
+
+        // 5. 解析 API Key（如需 Vision）
+        var resolvedApiKey: String? = nil
+        if !skipVision {
+            do {
+                resolvedApiKey = try VisionAnalyzer.resolveAPIKey(override: apiKey)
+                print("✓ Gemini API Key 已就绪")
+            } catch {
+                print("警告: \(error.localizedDescription)")
+                print("  将跳过视觉分析 (可用 --api-key 或 ~/.config/findit/gemini-api-key.txt)")
+            }
+        }
+
+        // 6. 创建限速器
+        let rateLimiter: GeminiRateLimiter? = resolvedApiKey != nil ? GeminiRateLimiter() : nil
+
+        // 7. 逐视频处理
+        var totalClips = 0
+        var totalAnalyzed = 0
+        var processedCount = 0
+
+        print()
+        for (i, videoPath) in filteredPaths.enumerated() {
+            let fileName = (videoPath as NSString).lastPathComponent
+            print("[\(i + 1)/\(filteredPaths.count)] 处理: \(fileName)")
+
+            // 如果 --force，先重置已完成的视频状态
+            if force {
+                let existing = try await folderDB.read { db in
+                    try Video.fetchByPath(db, path: videoPath)
+                }
+                if let video = existing, video.indexStatus == "completed",
+                   let vid = video.videoId {
+                    try await folderDB.write { db in
+                        try db.execute(
+                            sql: "UPDATE videos SET index_status = 'pending', index_error = NULL, last_processed_clip = NULL WHERE video_id = ?",
+                            arguments: [vid]
+                        )
+                    }
+                }
+            }
+
+            do {
+                let result = try await PipelineManager.processVideo(
+                    videoPath: videoPath,
+                    folderPath: folderPath,
+                    folderDB: folderDB,
+                    globalDB: globalDB,
+                    apiKey: resolvedApiKey,
+                    rateLimiter: rateLimiter,
+                    whisperKit: whisperKit,
+                    onProgress: { msg in print("  \(msg)") }
+                )
+
+                totalClips += result.clipsCreated
+                totalAnalyzed += result.clipsAnalyzed
+                processedCount += 1
+
+                if let srt = result.srtPath {
+                    print("  ✓ SRT: \(srt)")
+                }
+                if let sync = result.syncResult {
+                    print("  ✓ 同步: \(sync.syncedVideos) 视频, \(sync.syncedClips) 片段")
+                }
+
+            } catch {
+                print("  ✗ 失败: \(error.localizedDescription)")
+            }
+            print()
+        }
+
+        // 8. 汇总
+        let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+        let minutes = Int(elapsed) / 60
+        let seconds = Int(elapsed) % 60
+        let timeStr = minutes > 0 ? "\(minutes)分\(seconds)秒" : "\(seconds)秒"
+
+        print("完成! 处理了 \(processedCount) 个视频, \(totalClips) 个片段, 分析了 \(totalAnalyzed) 个场景, 耗时 \(timeStr)")
     }
 }

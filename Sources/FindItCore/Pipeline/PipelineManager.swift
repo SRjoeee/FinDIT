@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WhisperKit
 
 /// 全流程处理管线管理器
 ///
@@ -117,5 +118,488 @@ public enum PipelineManager {
     /// 返回该场景的第一帧路径（如有）。
     static func selectThumbnail(from frames: [String]) -> String? {
         frames.first
+    }
+
+    // MARK: - 全流程编排
+
+    /// 处理单个视频的完整管线
+    ///
+    /// 流程:
+    /// 1. 注册视频到数据库
+    /// 2. 场景检测 + 关键帧提取（FFmpeg）
+    /// 3. 创建 Clip 骨架记录
+    /// 4. 音频提取 + STT 转录（WhisperKit）
+    /// 5. 逐 clip 视觉分析（Gemini Flash）
+    /// 6. 同步到全局搜索索引
+    ///
+    /// - Parameters:
+    ///   - videoPath: 视频文件绝对路径
+    ///   - folderPath: 素材文件夹路径（数据库所在位置）
+    ///   - folderDB: 文件夹级数据库连接
+    ///   - globalDB: 全局搜索索引连接（nil = 不同步）
+    ///   - apiKey: Gemini API Key（nil = 跳过视觉分析）
+    ///   - rateLimiter: Gemini 限速器（nil = 不限速）
+    ///   - whisperKit: WhisperKit 实例（nil = 跳过 STT）
+    ///   - ffmpegConfig: FFmpeg 配置
+    ///   - onProgress: 进度回调
+    /// - Returns: 处理结果
+    public static func processVideo(
+        videoPath: String,
+        folderPath: String,
+        folderDB: DatabaseWriter,
+        globalDB: DatabaseWriter? = nil,
+        apiKey: String? = nil,
+        rateLimiter: GeminiRateLimiter? = nil,
+        whisperKit: WhisperKit? = nil,
+        ffmpegConfig: FFmpegConfig = .default,
+        onProgress: ((String) -> Void)? = nil
+    ) async throws -> ProcessingResult {
+        let progress = onProgress ?? { _ in }
+
+        // 1. 注册视频
+        let (video, videoId) = try registerVideo(
+            videoPath: videoPath,
+            folderPath: folderPath,
+            folderDB: folderDB
+        )
+        let currentStage = Stage(rawValue: video.indexStatus) ?? .pending
+
+        // 已完成的视频跳过
+        if currentStage == .completed {
+            progress("已完成，跳过")
+            return ProcessingResult(
+                videoId: videoId, clipsCreated: 0, clipsAnalyzed: 0,
+                srtPath: video.srtPath, syncResult: nil
+            )
+        }
+
+        var srtPath: String? = video.srtPath
+        var clipsCreated = 0
+        var clipsAnalyzed = 0
+        var sceneSegments: [SceneSegment] = []
+        var frameGroups: [[String]] = []
+
+        // 2. FFmpeg 准备阶段（场景检测 + 关键帧 + 音频提取）
+        //    对 pending 或 failed 状态的视频需要执行
+        if currentStage == .pending || currentStage == .failed {
+            do {
+                // 获取视频时长
+                progress("获取视频信息...")
+                let duration = try FFmpegBridge.videoDuration(
+                    inputPath: videoPath,
+                    config: ffmpegConfig
+                )
+                try updateVideoDuration(folderDB: folderDB, videoId: videoId, duration: duration)
+
+                // 场景检测
+                progress("场景检测中...")
+                sceneSegments = try SceneDetector.detectScenes(
+                    inputPath: videoPath,
+                    videoDuration: duration,
+                    ffmpegConfig: ffmpegConfig
+                )
+                progress("检测到 \(sceneSegments.count) 个场景")
+
+                guard !sceneSegments.isEmpty else {
+                    progress("视频无有效场景，标记为完成")
+                    try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .completed)
+                    return ProcessingResult(
+                        videoId: videoId, clipsCreated: 0, clipsAnalyzed: 0,
+                        srtPath: nil, syncResult: nil
+                    )
+                }
+
+                // 关键帧提取
+                progress("提取关键帧中...")
+                let thumbDir = thumbnailDirectory(folderPath: folderPath, videoId: videoId)
+                let frames = try KeyframeExtractor.extractKeyframes(
+                    inputPath: videoPath,
+                    segments: sceneSegments,
+                    outputDirectory: thumbDir,
+                    ffmpegConfig: ffmpegConfig
+                )
+                progress("提取了 \(frames.count) 帧")
+                frameGroups = groupFramesByScene(frames: frames, sceneCount: sceneSegments.count)
+
+                // 删除旧 clips（重索引场景）
+                try await folderDB.write { db in
+                    try db.execute(
+                        sql: "DELETE FROM clips WHERE video_id = ?",
+                        arguments: [videoId]
+                    )
+                }
+
+                // 创建 Clip 骨架记录
+                clipsCreated = try createClipRecords(
+                    videoId: videoId,
+                    segments: sceneSegments,
+                    frameGroups: frameGroups,
+                    folderDB: folderDB
+                )
+                progress("创建了 \(clipsCreated) 个片段记录")
+
+            } catch {
+                try? updateVideoStatus(
+                    folderDB: folderDB, videoId: videoId,
+                    status: .failed, error: error.localizedDescription
+                )
+                throw error
+            }
+        } else {
+            // 恢复模式：从数据库加载已有的 clips
+            let existingClips = try await folderDB.read { db in
+                try Clip.fetchAll(forVideo: videoId, in: db)
+            }
+            clipsCreated = existingClips.count
+            sceneSegments = existingClips.map {
+                SceneSegment(startTime: $0.startTime, endTime: $0.endTime)
+            }
+        }
+
+        // 3. STT 阶段
+        if whisperKit != nil && currentStage.isBefore(.sttDone) {
+            do {
+                try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .sttRunning)
+
+                // 提取音频
+                progress("提取音频中...")
+                let tmpDir = tmpDirectory(folderPath: folderPath)
+                try FileManager.default.createDirectory(
+                    atPath: tmpDir, withIntermediateDirectories: true
+                )
+                let audioPath = (tmpDir as NSString).appendingPathComponent("video_\(videoId).wav")
+                try AudioExtractor.extractAudio(
+                    inputPath: videoPath,
+                    outputPath: audioPath,
+                    config: ffmpegConfig
+                )
+
+                // 语言检测
+                progress("检测语言中...")
+                let langResult = try await STTProcessor.detectLanguage(
+                    audioPath: audioPath,
+                    scenes: sceneSegments,
+                    whisperKit: whisperKit!
+                )
+                progress("检测到语言: \(langResult.language)")
+
+                // 转录
+                progress("语音转录中...")
+                var sttConfig = STTProcessor.Config.default
+                sttConfig.language = langResult.language
+
+                let (segments, generatedSrtPath) = try await STTProcessor.transcribeAndSaveSRT(
+                    audioPath: audioPath,
+                    videoPath: videoPath,
+                    whisperKit: whisperKit!,
+                    config: sttConfig
+                )
+                srtPath = generatedSrtPath
+                progress("转录完成: \(segments.count) 条字幕")
+
+                // 映射转录文本到 clips
+                let mappedTexts = STTProcessor.mapTranscriptToClips(
+                    transcriptSegments: segments,
+                    sceneSegments: sceneSegments
+                )
+                try updateClipsTranscript(
+                    videoId: videoId,
+                    texts: mappedTexts,
+                    folderDB: folderDB
+                )
+
+                // 更新 SRT 路径
+                let currentSrtPath = srtPath
+                try await folderDB.write { db in
+                    try db.execute(
+                        sql: "UPDATE videos SET srt_path = ? WHERE video_id = ?",
+                        arguments: [currentSrtPath, videoId]
+                    )
+                }
+
+                // 清理临时音频文件
+                try? FileManager.default.removeItem(atPath: audioPath)
+
+                try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .sttDone)
+
+            } catch {
+                // STT 失败不致命，记录错误继续
+                progress("语音转录失败: \(error.localizedDescription)")
+                // 仍然推进到 sttDone 以允许 vision 继续
+                try? updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .sttDone)
+            }
+        } else if whisperKit == nil && currentStage.isBefore(.sttDone) {
+            // 跳过 STT
+            try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .sttDone)
+        }
+
+        // 4. Vision 分析阶段
+        if apiKey != nil && currentStage.isBefore(.completed) {
+            try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .visionRunning)
+
+            let clips = try await folderDB.read { db in
+                try Clip.fetchAll(forVideo: videoId, in: db)
+            }
+            let lastProcessed = Int64(video.lastProcessedClip ?? 0)
+
+            // 如果没有 frameGroups（恢复模式），重新加载缩略图
+            if frameGroups.isEmpty {
+                let thumbDir = thumbnailDirectory(folderPath: folderPath, videoId: videoId)
+                frameGroups = loadExistingThumbnails(
+                    clips: clips,
+                    thumbnailDir: thumbDir
+                )
+            }
+
+            for (index, clip) in clips.enumerated() {
+                guard let clipId = clip.clipId, clipId > lastProcessed else { continue }
+
+                var paths = index < frameGroups.count ? frameGroups[index] : [String]()
+                if paths.isEmpty,
+                   let thumb = clip.thumbnailPath,
+                   FileManager.default.fileExists(atPath: thumb) {
+                    paths = [thumb]
+                }
+                guard !paths.isEmpty else { continue }
+
+                do {
+                    if let limiter = rateLimiter {
+                        try await limiter.waitForPermission()
+                    }
+
+                    let result = try await VisionAnalyzer.analyzeScene(
+                        imagePaths: paths,
+                        apiKey: apiKey!
+                    )
+
+                    if let limiter = rateLimiter {
+                        await limiter.reportSuccess()
+                    }
+
+                    try updateClipVision(
+                        clipId: clipId,
+                        result: result,
+                        folderDB: folderDB
+                    )
+                    clipsAnalyzed += 1
+                    progress("场景 \(index + 1)/\(clips.count) 分析完成")
+
+                } catch {
+                    if let limiter = rateLimiter,
+                       let visionErr = error as? VisionAnalyzerError,
+                       case .rateLimitExceeded = visionErr {
+                        await limiter.reportRateLimit()
+                    }
+                    progress("场景 \(index + 1) 分析失败: \(error.localizedDescription)")
+                    // 继续处理下一个 clip
+                }
+
+                // 更新断点
+                try await folderDB.write { db in
+                    try db.execute(
+                        sql: "UPDATE videos SET last_processed_clip = ? WHERE video_id = ?",
+                        arguments: [clipId, videoId]
+                    )
+                }
+            }
+
+            try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .completed)
+        } else if apiKey == nil && currentStage.isBefore(.completed) {
+            // 跳过 vision，直接标记完成
+            try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .completed)
+        }
+
+        // 5. 同步到全局索引
+        var syncResult: SyncEngine.SyncResult?
+        if let globalDB = globalDB {
+            progress("同步到全局索引...")
+            syncResult = try SyncEngine.sync(
+                folderPath: folderPath,
+                folderDB: folderDB,
+                globalDB: globalDB
+            )
+            progress("同步完成: \(syncResult!.syncedVideos) 视频, \(syncResult!.syncedClips) 片段")
+        }
+
+        return ProcessingResult(
+            videoId: videoId,
+            clipsCreated: clipsCreated,
+            clipsAnalyzed: clipsAnalyzed,
+            srtPath: srtPath,
+            syncResult: syncResult
+        )
+    }
+
+    // MARK: - 内部辅助方法
+
+    /// 注册视频到文件夹库（已存在则返回现有记录）
+    static func registerVideo(
+        videoPath: String,
+        folderPath: String,
+        folderDB: DatabaseWriter
+    ) throws -> (Video, Int64) {
+        // 查找已有记录
+        if let existing = try folderDB.read({ db in
+            try Video.fetchByPath(db, path: videoPath)
+        }) {
+            guard let id = existing.videoId else {
+                throw StorageError.openFailed(underlying: NSError(
+                    domain: "PipelineManager", code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "视频记录无 ID"]
+                ))
+            }
+            return (existing, id)
+        }
+
+        // 查找文件夹的 folderId
+        let folderId = try folderDB.read { db in
+            try Int64.fetchOne(db, sql: """
+                SELECT folder_id FROM watched_folders WHERE folder_path = ?
+                """, arguments: [folderPath])
+        }
+
+        // 获取文件信息
+        let fileName = (videoPath as NSString).lastPathComponent
+        let attrs = try? FileManager.default.attributesOfItem(atPath: videoPath)
+        let fileSize = attrs?[.size] as? Int64
+
+        // 插入新记录
+        var video = Video(
+            folderId: folderId,
+            filePath: videoPath,
+            fileName: fileName,
+            fileSize: fileSize,
+            createdAt: Clip.sqliteDatetime()
+        )
+        try folderDB.write { db in
+            try video.insert(db)
+        }
+
+        guard let videoId = video.videoId else {
+            throw StorageError.openFailed(underlying: NSError(
+                domain: "PipelineManager", code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "视频插入后无 ID"]
+            ))
+        }
+
+        return (video, videoId)
+    }
+
+    /// 更新视频状态
+    static func updateVideoStatus(
+        folderDB: DatabaseWriter,
+        videoId: Int64,
+        status: Stage,
+        error: String? = nil
+    ) throws {
+        try folderDB.write { db in
+            try db.execute(sql: """
+                UPDATE videos SET index_status = ?, index_error = ?,
+                    indexed_at = CASE WHEN ? = 'completed' THEN datetime('now') ELSE indexed_at END
+                WHERE video_id = ?
+                """, arguments: [status.rawValue, error, status.rawValue, videoId])
+        }
+    }
+
+    /// 更新视频时长
+    static func updateVideoDuration(
+        folderDB: DatabaseWriter,
+        videoId: Int64,
+        duration: Double
+    ) throws {
+        try folderDB.write { db in
+            try db.execute(
+                sql: "UPDATE videos SET duration = ? WHERE video_id = ?",
+                arguments: [duration, videoId]
+            )
+        }
+    }
+
+    /// 创建 Clip 骨架记录（含缩略图路径）
+    @discardableResult
+    static func createClipRecords(
+        videoId: Int64,
+        segments: [SceneSegment],
+        frameGroups: [[String]],
+        folderDB: DatabaseWriter
+    ) throws -> Int {
+        try folderDB.write { db in
+            for (index, segment) in segments.enumerated() {
+                let thumbnail = index < frameGroups.count
+                    ? selectThumbnail(from: frameGroups[index])
+                    : nil
+
+                var clip = Clip(
+                    videoId: videoId,
+                    startTime: segment.startTime,
+                    endTime: segment.endTime,
+                    thumbnailPath: thumbnail
+                )
+                try clip.insert(db)
+            }
+            return segments.count
+        }
+    }
+
+    /// 更新 clips 的 transcript 字段
+    static func updateClipsTranscript(
+        videoId: Int64,
+        texts: [String?],
+        folderDB: DatabaseWriter
+    ) throws {
+        try folderDB.write { db in
+            let clips = try Clip.fetchAll(forVideo: videoId, in: db)
+            for (index, clip) in clips.enumerated() {
+                guard index < texts.count, let text = texts[index], !text.isEmpty else { continue }
+                guard let clipId = clip.clipId else { continue }
+                try db.execute(
+                    sql: "UPDATE clips SET transcript = ? WHERE clip_id = ?",
+                    arguments: [text, clipId]
+                )
+            }
+        }
+    }
+
+    /// 更新 clip 的视觉分析结果
+    static func updateClipVision(
+        clipId: Int64,
+        result: AnalysisResult,
+        folderDB: DatabaseWriter
+    ) throws {
+        try folderDB.write { db in
+            try db.execute(sql: """
+                UPDATE clips SET
+                    scene = ?, subjects = ?, actions = ?, objects = ?,
+                    mood = ?, shot_type = ?, lighting = ?, colors = ?,
+                    description = ?, tags = ?
+                WHERE clip_id = ?
+                """, arguments: [
+                    result.scene,
+                    encodeJSONArray(result.subjects),
+                    encodeJSONArray(result.actions),
+                    encodeJSONArray(result.objects),
+                    result.mood,
+                    result.shotType,
+                    result.lighting,
+                    result.colors,
+                    result.description,
+                    encodeJSONArray(result.tags),
+                    clipId
+                ])
+        }
+    }
+
+    /// 从已有缩略图目录加载帧路径（恢复模式用）
+    static func loadExistingThumbnails(
+        clips: [Clip],
+        thumbnailDir: String
+    ) -> [[String]] {
+        clips.map { clip in
+            if let path = clip.thumbnailPath,
+               FileManager.default.fileExists(atPath: path) {
+                return [path]
+            }
+            return []
+        }
     }
 }

@@ -24,37 +24,36 @@
 
 ---
 
-## Stage 1: 存储层
+## Stage 1: 存储层 ✓
 
-**Tag: `v0.1-storage`**
+**Tag: `v0.1-storage`** — 已完成
 
 ### 1a: 文件夹级 SQLite
-- [ ] GRDB DatabaseManager — 连接管理 + WAL 模式
-- [ ] DatabaseMigrator 版本化迁移系统
-- [ ] 文件夹库 Schema: watched_folders, videos, clips 三张核心表
-- [ ] CRUD 操作封装（GRDB Record 类型）
+- [x] GRDB DatabaseManager — 连接管理 + WAL 模式
+- [x] DatabaseMigrator 版本化迁移系统
+- [x] 文件夹库 Schema: watched_folders, videos, clips 三张核心表
+- [x] CRUD 操作封装（GRDB Record 类型）
 
 ### 1b: 全局搜索索引
-- [ ] 全局库 Schema: clips 镜像, videos 镜像, clips_fts, search_history
-- [ ] FTS5 虚拟表创建（tags + description + transcript）
-- [ ] FTS5 搜索：关键词 / 前缀匹配 / 引号精确 / 排除词
+- [x] 全局库 Schema: clips 镜像, videos 镜像, clips_fts, search_history
+- [x] FTS5 虚拟表创建（tags + description + transcript）
+- [x] FTS5 搜索：关键词 / 前缀匹配 / 引号精确 / 排除词
 
 ### 1c: 同步引擎
-- [ ] SyncEngine: 文件夹库 → 全局搜索索引同步
-- [ ] 增量同步（基于时间戳 / rowid）
-- [ ] 全量重建（文件夹新增/删除时）
+- [x] SyncEngine: 文件夹库 → 全局搜索索引同步
+- [x] 增量同步（基于 rowid + sync_meta 追踪）
+- [x] removeFolderData: 文件夹删除时清理全局库
 
 ### 1d: CLI 验证
-- [ ] CLI 命令: `db init` — 初始化文件夹库 + 全局库
-- [ ] CLI 命令: `insert-mock` — 插入模拟数据
-- [ ] CLI 命令: `search <query>` — FTS5 搜索
-- [ ] CLI 命令: `sync` — 手动触发同步
+- [x] CLI 命令: `db-init` — 初始化文件夹库 + 全局库
+- [x] CLI 命令: `insert-mock` — 插入模拟数据
+- [x] CLI 命令: `search <query>` — FTS5 搜索
+- [x] CLI 命令: `sync` — 手动触发同步
 
-**验收标准：**
-- CLI 插入模拟数据后搜索返回正确结果
-- 精确搜索、排除搜索均工作正常
+**验收标准：** 全部通过 ✓
+- 75 个单元测试全部通过
+- CLI 端到端验证：insert-mock → sync → search (中英文/OR/NOT)
 - 文件夹库数据正确同步到全局搜索索引
-- 所有数据库测试通过
 
 ---
 

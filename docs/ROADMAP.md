@@ -231,6 +231,42 @@ E2E 测试暴露的 4 个管线 bug 修复：
 
 ---
 
+## Stage 3.7: VisionField 重构 ✓
+
+**已完成** — 405 tests
+
+引入 `VisionField` 枚举作为 9 个视觉分析字段的单一事实来源，将所有消费方改为数据驱动遍历。
+
+### VisionField 枚举
+
+- 9 个 case: scene, subjects, actions, objects, mood, shotType, lighting, colors, description
+- 计算属性: columnName, isArray, includeInTags, embeddingGroup, mergeStrategy, displayLabel
+- 静态方法: buildResponseSchema(), buildVLMPrompt(), sqlSetClause(), sqlColumnNames()
+- EmbeddingGroup 分组: primary / detail / meta
+
+### 消费方迁移
+
+- VisionAnalyzer.buildResponseSchema() → 委托 VisionField
+- LocalVLMAnalyzer.analysisPrompt → VisionField.buildVLMPrompt()
+- EmbeddingUtils.composeClipText() → EmbeddingGroup 驱动遍历
+- PipelineManager.updateClipVision() → 动态 SQL
+- SyncEngine.sync() → 动态 vision 列
+- LocalVisionAnalyzer.mergeResults() → 策略驱动合并
+- CLI AnalyzeCommand → VisionField 遍历打印
+
+### 效果
+
+- 新增字段从 ~13 处减少到 6 处（其中 2 处由编译器强制提示）
+- 零性能退化: 5 条视频测试总耗时 277s (Stage 3.6: 306s, -9%)
+- 17 个新增测试 (388 → 405)
+
+**验收标准：** 全部通过 ✓
+
+- 405 个测试全部通过
+- E2E 5 视频管线性能持平或改善
+
+---
+
 ## Stage 4: macOS App
 
 **Tag: `v0.4-app**`

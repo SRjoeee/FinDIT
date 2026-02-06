@@ -13,6 +13,30 @@
 - 缩略图网格视图
 - BGE-M3 ONNX 本地嵌入 (可选增强)
 
+## 已完成（Stage 3.7: VisionField 重构）
+
+### VisionField 枚举 — 单一事实来源
+
+- 创建 `VisionField` enum (9 cases + 计算属性 + 静态方法)
+- AnalysisResult 扩展: `stringValue(for:)`, `arrayValue(for:)`, `composeTags(from:)`
+- Clip 扩展: `visionValue(for:)`
+- 17 个新增测试
+
+### 消费方迁移（7 个文件）
+
+- VisionAnalyzer.buildResponseSchema → 委托 VisionField
+- LocalVLMAnalyzer.analysisPrompt → VisionField.buildVLMPrompt()
+- EmbeddingUtils.composeClipText → EmbeddingGroup 驱动
+- PipelineManager.updateClipVision → 动态 SQL
+- SyncEngine.sync → 动态 vision 列
+- LocalVisionAnalyzer.mergeResults → 策略驱动
+- CLI AnalyzeCommand → VisionField 遍历
+
+### 验收
+
+- 405 个测试全部通过 (388 + 17 新增)
+- E2E 5 视频性能: 277s (Stage 3.6: 306s, -9%)
+
 ## 已完成（Stage 3.6: 管线修复）
 
 ### Fix 1: 批量关键帧提取时间戳 bug

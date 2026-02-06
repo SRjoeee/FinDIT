@@ -829,6 +829,9 @@ struct IndexCommand: AsyncParsableCommand {
         }
 
         // 4. 初始化 WhisperKit（如需 STT）
+        // 注意: 即使 macOS 26+ 有 SpeechAnalyzer 可做转录，
+        // WhisperKit 仍需初始化用于语言检测（音频采样级别，比 NLLanguageRecognizer 准确）。
+        // 未来 App 中 WhisperKit 只初始化一次，CLI 每次运行的开销不可避免。
         var whisperKit: WhisperKit? = nil
         if !skipStt {
             do {
@@ -841,7 +844,7 @@ struct IndexCommand: AsyncParsableCommand {
                 if #available(macOS 26.0, *) {
                     let saAvailable = await SpeechAnalyzerBridge.isAvailable()
                     if saAvailable {
-                        print("  将使用 Apple SpeechAnalyzer 替代")
+                        print("  将使用 Apple SpeechAnalyzer 替代（语言检测精度可能降低）")
                     } else {
                         print("  将跳过语音转录")
                     }

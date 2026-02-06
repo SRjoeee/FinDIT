@@ -6,6 +6,35 @@ _无_
 
 ## 待办
 
+### 2c: Gemini Flash 视觉分析
+- [ ] REST API 调用封装（URLSession）
+- [ ] 多帧批量发送 + 结构化 JSON 输出
+- [ ] API Key 管理
+- [ ] 速率限制 + 重试逻辑
+- [ ] Tags 提取
+- [ ] CLI `analyze` 子命令
+
+## 已完成（Stage 2b: WhisperKit STT）
+
+### STTProcessor 语音转文字
+- [x] TranscriptSegment 内部类型 + STTError 错误枚举
+- [x] STTProcessor.Config (modelName, language, wordTimestamps)
+- [x] SRT 时间戳格式化/解析 (formatSRTTimestamp / parseSRTTimestamp)
+- [x] SRT 生成/解析 (generateSRT / parseSRT) — roundtrip 验证
+- [x] SRT 路径解析 (resolveSRTPath) — ADR-012 降级策略
+- [x] SRT 文件写入 (writeSRT) — 优先视频目录，降级 App Support
+- [x] 转录文本映射 (mapTranscriptToClips) — 时间重叠分配到场景片段
+- [x] WhisperKit 初始化 (initializeWhisperKit) — 模型加载
+- [x] 音频转录 (transcribe) — WhisperKit 异步调用
+- [x] 完整流水线 (transcribeAndSaveSRT) — 转录 → SRT → 保存
+- [x] convertSegments — WhisperKit 类型 → 内部类型转换
+- [x] 33 个单元测试（时间戳 11、SRT 7、路径 4、映射 5、Config 2、hash 3、roundtrip 1）
+- [x] CLI `transcribe` 子命令 (AsyncParsableCommand)
+- [x] 167 个测试全部通过
+- [x] Tag: `v0.2b-stt`
+
+## 已完成（Stage 2a: FFmpeg 集成）
+
 ### 1a: 文件夹级 SQLite
 - [x] 创建 Migrations.swift — DatabaseMigrator 版本化迁移
 - [x] 创建 Models.swift — WatchedFolder, Video, Clip Record 类型

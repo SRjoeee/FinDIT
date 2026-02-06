@@ -59,20 +59,27 @@
 
 ## Stage 2: 处理管线
 
-**Tag: `v0.2-pipeline`**
+### 2a: FFmpeg 集成 ✓
 
-### 2a: FFmpeg 集成
-- [ ] FFmpegBridge：子进程调用封装
-- [ ] 音频提取：视频 → 16kHz mono WAV
-- [ ] 场景检测：`select='gt(scene,0.3)'` + 时间戳解析
-- [ ] 关键帧抽取：按场景切点 + 长镜头均分补帧
-- [ ] 图片压缩：短边 512px, JPEG quality 80
+**Tag: `v0.2a-ffmpeg`** — 已完成
 
-### 2b: WhisperKit STT
-- [ ] WhisperKit 初始化 + 模型下载管理
-- [ ] 音频转录（word-level timestamps）
-- [ ] SRT 文件生成（优先视频同目录，降级到 App 目录）
-- [ ] 台词文本按片段时间范围切分入库
+- [x] FFmpegBridge：子进程调用封装 + 超时保护
+- [x] 音频提取：视频 → 16kHz mono WAV
+- [x] 场景检测：`select='gt(scene,T)'` + showinfo 解析 + merge/split
+- [x] 关键帧抽取：按场景切点 + 动态帧数 + 512px 短边 JPEG
+- [x] 134 个测试，CLI 4 个子命令
+
+### 2b: WhisperKit STT ✓
+
+**Tag: `v0.2b-stt`** — 已完成
+
+- [x] WhisperKit v0.15.0 依赖集成
+- [x] STTProcessor：SRT 生成/解析、路径解析、转录映射（33 个纯函数测试）
+- [x] WhisperKit 初始化 + 音频转录（async）
+- [x] SRT 文件生成（ADR-012 降级策略）
+- [x] 转录文本按时间范围映射到场景片段
+- [x] CLI `transcribe` 子命令（AsyncParsableCommand）
+- [x] 167 个测试全部通过
 
 ### 2c: Gemini Flash 视觉分析
 - [ ] REST API 调用封装（URLSession）

@@ -25,6 +25,8 @@ let package = Package(
         // --- 以下依赖在后续阶段启用 ---
         // Stage 2: WhisperKit STT
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0"),
+        // Stage 3.5: MLX Swift for 本地 VLM 推理
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm/", .upToNextMinor(from: "2.30.3")),
         // Stage 3: ONNX Runtime for BGE-M3 向量嵌入
         // .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager.git", from: "1.20.0"),
     ],
@@ -34,6 +36,8 @@ let package = Package(
             dependencies: [
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "WhisperKit", package: "WhisperKit"),
+                .product(name: "MLXVLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
             ]
         ),
         .executableTarget(

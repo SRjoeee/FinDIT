@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import WhisperKit
+import MLXLMCommon
 
 /// 全流程处理管线管理器
 ///
@@ -139,9 +140,10 @@ public enum PipelineManager {
     ///   - folderPath: 素材文件夹路径（数据库所在位置）
     ///   - folderDB: 文件夹级数据库连接
     ///   - globalDB: 全局搜索索引连接（nil = 不同步）
-    ///   - apiKey: Gemini API Key（nil = 跳过视觉分析）
+    ///   - apiKey: Gemini API Key（nil = 跳过 Gemini 视觉分析）
     ///   - rateLimiter: Gemini 限速器（nil = 不限速）
-    ///   - whisperKit: WhisperKit 实例（nil = 跳过 STT）
+    ///   - whisperKit: WhisperKit 实例（nil = 跳过 STT，macOS 26+ 仍可用 SpeechAnalyzer）
+    ///   - vlmContainer: 本地 VLM 模型容器（nil = 跳过本地 VLM）
     ///   - embeddingProvider: 向量嵌入提供者（nil = 跳过嵌入）
     ///   - ffmpegConfig: FFmpeg 配置
     ///   - onProgress: 进度回调
@@ -154,6 +156,7 @@ public enum PipelineManager {
         apiKey: String? = nil,
         rateLimiter: GeminiRateLimiter? = nil,
         whisperKit: WhisperKit? = nil,
+        vlmContainer: ModelContainer? = nil,
         embeddingProvider: EmbeddingProvider? = nil,
         ffmpegConfig: FFmpegConfig = .default,
         onProgress: ((String) -> Void)? = nil
@@ -382,7 +385,9 @@ public enum PipelineManager {
         }
 
         // 4. Vision 分析阶段
-        if apiKey != nil && currentStage.isBefore(.completed) {
+        //    策略: Gemini (apiKey) > LocalVLM (vlmContainer) > skip (LocalVisionAnalyzer 已在步骤 2f 填充)
+        let hasVisionEngine = apiKey != nil || vlmContainer != nil
+        if hasVisionEngine && currentStage.isBefore(.completed) {
             try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .visionRunning)
 
             let clips = try await folderDB.read { db in
@@ -399,6 +404,9 @@ public enum PipelineManager {
                 )
             }
 
+            let engineName = apiKey != nil ? "Gemini" : "LocalVLM"
+            progress("视觉分析中 [\(engineName)]...")
+
             for (index, clip) in clips.enumerated() {
                 guard let clipId = clip.clipId, clipId > lastProcessed else { continue }
 
@@ -411,17 +419,27 @@ public enum PipelineManager {
                 guard !paths.isEmpty else { continue }
 
                 do {
-                    if let limiter = rateLimiter {
-                        try await limiter.waitForPermission()
-                    }
-
-                    let result = try await VisionAnalyzer.analyzeScene(
-                        imagePaths: paths,
-                        apiKey: apiKey!
-                    )
-
-                    if let limiter = rateLimiter {
-                        await limiter.reportSuccess()
+                    let result: AnalysisResult
+                    if let key = apiKey {
+                        // Gemini 云端分析
+                        if let limiter = rateLimiter {
+                            try await limiter.waitForPermission()
+                        }
+                        result = try await VisionAnalyzer.analyzeScene(
+                            imagePaths: paths,
+                            apiKey: key
+                        )
+                        if let limiter = rateLimiter {
+                            await limiter.reportSuccess()
+                        }
+                    } else if let container = vlmContainer {
+                        // 本地 VLM 分析
+                        result = try await LocalVLMAnalyzer.analyzeClip(
+                            imagePaths: paths,
+                            container: container
+                        )
+                    } else {
+                        continue
                     }
 
                     try updateClipVision(
@@ -452,8 +470,8 @@ public enum PipelineManager {
             }
 
             try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .completed)
-        } else if apiKey == nil && currentStage.isBefore(.completed) {
-            // 跳过 vision，直接标记完成
+        } else if !hasVisionEngine && currentStage.isBefore(.completed) {
+            // 跳过 Gemini/VLM vision，直接标记完成（LocalVisionAnalyzer 已在步骤 2f 填充基础数据）
             try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .completed)
         }
 

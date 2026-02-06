@@ -182,8 +182,9 @@ public enum PipelineManager {
         var clipsAnalyzed = 0
         var sceneSegments: [SceneSegment] = []
         var frameGroups: [[String]] = []
+        var extractedAudioPath: String?
 
-        // 2. FFmpeg 准备阶段（场景检测 + 关键帧 + 音频提取）
+        // 2. FFmpeg 准备阶段（场景检测 + 关键帧 + 本地视觉分析）
         //    对 pending 或 failed 状态的视频需要执行
         if currentStage == .pending || currentStage == .failed {
             do {
@@ -195,7 +196,31 @@ public enum PipelineManager {
                 )
                 try updateVideoDuration(folderDB: folderDB, videoId: videoId, duration: duration)
 
-                // 场景检测
+                // 音频提取与场景检测并行（如果需要 STT）
+                let needsAudio = whisperKit != nil
+                let audioExtractionTask: Task<String, Error>?
+                if needsAudio {
+                    let tmpDir = tmpDirectory(folderPath: folderPath)
+                    try FileManager.default.createDirectory(
+                        atPath: tmpDir, withIntermediateDirectories: true
+                    )
+                    let audioOutputPath = (tmpDir as NSString)
+                        .appendingPathComponent("video_\(videoId).wav")
+                    let capturedPath = videoPath
+                    let capturedConfig = ffmpegConfig
+                    audioExtractionTask = Task {
+                        try AudioExtractor.extractAudio(
+                            inputPath: capturedPath,
+                            outputPath: audioOutputPath,
+                            config: capturedConfig
+                        )
+                        return audioOutputPath
+                    }
+                } else {
+                    audioExtractionTask = nil
+                }
+
+                // 场景检测（与音频提取并行）
                 progress("场景检测中...")
                 sceneSegments = try SceneDetector.detectScenes(
                     inputPath: videoPath,
@@ -242,6 +267,35 @@ public enum PipelineManager {
                 )
                 progress("创建了 \(clipsCreated) 个片段记录")
 
+                // 2f. 本地视觉分析 (Apple Vision 框架，零网络)
+                progress("本地视觉分析中...")
+                let freshClips = try await folderDB.read { db in
+                    try Clip.fetchAll(forVideo: videoId, in: db)
+                }
+                var localAnalyzed = 0
+                for (index, clip) in freshClips.enumerated() {
+                    guard let clipId = clip.clipId else { continue }
+                    let paths = index < frameGroups.count ? frameGroups[index] : []
+                    guard !paths.isEmpty else { continue }
+                    do {
+                        let localResult = try LocalVisionAnalyzer.analyzeClip(imagePaths: paths)
+                        try updateClipVision(clipId: clipId, result: localResult, folderDB: folderDB)
+                        localAnalyzed += 1
+                    } catch {
+                        progress("场景 \(index + 1) 本地分析失败: \(error.localizedDescription)")
+                    }
+                }
+                progress("本地分析完成: \(localAnalyzed)/\(freshClips.count)")
+
+                // 等待音频提取完成（如果并行启动了）
+                if let task = audioExtractionTask {
+                    do {
+                        extractedAudioPath = try await task.value
+                    } catch {
+                        progress("音频提取失败: \(error.localizedDescription)")
+                    }
+                }
+
             } catch {
                 try? updateVideoStatus(
                     folderDB: folderDB, videoId: videoId,
@@ -265,18 +319,23 @@ public enum PipelineManager {
             do {
                 try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .sttRunning)
 
-                // 提取音频
-                progress("提取音频中...")
-                let tmpDir = tmpDirectory(folderPath: folderPath)
-                try FileManager.default.createDirectory(
-                    atPath: tmpDir, withIntermediateDirectories: true
-                )
-                let audioPath = (tmpDir as NSString).appendingPathComponent("video_\(videoId).wav")
-                try AudioExtractor.extractAudio(
-                    inputPath: videoPath,
-                    outputPath: audioPath,
-                    config: ffmpegConfig
-                )
+                // 音频（使用 FFmpeg 阶段预提取的，或现场提取）
+                let audioPath: String
+                if let preExtracted = extractedAudioPath {
+                    audioPath = preExtracted
+                } else {
+                    progress("提取音频中...")
+                    let tmpDir = tmpDirectory(folderPath: folderPath)
+                    try FileManager.default.createDirectory(
+                        atPath: tmpDir, withIntermediateDirectories: true
+                    )
+                    audioPath = (tmpDir as NSString).appendingPathComponent("video_\(videoId).wav")
+                    try AudioExtractor.extractAudio(
+                        inputPath: videoPath,
+                        outputPath: audioPath,
+                        config: ffmpegConfig
+                    )
+                }
 
                 // 语言检测
                 progress("检测语言中...")
@@ -413,27 +472,49 @@ public enum PipelineManager {
             try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .completed)
         }
 
-        // 5. 向量嵌入（非致命，失败不影响 completed 状态）
+        // 5. 向量嵌入（批量，非致命）
         var clipsEmbedded = 0
         if let provider = embeddingProvider {
             progress("计算向量嵌入中...")
             let allClips = try await folderDB.read { db in
                 try Clip.fetchAll(forVideo: videoId, in: db)
             }
+
+            var clipTexts: [(clipId: Int64, text: String)] = []
             for clip in allClips {
                 guard let cid = clip.clipId else { continue }
                 let text = EmbeddingUtils.composeClipText(clip: clip)
                 guard !text.isEmpty else { continue }
+                clipTexts.append((cid, text))
+            }
+
+            if !clipTexts.isEmpty {
                 do {
-                    let vector = try await provider.embed(text: text)
-                    let data = EmbeddingUtils.serializeEmbedding(vector)
-                    try updateClipEmbedding(
-                        clipId: cid, data: data,
-                        model: provider.name, folderDB: folderDB
-                    )
-                    clipsEmbedded += 1
+                    let vectors = try await provider.embedBatch(texts: clipTexts.map(\.text))
+                    for (index, vector) in vectors.enumerated() where index < clipTexts.count {
+                        let data = EmbeddingUtils.serializeEmbedding(vector)
+                        try updateClipEmbedding(
+                            clipId: clipTexts[index].clipId, data: data,
+                            model: provider.name, folderDB: folderDB
+                        )
+                        clipsEmbedded += 1
+                    }
                 } catch {
-                    progress("clip \(cid) 嵌入失败: \(error.localizedDescription)")
+                    // 批量失败，降级为逐个嵌入
+                    progress("批量嵌入失败，逐个重试...")
+                    for (cid, text) in clipTexts {
+                        do {
+                            let vector = try await provider.embed(text: text)
+                            let data = EmbeddingUtils.serializeEmbedding(vector)
+                            try updateClipEmbedding(
+                                clipId: cid, data: data,
+                                model: provider.name, folderDB: folderDB
+                            )
+                            clipsEmbedded += 1
+                        } catch {
+                            progress("clip \(cid) 嵌入失败: \(error.localizedDescription)")
+                        }
+                    }
                 }
             }
             progress("嵌入完成: \(clipsEmbedded)/\(allClips.count)")

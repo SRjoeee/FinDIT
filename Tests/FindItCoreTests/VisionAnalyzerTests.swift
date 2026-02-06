@@ -11,10 +11,17 @@ final class VisionAnalyzerTests: XCTestCase {
     }
 
     func testResolveAPIKeyOverrideTooShort() {
-        // override 太短，不满足 validateAPIKey
-        XCTAssertThrowsError(try VisionAnalyzer.resolveAPIKey(override: "abc")) { error in
+        // override 太短 → 降级到配置文件/环境变量
+        // 如果都没有 → 抛 apiKeyNotFound
+        // 如果配置文件有 key → 返回配置文件的 key（不应返回 "abc"）
+        do {
+            let key = try VisionAnalyzer.resolveAPIKey(override: "abc")
+            // 降级到其他来源，返回的 key 不应是 "abc"
+            XCTAssertNotEqual(key, "abc")
+            XCTAssertTrue(VisionAnalyzer.validateAPIKey(key))
+        } catch {
             guard case VisionAnalyzerError.apiKeyNotFound = error else {
-                // 如果环境变量或文件有 key，可能不会抛错，跳过
+                XCTFail("应抛出 apiKeyNotFound，实际: \(error)")
                 return
             }
         }

@@ -274,4 +274,155 @@ final class STTProcessorTests: XCTestCase {
         let hash = STTProcessor.stableHash("test")
         XCTAssertEqual(hash.count, 16) // 16 位十六进制
     }
+
+    // MARK: - stripWhisperTokens
+
+    func testStripWhisperTokensBasic() {
+        let input = "<|startoftranscript|><|en|><|transcribe|><|0.00|> I got it!<|0.50|>"
+        XCTAssertEqual(STTProcessor.stripWhisperTokens(input), "I got it!")
+    }
+
+    func testStripWhisperTokensTimestampOnly() {
+        let input = "<|0.50|> 9-4-1<|1.50|>"
+        XCTAssertEqual(STTProcessor.stripWhisperTokens(input), "9-4-1")
+    }
+
+    func testStripWhisperTokensCleanText() {
+        // 已经干净的文本不应被修改
+        XCTAssertEqual(STTProcessor.stripWhisperTokens("Hello world"), "Hello world")
+        XCTAssertEqual(STTProcessor.stripWhisperTokens("你好世界"), "你好世界")
+    }
+
+    func testStripWhisperTokensEmpty() {
+        XCTAssertEqual(STTProcessor.stripWhisperTokens(""), "")
+        XCTAssertEqual(STTProcessor.stripWhisperTokens("  "), "")
+    }
+
+    func testStripWhisperTokensOnlyTokens() {
+        // 仅含 token 和标点，无有意义文字
+        XCTAssertEqual(STTProcessor.stripWhisperTokens("<|startoftranscript|><|en|><|transcribe|><|0.00|> -<|5.00|>"), "")
+    }
+
+    func testStripWhisperTokensQuotedText() {
+        let input = "<|8.00|> \"It's amazing. Sayaka is so good at passing exams.\"<|13.00|>"
+        XCTAssertEqual(STTProcessor.stripWhisperTokens(input), "\"It's amazing. Sayaka is so good at passing exams.\"")
+    }
+
+    // MARK: - selectSampleRanges
+
+    func testSelectSampleRangesSkipsScene0() {
+        let scenes = [
+            SceneSegment(startTime: 0, endTime: 15),     // 场景0 (打板)
+            SceneSegment(startTime: 15, endTime: 45),    // 场景1
+            SceneSegment(startTime: 45, endTime: 80),    // 场景2
+            SceneSegment(startTime: 80, endTime: 120),   // 场景3
+        ]
+        let ranges = STTProcessor.selectSampleRanges(scenes: scenes)
+
+        // 应跳过场景 0，从场景 1/2/3 中选取
+        XCTAssertEqual(ranges.count, 3)
+        // 第一个采样应从场景 1 开始
+        XCTAssertEqual(ranges[0].startTime, 15.0)
+    }
+
+    func testSelectSampleRangesMaxSampleDuration() {
+        let scenes = [
+            SceneSegment(startTime: 0, endTime: 10),     // 场景0
+            SceneSegment(startTime: 10, endTime: 100),   // 场景1 (90s)
+        ]
+        let ranges = STTProcessor.selectSampleRanges(scenes: scenes, sampleDuration: 30.0)
+
+        // 应只从场景 1 采样，最长 30 秒
+        XCTAssertEqual(ranges.count, 1)
+        XCTAssertEqual(ranges[0].startTime, 10.0)
+        XCTAssertEqual(ranges[0].endTime, 40.0) // 10 + 30
+    }
+
+    func testSelectSampleRangesSingleScene() {
+        // 只有 1 个场景时，使用后半段
+        let scenes = [
+            SceneSegment(startTime: 0, endTime: 60),
+        ]
+        let ranges = STTProcessor.selectSampleRanges(scenes: scenes)
+
+        XCTAssertEqual(ranges.count, 1)
+        XCTAssertEqual(ranges[0].startTime, 30.0) // 中点
+    }
+
+    func testSelectSampleRangesEmpty() {
+        let ranges = STTProcessor.selectSampleRanges(scenes: [])
+        XCTAssertTrue(ranges.isEmpty)
+    }
+
+    func testSelectSampleRangesTwoScenes() {
+        let scenes = [
+            SceneSegment(startTime: 0, endTime: 10),     // 场景0
+            SceneSegment(startTime: 10, endTime: 50),    // 场景1
+        ]
+        let ranges = STTProcessor.selectSampleRanges(scenes: scenes, maxSamples: 3)
+
+        // 只有 1 个内容场景，应返回 1 个采样
+        XCTAssertEqual(ranges.count, 1)
+        XCTAssertEqual(ranges[0].startTime, 10.0)
+    }
+
+    func testSelectSampleRangesManyScenes() {
+        // 10 个场景，选 3 个采样
+        var scenes: [SceneSegment] = []
+        for i in 0..<10 {
+            scenes.append(SceneSegment(
+                startTime: Double(i * 30),
+                endTime: Double((i + 1) * 30)
+            ))
+        }
+        let ranges = STTProcessor.selectSampleRanges(scenes: scenes, maxSamples: 3)
+
+        XCTAssertEqual(ranges.count, 3)
+        // 应跳过场景 0，从场景 1+ 均匀选取
+        XCTAssertTrue(ranges[0].startTime >= 30.0) // >= 场景 1
+    }
+
+    // MARK: - majorityVote
+
+    func testMajorityVoteClear() {
+        let votes: [(language: String, confidence: Float)] = [
+            ("ja", -0.1),
+            ("ja", -0.2),
+            ("en", -0.5),
+        ]
+        let result = STTProcessor.majorityVote(votes)
+        XCTAssertEqual(result?.language, "ja")
+    }
+
+    func testMajorityVoteTieBreakByConfidence() {
+        // 票数相同时，选置信度更高的
+        let votes: [(language: String, confidence: Float)] = [
+            ("ja", -0.3),
+            ("en", -0.1), // en 置信度更高
+        ]
+        let result = STTProcessor.majorityVote(votes)
+        XCTAssertEqual(result?.language, "en")
+    }
+
+    func testMajorityVoteUnanimous() {
+        let votes: [(language: String, confidence: Float)] = [
+            ("zh", -0.05),
+            ("zh", -0.1),
+            ("zh", -0.08),
+        ]
+        let result = STTProcessor.majorityVote(votes)
+        XCTAssertEqual(result?.language, "zh")
+        XCTAssertEqual(result?.confidence, -0.05) // 最高置信度
+    }
+
+    func testMajorityVoteEmpty() {
+        let result = STTProcessor.majorityVote([])
+        XCTAssertNil(result)
+    }
+
+    func testMajorityVoteSingle() {
+        let votes: [(language: String, confidence: Float)] = [("ja", -0.2)]
+        let result = STTProcessor.majorityVote(votes)
+        XCTAssertEqual(result?.language, "ja")
+    }
 }

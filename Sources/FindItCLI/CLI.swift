@@ -484,13 +484,31 @@ struct TranscribeCommand: AsyncParsableCommand {
         }
 
         // 2. 初始化 WhisperKit
-        let config = STTProcessor.Config(modelName: model, language: language)
-        print("初始化 WhisperKit (模型: \(config.modelName))...")
-        let whisperKit = try await STTProcessor.initializeWhisperKit(config: config)
+        print("初始化 WhisperKit (模型: \(model))...")
+        let sttConfig = STTProcessor.Config(modelName: model, language: language)
+        let whisperKit = try await STTProcessor.initializeWhisperKit(config: sttConfig)
         print("✓ 模型加载完成")
 
-        // 3. 转录并保存 SRT
-        print("转录中...")
+        // 3. 语言检测（当 --language 未指定时）
+        var resolvedLanguage = language
+        if resolvedLanguage == nil {
+            print("检测语言 (场景感知多段投票)...")
+            // 3a. 场景检测获取边界
+            let scenes = try SceneDetector.detectScenes(inputPath: inputPath)
+            // 3b. 场景感知语言检测
+            let langResult = try await STTProcessor.detectLanguage(
+                audioPath: audioPath,
+                scenes: scenes,
+                whisperKit: whisperKit
+            )
+            resolvedLanguage = langResult.language
+            let voteDetails = langResult.votes.map { "\($0.language)(\(String(format: "%.2f", $0.confidence)))" }
+            print("✓ 检测到语言: \(langResult.language) (投票: \(voteDetails.joined(separator: ", ")))")
+        }
+
+        // 4. 转录并保存 SRT
+        let config = STTProcessor.Config(modelName: model, language: resolvedLanguage)
+        print("转录中 (语言: \(resolvedLanguage ?? "auto"))...")
         let (segments, srtPath) = try await STTProcessor.transcribeAndSaveSRT(
             audioPath: audioPath,
             videoPath: inputPath,

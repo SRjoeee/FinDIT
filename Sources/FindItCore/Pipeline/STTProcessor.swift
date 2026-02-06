@@ -110,6 +110,188 @@ public enum STTProcessor {
         }
     }
 
+    // MARK: - 场景感知语言检测
+
+    /// 语言检测结果
+    public struct LanguageDetectionResult: Equatable {
+        /// 检测到的语言代码（ISO 639-1，如 "ja", "zh", "en"）
+        public let language: String
+        /// 最高概率的 log probability
+        public let confidence: Float
+        /// 各采样段的投票详情
+        public let votes: [(language: String, confidence: Float)]
+
+        public static func == (lhs: LanguageDetectionResult, rhs: LanguageDetectionResult) -> Bool {
+            lhs.language == rhs.language
+        }
+    }
+
+    /// 采样区间
+    public struct SampleRange: Equatable {
+        public let startTime: Double
+        public let endTime: Double
+
+        public init(startTime: Double, endTime: Double) {
+            self.startTime = startTime
+            self.endTime = endTime
+        }
+    }
+
+    /// 从场景列表中选择语言检测的采样区间
+    ///
+    /// 策略：跳过场景 0（通常是场记板/打板），从后续场景中均匀选取。
+    /// 每个采样段最长 `sampleDuration` 秒。
+    ///
+    /// - Parameters:
+    ///   - scenes: 场景分段列表（按时间排序）
+    ///   - maxSamples: 最多采样几段（默认 3）
+    ///   - sampleDuration: 每段最长秒数（默认 30）
+    /// - Returns: 采样区间数组
+    public static func selectSampleRanges(
+        scenes: [SceneSegment],
+        maxSamples: Int = 3,
+        sampleDuration: Double = 30.0
+    ) -> [SampleRange] {
+        // 跳过场景 0（打板），使用场景 1+
+        let contentScenes: [SceneSegment]
+        if scenes.count > 1 {
+            contentScenes = Array(scenes.dropFirst())
+        } else {
+            // 只有 1 个场景，无法跳过，使用后半段
+            guard let only = scenes.first else { return [] }
+            let midpoint = only.startTime + only.duration / 2
+            return [SampleRange(
+                startTime: midpoint,
+                endTime: min(midpoint + sampleDuration, only.endTime)
+            )]
+        }
+
+        // 从内容场景中均匀选取
+        let step = max(1, contentScenes.count / maxSamples)
+        var ranges: [SampleRange] = []
+        var index = 0
+
+        while ranges.count < maxSamples && index < contentScenes.count {
+            let scene = contentScenes[index]
+            // 取场景的前 sampleDuration 秒（或场景中点开始）
+            let start = scene.startTime
+            let end = min(start + sampleDuration, scene.endTime)
+            if end > start {
+                ranges.append(SampleRange(startTime: start, endTime: end))
+            }
+            index += step
+        }
+
+        return ranges
+    }
+
+    /// 对语言投票结果进行多数投票
+    ///
+    /// 票数相同时选择置信度最高的语言。
+    ///
+    /// - Parameter votes: 各采样段检测结果 (语言代码, log probability)
+    /// - Returns: 获胜语言代码和最高置信度，若无投票则返回 nil
+    public static func majorityVote(
+        _ votes: [(language: String, confidence: Float)]
+    ) -> (language: String, confidence: Float)? {
+        guard !votes.isEmpty else { return nil }
+
+        // 按语言分组统计票数和最高置信度
+        var counts: [String: Int] = [:]
+        var bestConfidence: [String: Float] = [:]
+
+        for (lang, conf) in votes {
+            counts[lang, default: 0] += 1
+            if conf > (bestConfidence[lang] ?? -Float.infinity) {
+                bestConfidence[lang] = conf
+            }
+        }
+
+        // 选票数最多的语言；票数相同则选置信度更高的
+        let winner = counts.max { a, b in
+            if a.value != b.value { return a.value < b.value }
+            return (bestConfidence[a.key] ?? -Float.infinity)
+                 < (bestConfidence[b.key] ?? -Float.infinity)
+        }
+
+        guard let (lang, _) = winner else { return nil }
+        return (lang, bestConfidence[lang] ?? 0)
+    }
+
+    /// 场景感知的自动语言检测
+    ///
+    /// 跳过场景 0（场记板），从内容场景中采样 2-3 段音频，
+    /// 用 WhisperKit `detectLanguage` 分别检测，最终多数投票决定语言。
+    ///
+    /// - Parameters:
+    ///   - audioPath: WAV 音频文件路径
+    ///   - scenes: 场景分段列表（来自 SceneDetector）
+    ///   - whisperKit: 已初始化的 WhisperKit 实例
+    /// - Returns: 语言检测结果
+    public static func detectLanguage(
+        audioPath: String,
+        scenes: [SceneSegment],
+        whisperKit: WhisperKit
+    ) async throws -> LanguageDetectionResult {
+        guard FileManager.default.fileExists(atPath: audioPath) else {
+            throw STTError.audioFileNotFound(path: audioPath)
+        }
+
+        let sampleRanges = selectSampleRanges(scenes: scenes)
+        guard !sampleRanges.isEmpty else {
+            // 无法选取采样区间，降级到 WhisperKit 默认检测（前 30 秒）
+            let (lang, probs) = try await whisperKit.detectLanguage(audioPath: audioPath)
+            let conf = probs[lang] ?? 0
+            return LanguageDetectionResult(
+                language: lang,
+                confidence: conf,
+                votes: [(lang, conf)]
+            )
+        }
+
+        // 对每个采样区间做语言检测
+        var votes: [(language: String, confidence: Float)] = []
+
+        for range in sampleRanges {
+            do {
+                let buffer = try AudioProcessor.loadAudio(
+                    fromPath: audioPath,
+                    startTime: range.startTime,
+                    endTime: range.endTime
+                )
+                let audioArray = AudioProcessor.convertBufferToArray(buffer: buffer)
+
+                guard !audioArray.isEmpty else { continue }
+
+                // 注意: WhisperKit 方法名有拼写错误 "detectLangauge"
+                let (lang, probs) = try await whisperKit.detectLangauge(audioArray: audioArray)
+                let conf = probs[lang] ?? 0
+                votes.append((lang, conf))
+            } catch {
+                // 单个采样失败不应中断整个检测，跳过
+                continue
+            }
+        }
+
+        // 多数投票
+        guard let winner = majorityVote(votes) else {
+            // 所有采样都失败，降级到默认检测
+            let (lang, probs) = try await whisperKit.detectLanguage(audioPath: audioPath)
+            let conf = probs[lang] ?? 0
+            return LanguageDetectionResult(
+                language: lang,
+                confidence: conf,
+                votes: [(lang, conf)]
+            )
+        }
+
+        return LanguageDetectionResult(
+            language: winner.language,
+            confidence: winner.confidence,
+            votes: votes
+        )
+    }
+
     /// 转录音频文件
     ///
     /// - Parameters:
@@ -171,13 +353,13 @@ public enum STTProcessor {
 
     /// 将 WhisperKit TranscriptionSegment 转换为内部 TranscriptSegment
     ///
-    /// 过滤空白段，分配 1-based 索引。
+    /// 过滤空白段，清理 WhisperKit 内部 token，分配 1-based 索引。
     static func convertSegments(_ whisperSegments: [TranscriptionSegment]) -> [TranscriptSegment] {
         var result: [TranscriptSegment] = []
         var index = 1
 
         for seg in whisperSegments {
-            let text = seg.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = stripWhisperTokens(seg.text)
             guard !text.isEmpty else { continue }
 
             result.append(TranscriptSegment(
@@ -190,6 +372,24 @@ public enum STTProcessor {
         }
 
         return result
+    }
+
+    /// 清理 WhisperKit 输出中的内部 token
+    ///
+    /// 移除 `<|...|>` 格式的特殊标记（如 `<|startoftranscript|>`, `<|en|>`, `<|0.00|>` 等），
+    /// 并 trim 空白。若清理后为空或仅剩标点符号则返回空字符串。
+    public static func stripWhisperTokens(_ text: String) -> String {
+        let cleaned = text.replacingOccurrences(
+            of: "<\\|[^|]*\\|>",
+            with: "",
+            options: .regularExpression
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 过滤仅含标点/破折号的残留段
+        let meaningful = cleaned.unicodeScalars.contains { scalar in
+            CharacterSet.letters.union(.decimalDigits).contains(scalar)
+        }
+        return meaningful ? cleaned : ""
     }
 
     // MARK: - SRT 时间戳格式化

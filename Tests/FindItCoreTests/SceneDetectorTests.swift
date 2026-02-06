@@ -239,6 +239,70 @@ final class SceneDetectorTests: XCTestCase {
         XCTAssertEqual(a, b)
     }
 
+    // MARK: - buildCombinedArguments
+
+    func testBuildCombinedArguments() {
+        let args = SceneDetector.buildCombinedArguments(
+            inputPath: "/video/test.mp4",
+            threshold: 0.3,
+            audioOutputPath: "/tmp/audio.wav"
+        )
+        // 基本场景检测参数
+        XCTAssertEqual(args[0], "-hwaccel")
+        XCTAssertEqual(args[1], "videotoolbox")
+        XCTAssertEqual(args[2], "-i")
+        XCTAssertEqual(args[3], "/video/test.mp4")
+        XCTAssertTrue(args.contains("-fps_mode"))
+        XCTAssertTrue(args.contains("vfr"))
+        XCTAssertTrue(args.contains("-f"))
+        XCTAssertTrue(args.contains("null"))
+
+        // 音频提取参数
+        XCTAssertTrue(args.contains("-vn"), "应包含 -vn 去视频")
+        XCTAssertTrue(args.contains("pcm_s16le"), "应包含 PCM 编码")
+        XCTAssertTrue(args.contains("16000"), "应包含 16kHz 采样率")
+        XCTAssertTrue(args.contains("-ac"), "应包含声道参数")
+        XCTAssertTrue(args.contains("1"), "应为单声道")
+        XCTAssertTrue(args.contains("-y"), "应包含覆盖标志")
+        XCTAssertEqual(args.last, "/tmp/audio.wav", "最后一个参数应为音频输出路径")
+    }
+
+    func testBuildCombinedArgumentsContainsSceneFilter() {
+        let args = SceneDetector.buildCombinedArguments(
+            inputPath: "/video/test.mp4",
+            threshold: 0.5,
+            audioOutputPath: "/tmp/out.wav"
+        )
+        if let vfIndex = args.firstIndex(of: "-vf"), vfIndex + 1 < args.count {
+            let vfValue = args[vfIndex + 1]
+            XCTAssertTrue(vfValue.contains("fps=5"), "应包含 fps=5 降采样")
+            XCTAssertTrue(vfValue.contains("scene,0.5"), "应包含自定义阈值")
+            XCTAssertTrue(vfValue.contains("showinfo"), "应包含 showinfo")
+        } else {
+            XCTFail("未找到 -vf 参数")
+        }
+    }
+
+    // MARK: - CombinedDetectionResult
+
+    func testCombinedDetectionResultProperties() {
+        let scenes = [
+            SceneSegment(startTime: 0, endTime: 10),
+            SceneSegment(startTime: 10, endTime: 25),
+        ]
+        let result = SceneDetector.CombinedDetectionResult(scenes: scenes, duration: 25.0)
+        XCTAssertEqual(result.scenes.count, 2)
+        XCTAssertEqual(result.duration, 25.0, accuracy: 0.01)
+        XCTAssertEqual(result.scenes[0].startTime, 0, accuracy: 0.01)
+        XCTAssertEqual(result.scenes[1].endTime, 25, accuracy: 0.01)
+    }
+
+    func testCombinedDetectionResultEmpty() {
+        let result = SceneDetector.CombinedDetectionResult(scenes: [], duration: 0)
+        XCTAssertTrue(result.scenes.isEmpty)
+        XCTAssertEqual(result.duration, 0, accuracy: 0.01)
+    }
+
     // MARK: - 完整流水线（模拟 FFmpeg 输出）
 
     func testFullPipelineNoSceneChanges() {

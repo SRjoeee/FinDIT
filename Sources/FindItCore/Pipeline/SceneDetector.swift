@@ -105,6 +105,92 @@ public enum SceneDetector {
         return segments
     }
 
+    // MARK: - 优化版：合并场景检测 + 时长 + 音频提取
+
+    /// 合并结果
+    public struct CombinedDetectionResult {
+        /// 检测到的场景分段
+        public let scenes: [SceneSegment]
+        /// 视频时长（秒）
+        public let duration: Double
+    }
+
+    /// 优化版场景检测：单次 FFmpeg 调用获取场景 + 时长 + 可选音频
+    ///
+    /// 消除独立的 `FFmpegBridge.videoDuration()` 调用（节省一次进程启动），
+    /// 从场景检测的 stderr 中解析 Duration。
+    /// 可选同时提取音频（双输出 FFmpeg 命令），减少一次文件 I/O。
+    ///
+    /// - Parameters:
+    ///   - inputPath: 视频文件路径
+    ///   - audioOutputPath: 音频输出路径（nil = 不提取音频）
+    ///   - config: 场景检测配置
+    ///   - ffmpegConfig: FFmpeg 路径配置
+    /// - Returns: 场景分段 + 视频时长
+    public static func detectScenesOptimized(
+        inputPath: String,
+        audioOutputPath: String? = nil,
+        config: Config = .default,
+        ffmpegConfig: FFmpegConfig = .default
+    ) throws -> CombinedDetectionResult {
+        guard FileManager.default.fileExists(atPath: inputPath) else {
+            throw FFmpegError.inputFileNotFound(path: inputPath)
+        }
+
+        var args = buildDetectionArguments(inputPath: inputPath, threshold: config.threshold)
+
+        // 如果需要音频提取，追加第二输出
+        if let audioPath = audioOutputPath {
+            args += ["-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", "-y", audioPath]
+        }
+
+        let result = try FFmpegBridge.run(arguments: args, config: ffmpegConfig)
+
+        // 从 stderr 解析时长（FFmpeg 总会打印输入文件的 Duration）
+        guard let duration = FFmpegBridge.parseDuration(from: result.stderr) else {
+            throw FFmpegError.outputParsingFailed(detail: "未从场景检测输出中找到 Duration")
+        }
+        guard duration > 0 else {
+            return CombinedDetectionResult(scenes: [], duration: 0)
+        }
+
+        // 解析场景切点
+        let timestamps = parseTimestamps(from: result.stderr)
+        let filtered = filterByMinGap(timestamps, minGap: config.minSegmentDuration)
+        var segments = segmentsFromCutPoints(filtered, videoDuration: duration)
+        segments = mergeShortSegments(segments, minDuration: config.minSegmentDuration)
+        segments = splitLongSegments(
+            segments, maxDuration: config.maxSegmentDuration, interval: config.paddingInterval
+        )
+
+        // 验证音频输出
+        if let audioPath = audioOutputPath {
+            guard FileManager.default.fileExists(atPath: audioPath) else {
+                throw FFmpegError.outputFileNotCreated(path: audioPath)
+            }
+        }
+
+        return CombinedDetectionResult(scenes: segments, duration: duration)
+    }
+
+    /// 构建合并命令的参数（包含音频提取）
+    static func buildCombinedArguments(
+        inputPath: String,
+        threshold: Double,
+        audioOutputPath: String
+    ) -> [String] {
+        [
+            "-hwaccel", "videotoolbox",
+            "-i", inputPath,
+            "-vf", "fps=5,select='gt(scene,\(threshold))',showinfo",
+            "-fps_mode", "vfr",
+            "-f", "null",
+            "-",
+            "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+            "-y", audioOutputPath
+        ]
+    }
+
     // MARK: - Internal 纯函数
 
     /// 构建场景检测 FFmpeg 命令参数

@@ -188,46 +188,30 @@ public enum PipelineManager {
         //    对 pending 或 failed 状态的视频需要执行
         if currentStage == .pending || currentStage == .failed {
             do {
-                // 获取视频时长
-                progress("获取视频信息...")
-                let duration = try FFmpegBridge.videoDuration(
-                    inputPath: videoPath,
-                    config: ffmpegConfig
-                )
-                try updateVideoDuration(folderDB: folderDB, videoId: videoId, duration: duration)
-
-                // 音频提取与场景检测并行（如果需要 STT）
+                // 场景检测 + 时长获取 + 可选音频提取（单次 FFmpeg 调用）
+                progress("场景检测中...")
                 let needsAudio = whisperKit != nil
-                let audioExtractionTask: Task<String, Error>?
+                var audioOutputPath: String?
                 if needsAudio {
                     let tmpDir = tmpDirectory(folderPath: folderPath)
                     try FileManager.default.createDirectory(
                         atPath: tmpDir, withIntermediateDirectories: true
                     )
-                    let audioOutputPath = (tmpDir as NSString)
+                    audioOutputPath = (tmpDir as NSString)
                         .appendingPathComponent("video_\(videoId).wav")
-                    let capturedPath = videoPath
-                    let capturedConfig = ffmpegConfig
-                    audioExtractionTask = Task {
-                        try AudioExtractor.extractAudio(
-                            inputPath: capturedPath,
-                            outputPath: audioOutputPath,
-                            config: capturedConfig
-                        )
-                        return audioOutputPath
-                    }
-                } else {
-                    audioExtractionTask = nil
                 }
 
-                // 场景检测（与音频提取并行）
-                progress("场景检测中...")
-                sceneSegments = try SceneDetector.detectScenes(
+                let detection = try SceneDetector.detectScenesOptimized(
                     inputPath: videoPath,
-                    videoDuration: duration,
+                    audioOutputPath: audioOutputPath,
                     ffmpegConfig: ffmpegConfig
                 )
-                progress("检测到 \(sceneSegments.count) 个场景")
+                let duration = detection.duration
+                sceneSegments = detection.scenes
+                extractedAudioPath = audioOutputPath
+
+                try updateVideoDuration(folderDB: folderDB, videoId: videoId, duration: duration)
+                progress("检测到 \(sceneSegments.count) 个场景 (时长: \(Int(duration))s)")
 
                 guard !sceneSegments.isEmpty else {
                     progress("视频无有效场景，标记为完成")
@@ -286,15 +270,6 @@ public enum PipelineManager {
                     }
                 }
                 progress("本地分析完成: \(localAnalyzed)/\(freshClips.count)")
-
-                // 等待音频提取完成（如果并行启动了）
-                if let task = audioExtractionTask {
-                    do {
-                        extractedAudioPath = try await task.value
-                    } catch {
-                        progress("音频提取失败: \(error.localizedDescription)")
-                    }
-                }
 
             } catch {
                 try? updateVideoStatus(

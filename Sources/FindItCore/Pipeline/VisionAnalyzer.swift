@@ -189,6 +189,34 @@ extension AnalysisResult {
         }
     }
 
+    /// 从 Clip 记录重建 AnalysisResult
+    ///
+    /// Clip 中数组字段存储为 JSON 字符串（如 `["man","woman"]`），
+    /// 此方法解析 JSON 并还原为 AnalysisResult。
+    /// 用于 Pipeline 步骤 4 中与 Gemini/VLM 结果合并。
+    public static func fromClip(_ clip: Clip) -> AnalysisResult {
+        func parseArray(_ json: String?) -> [String] {
+            guard let json = json,
+                  let data = json.data(using: .utf8),
+                  let array = try? JSONDecoder().decode([String].self, from: data) else {
+                return []
+            }
+            return array
+        }
+
+        return AnalysisResult(
+            scene: clip.scene,
+            subjects: parseArray(clip.subjects),
+            actions: parseArray(clip.actions),
+            objects: parseArray(clip.objects),
+            mood: clip.mood,
+            shotType: clip.shotType,
+            lighting: clip.lighting,
+            colors: clip.colors,
+            description: clip.clipDescription
+        )
+    }
+
     /// 数据驱动的 composeTags
     ///
     /// 从指定字段列表中收集值，去重后返回标签数组。

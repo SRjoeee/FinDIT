@@ -30,8 +30,8 @@ final class EmbeddingUtilsTests: XCTestCase {
         XCTAssertTrue(text.contains("浪漫"))
         XCTAssertTrue(text.contains("全景"))
         XCTAssertTrue(text.contains("今天的日落真美"))
-        XCTAssertTrue(text.contains("海滩"))
-        XCTAssertTrue(text.contains("日落"))
+        // tags 不再包含在嵌入文本中（其内容已由视觉字段覆盖）
+        XCTAssertFalse(text.contains("海滩"), "tags 不应出现在嵌入文本中")
     }
 
     func testComposeClipTextEmptyFields() {
@@ -62,12 +62,13 @@ final class EmbeddingUtilsTests: XCTestCase {
         XCTAssertTrue(text.contains("一间现代化的办公室"))
     }
 
-    func testComposeClipTextWithTags() {
+    func testComposeClipTextTagsExcluded() {
         var clip = Clip(startTime: 0.0, endTime: 5.0, scene: "森林")
         clip.setTags(["户外", "自然", "绿色"])
         let text = EmbeddingUtils.composeClipText(clip: clip)
         XCTAssertTrue(text.contains("森林"))
-        XCTAssertTrue(text.contains("户外 自然 绿色"))
+        // tags 不应出现在嵌入文本中（其内容已由视觉字段覆盖，避免重复稀释语义）
+        XCTAssertFalse(text.contains("户外 自然 绿色"), "tags 不应拼入嵌入文本")
     }
 
     // MARK: - cosineSimilarity

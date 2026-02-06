@@ -471,9 +471,13 @@ public enum PipelineManager {
                         continue
                     }
 
+                    // 合并本地分析结果（步骤 2f）与远程结果，避免覆盖已有的高质量本地数据
+                    let localResult = AnalysisResult.fromClip(clip)
+                    let merged = LocalVisionAnalyzer.mergeResults(local: localResult, remote: result)
+
                     try updateClipVision(
                         clipId: clipId,
-                        result: result,
+                        result: merged,
                         folderDB: folderDB
                     )
                     clipsAnalyzed += 1

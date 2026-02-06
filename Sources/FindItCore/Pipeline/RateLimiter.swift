@@ -81,22 +81,21 @@ public actor GeminiRateLimiter {
             try await Task.sleep(nanoseconds: waitNanos)
         }
 
-        // 2. 清理过期时间戳
+        // 2. 清理过期时间戳并等待窗口有空位
+        //    使用 while 循环确保 sleep 期间被其他 Task 抢占后重新检查
         pruneExpiredTimestamps()
 
-        // 3. 如果窗口已满，等待最早请求过期
-        if timestamps.count >= currentMaxRequests {
+        while timestamps.count >= currentMaxRequests {
             let oldest = timestamps[0]
             let elapsed = Date().timeIntervalSince(oldest)
             let waitTime = config.windowDuration - elapsed + 0.5  // 0.5s 安全缓冲
             if waitTime > 0 {
                 try await Task.sleep(nanoseconds: UInt64(waitTime * 1_000_000_000))
             }
-            // 重新清理
             pruneExpiredTimestamps()
         }
 
-        // 4. 记录本次请求
+        // 3. 记录本次请求
         timestamps.append(Date())
         incrementDailyCount()
     }

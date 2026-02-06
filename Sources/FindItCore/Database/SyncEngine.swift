@@ -86,40 +86,54 @@ public enum SyncEngine {
             if batch.count < batchSize { break }
         }
 
-        // 3. 分批同步 clips
+        // 3. 批量查出该文件夹的 source_video_id → global video_id 映射
+        //    避免在 clip 循环内逐条 SELECT（N+1 → O(1)）
+        let videoIdMap: [Int64: Int64] = try globalDB.read { db in
+            var map: [Int64: Int64] = [:]
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT source_video_id, video_id FROM videos
+                WHERE source_folder = ?
+                """, arguments: [folderPath])
+            for row in rows {
+                if let srcId: Int64 = row["source_video_id"],
+                   let globalId: Int64 = row["video_id"] {
+                    map[srcId] = globalId
+                }
+            }
+            return map
+        }
+
+        // 4. 分批同步 clips
+        // 动态生成 vision 列名和 SQL（循环外构建一次）
+        let visionCols = VisionField.sqlColumnNames()
+        let allCols = ["source_folder", "source_clip_id", "video_id",
+                       "start_time", "end_time", "thumbnail_path"]
+            + visionCols
+            + ["tags", "transcript", "embedding", "embedding_model"]
+        let placeholders = allCols.map { _ in "?" }.joined(separator: ", ")
+        let conflictSet = (["video_id", "start_time", "end_time", "thumbnail_path"]
+            + visionCols
+            + ["tags", "transcript", "embedding", "embedding_model"])
+            .map { "\($0) = excluded.\($0)" }
+            .joined(separator: ",\n                            ")
+        let clipSQL = """
+            INSERT INTO clips
+                (\(allCols.joined(separator: ", ")))
+            VALUES (\(placeholders))
+            ON CONFLICT(source_folder, source_clip_id) DO UPDATE SET
+                \(conflictSet)
+            """
+        let activeFields = VisionField.allActive
+
         while true {
             let batch = try folderDB.read { db in
                 try Clip.fetchAfterRowId(db, rowId: currentClipRowId, limit: batchSize)
             }
             guard !batch.isEmpty else { break }
 
-            // 动态生成 vision 列名和 SQL（循环外构建一次）
-            let visionCols = VisionField.sqlColumnNames()
-            let allCols = ["source_folder", "source_clip_id", "video_id",
-                           "start_time", "end_time", "thumbnail_path"]
-                + visionCols
-                + ["tags", "transcript", "embedding", "embedding_model"]
-            let placeholders = allCols.map { _ in "?" }.joined(separator: ", ")
-            let conflictSet = (["video_id", "start_time", "end_time", "thumbnail_path"]
-                + visionCols
-                + ["tags", "transcript", "embedding", "embedding_model"])
-                .map { "\($0) = excluded.\($0)" }
-                .joined(separator: ",\n                            ")
-            let clipSQL = """
-                INSERT INTO clips
-                    (\(allCols.joined(separator: ", ")))
-                VALUES (\(placeholders))
-                ON CONFLICT(source_folder, source_clip_id) DO UPDATE SET
-                    \(conflictSet)
-                """
-            let activeFields = VisionField.allActive
-
             try globalDB.write { db in
                 for clip in batch {
-                    let globalVideoId = try Int64.fetchOne(db, sql: """
-                        SELECT video_id FROM videos
-                        WHERE source_folder = ? AND source_video_id = ?
-                        """, arguments: [folderPath, clip.videoId])
+                    let globalVideoId = clip.videoId.flatMap { videoIdMap[$0] }
 
                     let tagsForFTS = convertTagsForFTS(clip.tags)
 

@@ -77,7 +77,8 @@ public enum EmbeddingUtils {
 
     /// 从 Clip 的各字段合成待嵌入文本
     ///
-    /// 按 EmbeddingGroup 分组拼接视觉字段，然后追加 transcript 和 tags。
+    /// 按 EmbeddingGroup 分组拼接视觉字段，然后追加 transcript。
+    /// tags 不包含在内（其内容已由视觉字段覆盖，避免重复稀释语义）。
     /// 空字段自动跳过，确保输出文本非空且有意义。
     ///
     /// - Parameters:
@@ -109,11 +110,9 @@ public enum EmbeddingUtils {
             parts.append(transcript)
         }
 
-        // tags 展开为空格分隔
-        let tagsArray = clip.tagsArray
-        if !tagsArray.isEmpty {
-            parts.append(tagsArray.joined(separator: " "))
-        }
+        // 注: tags 不再追加到嵌入文本中。
+        // tags 由 composeTags 从上述视觉字段合成，内容已包含在各字段中，
+        // 重复拼接会稀释 embedding 的语义焦点。
 
         return parts.joined(separator: ". ")
     }

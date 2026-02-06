@@ -24,11 +24,11 @@ _无_
 - [x] 单元测试: 同步正确性
 
 ### 1d: CLI 验证
-- [ ] CLI `db init` 子命令 — 初始化数据库
-- [ ] CLI `insert-mock` 子命令 — 插入模拟数据
-- [ ] CLI `search` 子命令 — FTS5 搜索 + 结果格式化
-- [ ] CLI `sync` 子命令 — 手动触发同步
-- [ ] 端到端验证: 插入 → 同步 → 搜索
+- [x] CLI `db-init` 子命令 — 初始化数据库 + 注册 WatchedFolder
+- [x] CLI `insert-mock` 子命令 — 插入 3 视频 7 片段中英混合模拟数据
+- [x] CLI `search` 子命令 — FTS5 搜索 + 格式化结果 + 搜索历史
+- [x] CLI `sync` 子命令 — 手动触发增量同步
+- [x] 端到端验证: db-init → insert-mock → sync → search (中文/英文/OR 语法)
 
 ## 已完成（Stage 0）
 

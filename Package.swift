@@ -39,6 +39,7 @@ let package = Package(
             name: "FindItCLI",
             dependencies: [
                 "FindItCore",
+                .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),

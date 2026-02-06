@@ -15,6 +15,7 @@ struct FindItCLI: ParsableCommand {
             InsertMockCommand.self,
             SyncCommand.self,
             SearchCommand.self,
+            FFmpegCheckCommand.self,
         ]
     )
 }
@@ -295,5 +296,25 @@ struct SearchCommand: ParsableCommand {
         let m = Int(seconds) / 60
         let s = Int(seconds) % 60
         return String(format: "%d:%02d", m, s)
+    }
+}
+
+// MARK: - ffmpeg-check
+
+struct FFmpegCheckCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "ffmpeg-check",
+        abstract: "验证 FFmpeg 可用性和版本"
+    )
+
+    @Option(name: .long, help: "FFmpeg 路径 (默认 ~/.local/bin/ffmpeg)")
+    var ffmpegPath: String?
+
+    func run() throws {
+        let config = ffmpegPath.map { FFmpegConfig(ffmpegPath: $0) } ?? .default
+        try FFmpegBridge.validateExecutable(config: config)
+        let version = try FFmpegBridge.version(config: config)
+        print("✓ \(version)")
+        print("  路径: \(config.ffmpegPath)")
     }
 }

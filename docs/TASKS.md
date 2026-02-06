@@ -14,9 +14,9 @@ _无_
 
 ### 1b: 全局搜索索引
 - [x] 创建全局库 Schema（clips 镜像, videos 镜像, clips_fts, search_history）
-- [ ] FTS5 虚拟表建表 + content sync triggers
-- [ ] FTS5 搜索实现（关键词、前缀、精确、排除）
-- [ ] 单元测试: FTS5 搜索测试
+- [x] FTS5 虚拟表建表 + content sync triggers
+- [x] FTS5 搜索实现（关键词、前缀、精确、排除）
+- [x] 单元测试: FTS5 搜索测试
 
 ### 1c: 同步引擎
 - [ ] 创建 SyncEngine.swift — 文件夹库 → 全局库同步

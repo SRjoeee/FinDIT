@@ -131,6 +131,35 @@ public enum Migrations {
                 )
                 """)
 
+            // FTS5 同步触发器（外部内容表需手动维护索引）
+            try db.execute(sql: """
+                CREATE TRIGGER clips_fts_ai AFTER INSERT ON clips BEGIN
+                    INSERT INTO clips_fts(rowid, tags, description, transcript)
+                    VALUES (new.clip_id, new.tags, new.description, new.transcript);
+                END
+                """)
+
+            try db.execute(sql: """
+                CREATE TRIGGER clips_fts_bd BEFORE DELETE ON clips BEGIN
+                    INSERT INTO clips_fts(clips_fts, rowid, tags, description, transcript)
+                    VALUES ('delete', old.clip_id, old.tags, old.description, old.transcript);
+                END
+                """)
+
+            try db.execute(sql: """
+                CREATE TRIGGER clips_fts_bu BEFORE UPDATE ON clips BEGIN
+                    INSERT INTO clips_fts(clips_fts, rowid, tags, description, transcript)
+                    VALUES ('delete', old.clip_id, old.tags, old.description, old.transcript);
+                END
+                """)
+
+            try db.execute(sql: """
+                CREATE TRIGGER clips_fts_au AFTER UPDATE ON clips BEGIN
+                    INSERT INTO clips_fts(rowid, tags, description, transcript)
+                    VALUES (new.clip_id, new.tags, new.description, new.transcript);
+                END
+                """)
+
             // 搜索历史表
             try db.create(table: "search_history") { t in
                 t.autoIncrementedPrimaryKey("id")

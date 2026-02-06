@@ -20,6 +20,7 @@ struct FindItCLI: AsyncParsableCommand {
             DetectScenesCommand.self,
             ExtractKeyframesCommand.self,
             TranscribeCommand.self,
+            AnalyzeCommand.self,
         ]
     )
 }
@@ -512,5 +513,131 @@ struct TranscribeCommand: AsyncParsableCommand {
         if segments.count > 5 {
             print("  ... 共 \(segments.count) 个片段")
         }
+    }
+}
+
+// MARK: - analyze
+
+struct AnalyzeCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "analyze",
+        abstract: "使用 Gemini Flash 分析视频场景关键帧"
+    )
+
+    @Option(name: .long, help: "视频文件路径（用于显示信息）")
+    var input: String
+
+    @Option(name: .long, help: "关键帧目录路径（包含 scene_XXX_frame_YY.jpg）")
+    var framesDir: String
+
+    @Option(name: .long, help: "Gemini API Key（覆盖配置文件）")
+    var apiKey: String?
+
+    @Option(name: .long, help: "Gemini 模型名称 (默认: gemini-2.5-flash)")
+    var model: String = "gemini-2.5-flash"
+
+    func run() async throws {
+        // 1. 解析 API Key
+        let resolvedKey: String
+        do {
+            resolvedKey = try VisionAnalyzer.resolveAPIKey(override: apiKey)
+        } catch {
+            print("错误: \(error.localizedDescription)")
+            print()
+            print("设置 API Key 的方法:")
+            print("  1. mkdir -p ~/.config/findit")
+            print("  2. 将 Key 写入 ~/.config/findit/gemini-api-key.txt")
+            print("  或使用 --api-key <key> 参数")
+            throw ExitCode.failure
+        }
+
+        // 2. 扫描关键帧目录，按场景分组
+        let framesDirPath = (framesDir as NSString).standardizingPath
+        let sceneGroups = try groupFramesByScene(directory: framesDirPath)
+
+        if sceneGroups.isEmpty {
+            print("错误: 在 \(framesDirPath) 中未找到 scene_XXX_frame_YY.jpg 格式的关键帧")
+            throw ExitCode.failure
+        }
+
+        let config = VisionAnalyzer.Config(model: model)
+        print("分析 \(sceneGroups.count) 个场景 (模型: \(config.model))")
+        print("视频: \(input)")
+        print()
+
+        // 3. 逐场景分析
+        var results: [(sceneIndex: Int, result: AnalysisResult)] = []
+
+        for (i, (sceneIndex, framePaths)) in sceneGroups.enumerated() {
+            print("  场景 \(sceneIndex): \(framePaths.count) 帧...", terminator: "")
+
+            do {
+                let result = try await VisionAnalyzer.analyzeScene(
+                    imagePaths: framePaths,
+                    apiKey: resolvedKey,
+                    config: config
+                )
+                results.append((sceneIndex, result))
+                print(" ✓")
+            } catch {
+                print(" ✗ \(error.localizedDescription)")
+            }
+
+            // 速率控制: 7 秒间隔 (10 RPM 限制)
+            if i < sceneGroups.count - 1 {
+                try await Task.sleep(nanoseconds: 7_000_000_000)
+            }
+        }
+
+        // 4. 输出结果
+        print()
+        print("✓ 分析完成: \(results.count)/\(sceneGroups.count) 个场景")
+        print()
+
+        for (sceneIndex, result) in results {
+            print("── 场景 \(sceneIndex) ──")
+            if let scene = result.scene { print("  场景: \(scene)") }
+            if !result.subjects.isEmpty { print("  主体: \(result.subjects.joined(separator: ", "))") }
+            if !result.actions.isEmpty { print("  动作: \(result.actions.joined(separator: ", "))") }
+            if !result.objects.isEmpty { print("  物体: \(result.objects.joined(separator: ", "))") }
+            if let mood = result.mood { print("  氛围: \(mood)") }
+            if let shotType = result.shotType { print("  镜头: \(shotType)") }
+            if let lighting = result.lighting { print("  光线: \(lighting)") }
+            if let colors = result.colors { print("  色调: \(colors)") }
+            if let desc = result.description { print("  描述: \(desc)") }
+            print("  标签: \(result.tags.joined(separator: ", "))")
+            print()
+        }
+    }
+
+    /// 扫描目录，按 scene_XXX_frame_YY.jpg 命名分组
+    ///
+    /// - Returns: 按场景索引排序的 (sceneIndex, [framePath]) 数组
+    private func groupFramesByScene(directory: String) throws -> [(Int, [String])] {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: directory) else {
+            throw VisionAnalyzerError.imageEncodingFailed(path: directory)
+        }
+
+        let files = try fm.contentsOfDirectory(atPath: directory)
+            .filter { $0.hasSuffix(".jpg") || $0.hasSuffix(".jpeg") }
+            .sorted()
+
+        // 解析 scene_XXX_frame_YY.jpg 格式
+        var groups: [Int: [String]] = [:]
+        for file in files {
+            let name = (file as NSString).deletingPathExtension
+            let parts = name.components(separatedBy: "_")
+            // 期望: ["scene", "XXX", "frame", "YY"]
+            guard parts.count >= 4,
+                  parts[0] == "scene",
+                  let sceneIndex = Int(parts[1]) else {
+                continue
+            }
+            let fullPath = (directory as NSString).appendingPathComponent(file)
+            groups[sceneIndex, default: []].append(fullPath)
+        }
+
+        return groups.sorted { $0.key < $1.key }
     }
 }

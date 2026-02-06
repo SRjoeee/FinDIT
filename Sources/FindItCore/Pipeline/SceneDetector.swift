@@ -112,7 +112,7 @@ public enum SceneDetector {
         [
             "-i", inputPath,
             "-vf", "select='gt(scene,\(threshold))',showinfo",
-            "-vsync", "vfn",
+            "-fps_mode", "vfr",
             "-f", "null",
             "-"
         ]

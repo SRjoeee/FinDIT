@@ -207,8 +207,8 @@ final class SceneDetectorTests: XCTestCase {
         )
         XCTAssertEqual(args[0], "-i")
         XCTAssertEqual(args[1], "/video/test.mp4")
-        XCTAssertTrue(args.contains("-vsync"))
-        XCTAssertTrue(args.contains("vfn"))
+        XCTAssertTrue(args.contains("-fps_mode"))
+        XCTAssertTrue(args.contains("vfr"))
         XCTAssertTrue(args.contains("-f"))
         XCTAssertTrue(args.contains("null"))
 

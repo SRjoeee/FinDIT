@@ -1,4 +1,4 @@
-# 当前阶段: Stage 1 — 存储层
+# 当前阶段: Stage 2 — 处理管线
 
 ## 进行中
 
@@ -29,6 +29,55 @@ _无_
 - [x] CLI `search` 子命令 — FTS5 搜索 + 格式化结果 + 搜索历史
 - [x] CLI `sync` 子命令 — 手动触发增量同步
 - [x] 端到端验证: db-init → insert-mock → sync → search (中文/英文/OR 语法)
+
+## 已完成（Stage 2a: FFmpeg 集成）
+
+### FFmpegBridge 子进程封装
+- [x] FFmpegError 错误枚举 + FFmpegConfig 配置
+- [x] FFmpegBridge.run() — Process + Pipe + 超时保护
+- [x] validateExecutable / version / videoDuration / parseDuration
+- [x] 13 个单元测试（含集成测试）
+- [x] CLI `ffmpeg-check` 子命令
+
+### AudioExtractor 音频提取
+- [x] extractAudio — 16kHz mono WAV 输出
+- [x] buildArguments 纯函数
+- [x] 3 个单元测试
+- [x] CLI `extract-audio` 子命令
+
+### SceneDetector 场景检测
+- [x] SceneSegment 数据结构 + Config
+- [x] detectScenes 完整流水线
+- [x] parseTimestamps / filterByMinGap / segmentsFromCutPoints / mergeShortSegments / splitLongSegments 纯函数
+- [x] buildDetectionArguments（-fps_mode vfr，兼容 FFmpeg 7.0）
+- [x] 28 个单元测试（含完整流水线模拟）
+- [x] CLI `detect-scenes` 子命令
+
+### KeyframeExtractor 关键帧提取
+- [x] Config + ExtractedFrame 数据结构
+- [x] framesPerScene / frameTimestamps / buildExtractArguments 纯函数
+- [x] extractKeyframes — 场景遍历 + 512px 短边缩略图
+- [x] 15 个单元测试
+- [x] CLI `extract-keyframes` 子命令
+
+### 集成验证
+- [x] 合成测试视频 3 场景端到端验证
+- [x] detect-scenes: 正确识别 3 个场景（15s, 10s, 8s）
+- [x] extract-keyframes: 6 帧缩略图（3+2+1），512px 短边
+- [x] extract-audio: 16kHz mono WAV 输出
+- [x] 134 个测试全部通过
+- [x] Tag: `v0.2a-ffmpeg`
+
+## 已完成（Stage 1: 存储层）
+
+### 1a-1c: 数据库 + 搜索 + 同步
+- [x] Migrations / Models / CRUD / FTS5 / SyncEngine
+- [x] 75 个单元测试
+
+### 1d: CLI 验证
+- [x] db-init / insert-mock / sync / search 子命令
+- [x] 端到端验证通过
+- [x] Tag: `v0.1-storage`
 
 ## 已完成（Stage 0）
 

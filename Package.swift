@@ -24,7 +24,7 @@ let package = Package(
 
         // --- 以下依赖在后续阶段启用 ---
         // Stage 2: WhisperKit STT
-        // .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0"),
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0"),
         // Stage 3: ONNX Runtime for BGE-M3 向量嵌入
         // .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager.git", from: "1.20.0"),
     ],
@@ -33,6 +33,7 @@ let package = Package(
             name: "FindItCore",
             dependencies: [
                 .product(name: "GRDB", package: "GRDB.swift"),
+                .product(name: "WhisperKit", package: "WhisperKit"),
             ]
         ),
         .executableTarget(

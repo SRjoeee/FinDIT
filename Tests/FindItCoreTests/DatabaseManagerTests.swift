@@ -8,7 +8,7 @@ final class DatabaseManagerTests: XCTestCase {
 
     func testInMemoryDatabaseCreation() throws {
         // Arrange & Act
-        let db = try DatabaseManager.makeInMemoryDatabase()
+        let db = try DatabaseManager.makeRawInMemoryDatabase()
 
         // Assert: 可以执行基本 SQL
         let result = try db.read { db in
@@ -19,7 +19,7 @@ final class DatabaseManagerTests: XCTestCase {
 
     func testInMemoryDatabaseForeignKeysEnabled() throws {
         // Arrange
-        let db = try DatabaseManager.makeInMemoryDatabase()
+        let db = try DatabaseManager.makeRawInMemoryDatabase()
 
         // Act: 检查 foreign_keys pragma
         let fkEnabled = try db.read { db in

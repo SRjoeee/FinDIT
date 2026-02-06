@@ -7,13 +7,13 @@ _无_
 ## 待办
 
 ### 1a: 文件夹级 SQLite
-- [ ] 创建 Migrations.swift — DatabaseMigrator 版本化迁移
+- [x] 创建 Migrations.swift — DatabaseMigrator 版本化迁移
 - [ ] 创建 Models.swift — WatchedFolder, Video, Clip Record 类型
 - [ ] 实现 CRUD 操作（插入/查询/更新/删除）
 - [ ] 单元测试: 内存数据库测试 CRUD
 
 ### 1b: 全局搜索索引
-- [ ] 创建全局库 Schema（clips 镜像, videos 镜像, clips_fts, search_history）
+- [x] 创建全局库 Schema（clips 镜像, videos 镜像, clips_fts, search_history）
 - [ ] FTS5 虚拟表建表 + content sync triggers
 - [ ] FTS5 搜索实现（关键词、前缀、精确、排除）
 - [ ] 单元测试: FTS5 搜索测试

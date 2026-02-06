@@ -70,7 +70,9 @@ public final class DatabaseManager {
         }
 
         let dbPath = indexDir.appendingPathComponent(indexFileName).path
-        return try openPool(at: dbPath)
+        let pool = try openPool(at: dbPath)
+        try Migrations.folderMigrator().migrate(pool)
+        return pool
     }
 
     // MARK: - 全局搜索索引
@@ -78,7 +80,7 @@ public final class DatabaseManager {
     /// 打开（或创建）全局搜索索引数据库
     ///
     /// 数据库位于 `~/Library/Application Support/FindIt/search.sqlite`。
-    /// 目录不存在时自动创建。
+    /// 目录不存在时自动创建。自动执行全局库迁移。
     ///
     /// - Returns: 配置好 WAL 模式的数据库连接池
     public static func openGlobalDatabase() throws -> DatabasePool {
@@ -90,17 +92,29 @@ public final class DatabaseManager {
         }
 
         let dbPath = dir.appendingPathComponent(globalFileName).path
-        return try openPool(at: dbPath)
+        let pool = try openPool(at: dbPath)
+        try Migrations.globalMigrator().migrate(pool)
+        return pool
     }
 
     // MARK: - 内存数据库（测试用）
 
-    /// 创建一个内存数据库，用于单元测试
-    ///
-    /// 内存数据库在连接关闭后自动销毁，不留任何磁盘痕迹。
-    ///
-    /// - Returns: 配置好的内存数据库连接队列
-    public static func makeInMemoryDatabase() throws -> DatabaseQueue {
+    /// 创建文件夹级库的内存数据库（含迁移），用于单元测试
+    public static func makeFolderInMemoryDatabase() throws -> DatabaseQueue {
+        let db = try makeRawInMemoryDatabase()
+        try Migrations.folderMigrator().migrate(db)
+        return db
+    }
+
+    /// 创建全局库的内存数据库（含迁移），用于单元测试
+    public static func makeGlobalInMemoryDatabase() throws -> DatabaseQueue {
+        let db = try makeRawInMemoryDatabase()
+        try Migrations.globalMigrator().migrate(db)
+        return db
+    }
+
+    /// 创建无迁移的裸内存数据库
+    public static func makeRawInMemoryDatabase() throws -> DatabaseQueue {
         var config = Configuration()
         config.foreignKeysEnabled = true
         return try DatabaseQueue(configuration: config)

@@ -2,16 +2,11 @@
 
 ## 进行中
 
-_尚未开始_
+_无_
 
 ## 待办
 
-### 前置验证
-- [ ] 验证 `swift test` 在已安装 Xcode 环境下通过
-- [ ] 验证 `swift build` 仍正常
-
 ### 1a: 文件夹级 SQLite
-- [ ] 创建 DatabaseManager.swift — 连接管理、WAL 模式、路径解析
 - [ ] 创建 Migrations.swift — DatabaseMigrator 版本化迁移
 - [ ] 创建 Models.swift — WatchedFolder, Video, Clip Record 类型
 - [ ] 实现 CRUD 操作（插入/查询/更新/删除）
@@ -46,3 +41,5 @@ _尚未开始_
 - [x] 验证: `swift build` 通过, `swift run findit-cli --help` 通过
 - [x] Git init + commit + tag `v0.0-skeleton`
 - [x] 产品说明书 review + 技术决策补充 (ADR-008 ~ ADR-013)
+- [x] 验证 `swift test` + `swift build` 在 Xcode 环境下通过
+- [x] 创建 DatabaseManager.swift — 连接管理、WAL 模式、路径解析 + StorageError

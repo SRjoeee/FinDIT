@@ -17,6 +17,7 @@ struct FindItCLI: ParsableCommand {
             SearchCommand.self,
             FFmpegCheckCommand.self,
             ExtractAudioCommand.self,
+            DetectScenesCommand.self,
         ]
     )
 }
@@ -347,5 +348,50 @@ struct ExtractAudioCommand: ParsableCommand {
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: result)[.size] as? Int64) ?? 0
         let sizeMB = String(format: "%.1f", Double(fileSize) / 1_000_000)
         print("✓ 输出: \(result) (\(sizeMB) MB)")
+    }
+}
+
+// MARK: - detect-scenes
+
+struct DetectScenesCommand: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "detect-scenes",
+        abstract: "检测视频场景切换点"
+    )
+
+    @Option(name: .long, help: "视频文件路径")
+    var input: String
+
+    @Option(name: .long, help: "场景检测阈值 (0-1, 默认 0.3)")
+    var threshold: Double = 0.3
+
+    func run() throws {
+        let inputPath = (input as NSString).standardizingPath
+        print("场景检测: \(inputPath) (阈值: \(threshold))")
+
+        let config = SceneDetector.Config(threshold: threshold)
+        let segments = try SceneDetector.detectScenes(inputPath: inputPath, config: config)
+
+        if segments.isEmpty {
+            print("未检测到场景")
+            return
+        }
+
+        print("检测到 \(segments.count) 个场景:\n")
+        for (i, seg) in segments.enumerated() {
+            let start = formatTimecode(seg.startTime)
+            let end = formatTimecode(seg.endTime)
+            print("  [\(i + 1)] \(start) → \(end) (\(String(format: "%.1f", seg.duration))s)")
+        }
+
+        let totalDuration = segments.last!.endTime
+        print("\n总时长: \(formatTimecode(totalDuration))")
+    }
+
+    private func formatTimecode(_ seconds: Double) -> String {
+        let m = Int(seconds) / 60
+        let s = Int(seconds) % 60
+        let ms = Int((seconds.truncatingRemainder(dividingBy: 1)) * 100)
+        return String(format: "%d:%02d.%02d", m, s, ms)
     }
 }

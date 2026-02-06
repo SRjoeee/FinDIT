@@ -6,37 +6,37 @@ final class KeyframeExtractorTests: XCTestCase {
     // MARK: - framesPerScene
 
     func testFramesPerSceneShort() {
-        // 3s → max(1, min(5, 3/5)) = max(1, 0) = 1
+        // 3s → max(1, min(3, 3/5)) = max(1, 0) = 1
         XCTAssertEqual(KeyframeExtractor.framesPerScene(duration: 3.0), 1)
     }
 
     func testFramesPerSceneMedium() {
-        // 15s → max(1, min(5, 15/5)) = max(1, 3) = 3
+        // 15s → max(1, min(3, 15/5)) = max(1, 3) = 3 (capped)
         XCTAssertEqual(KeyframeExtractor.framesPerScene(duration: 15.0), 3)
     }
 
     func testFramesPerSceneLong() {
-        // 45s → max(1, min(5, 45/5)) = max(1, 5) → 5 (capped)
-        XCTAssertEqual(KeyframeExtractor.framesPerScene(duration: 45.0), 5)
+        // 45s → max(1, min(3, 45/5)) = max(1, 3) → 3 (capped)
+        XCTAssertEqual(KeyframeExtractor.framesPerScene(duration: 45.0), 3)
     }
 
     func testFramesPerSceneVeryLong() {
-        // 100s → max(1, min(5, 100/5)) = max(1, 5) → 5 (capped)
-        XCTAssertEqual(KeyframeExtractor.framesPerScene(duration: 100.0), 5)
+        // 100s → max(1, min(3, 100/5)) = max(1, 3) → 3 (capped)
+        XCTAssertEqual(KeyframeExtractor.framesPerScene(duration: 100.0), 3)
     }
 
     func testFramesPerSceneExact5s() {
-        // 5s → max(1, min(5, 5/5)) = max(1, 1) = 1
+        // 5s → max(1, min(3, 5/5)) = max(1, 1) = 1
         XCTAssertEqual(KeyframeExtractor.framesPerScene(duration: 5.0), 1)
     }
 
     func testFramesPerSceneExact10s() {
-        // 10s → max(1, min(5, 10/5)) = max(1, 2) = 2
+        // 10s → max(1, min(3, 10/5)) = max(1, 2) = 2
         XCTAssertEqual(KeyframeExtractor.framesPerScene(duration: 10.0), 2)
     }
 
     func testFramesPerSceneZero() {
-        // 0s → max(1, min(5, 0/5)) = max(1, 0) = 1
+        // 0s → max(1, min(3, 0/5)) = max(1, 0) = 1
         XCTAssertEqual(KeyframeExtractor.framesPerScene(duration: 0), 1)
     }
 
@@ -144,7 +144,7 @@ final class KeyframeExtractorTests: XCTestCase {
         let config = KeyframeExtractor.Config.default
         XCTAssertEqual(config.thumbnailShortEdge, 512)
         XCTAssertEqual(config.jpegQuality, 5)
-        XCTAssertEqual(config.maxFramesPerScene, 5)
+        XCTAssertEqual(config.maxFramesPerScene, 3)
         XCTAssertEqual(config.frameDurationDivisor, 5.0)
     }
 }

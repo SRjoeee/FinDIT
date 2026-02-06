@@ -20,14 +20,14 @@ public enum KeyframeExtractor {
         public static let `default` = Config(
             thumbnailShortEdge: 512,
             jpegQuality: 5,
-            maxFramesPerScene: 5,
+            maxFramesPerScene: 3,
             frameDurationDivisor: 5.0
         )
 
         public init(
             thumbnailShortEdge: Int = 512,
             jpegQuality: Int = 5,
-            maxFramesPerScene: Int = 5,
+            maxFramesPerScene: Int = 3,
             frameDurationDivisor: Double = 5.0
         ) {
             self.thumbnailShortEdge = thumbnailShortEdge
@@ -138,8 +138,8 @@ public enum KeyframeExtractor {
     ///
     /// `max(1, min(maxFrames, duration / divisor))`
     /// - 3s 场景 → 1 帧
-    /// - 15s 场景 → 3 帧
-    /// - 45s 场景 → 5 帧（上限）
+    /// - 15s 场景 → 3 帧（上限）
+    /// - 45s 场景 → 3 帧（上限）
     static func framesPerScene(duration: Double, config: Config = .default) -> Int {
         max(1, min(config.maxFramesPerScene, Int(duration / config.frameDurationDivisor)))
     }

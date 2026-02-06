@@ -79,6 +79,15 @@ public enum Migrations {
             }
         }
 
+        migrator.registerMigration("v3_addIndexes") { db in
+            // index_status 被 fetchByStatus() 频繁查询，需索引加速
+            try db.create(
+                index: "idx_videos_index_status",
+                on: "videos",
+                columns: ["index_status"]
+            )
+        }
+
         return migrator
     }
 

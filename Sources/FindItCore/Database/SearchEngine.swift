@@ -266,33 +266,34 @@ public enum SearchEngine {
             }
         }
 
-        // 4. 归一化
-        // FTS5 rank 是负数（越小越好），转换为正数（越大越好）
-        let ftsRanks = Array(ftsScores.values)
-        let normalizedFTS: [Double]
-        if ftsRanks.isEmpty {
-            normalizedFTS = []
+        // 4. 归一化（直接对 key-value 就地计算，不依赖 Dictionary 迭代顺序）
+        // FTS5 rank 是负数（越小越好），取反后做 min-max 归一化
+        let normalizedFTSMap: [Int64: Double]
+        if ftsScores.isEmpty {
+            normalizedFTSMap = [:]
         } else {
-            // 取反使越大越好，再归一化
-            let negated = ftsRanks.map { -$0 }
-            normalizedFTS = EmbeddingUtils.minMaxNormalize(negated)
-        }
-
-        var normalizedFTSMap: [Int64: Double] = [:]
-        for (i, key) in ftsScores.keys.enumerated() {
-            if i < normalizedFTS.count {
-                normalizedFTSMap[key] = normalizedFTS[i]
+            let negatedMin = -(ftsScores.values.max()!)  // 取反后最小值
+            let negatedMax = -(ftsScores.values.min()!)  // 取反后最大值
+            let range = negatedMax - negatedMin
+            if range > 0 {
+                normalizedFTSMap = ftsScores.mapValues { (-$0 - negatedMin) / range }
+            } else {
+                normalizedFTSMap = ftsScores.mapValues { _ in 0.0 }
             }
         }
 
         // 向量相似度已在 [0, 1] 范围，但仍归一化以确保一致性
-        let vecSims = Array(vectorScores.values)
-        let normalizedVec = EmbeddingUtils.minMaxNormalize(vecSims)
-
-        var normalizedVecMap: [Int64: Double] = [:]
-        for (i, key) in vectorScores.keys.enumerated() {
-            if i < normalizedVec.count {
-                normalizedVecMap[key] = normalizedVec[i]
+        let normalizedVecMap: [Int64: Double]
+        if vectorScores.isEmpty {
+            normalizedVecMap = [:]
+        } else {
+            let vecMin = vectorScores.values.min()!
+            let vecMax = vectorScores.values.max()!
+            let range = vecMax - vecMin
+            if range > 0 {
+                normalizedVecMap = vectorScores.mapValues { ($0 - vecMin) / range }
+            } else {
+                normalizedVecMap = vectorScores.mapValues { _ in 0.0 }
             }
         }
 
@@ -337,7 +338,7 @@ public enum SearchEngine {
     ///
     /// 自适应规则（PRODUCT_SPEC 4.3）：
     /// - 带引号：α=0.9, β=0.1（精确匹配优先）
-    /// - 长句(>10字)：α=0.2, β=0.8（语义主导）
+    /// - 长句（CJK >5字 / 其他 >10字）：α=0.2, β=0.8（语义主导）
     /// - 默认：α=0.4, β=0.6（语义优先）
     static func resolveWeights(query: String, mode: SearchMode, hasEmbedding: Bool) -> SearchWeights {
         switch mode {
@@ -355,11 +356,25 @@ public enum SearchEngine {
             if query.contains("\"") {
                 return .exactMatch
             }
-            // 长描述性语句（>10字）
-            if query.count > 10 {
+            // 长描述性语句：CJK 字符语义密度高，用较低阈值
+            let threshold = containsCJK(query) ? 5 : 10
+            if query.count > threshold {
                 return .semantic
             }
             return .default
+        }
+    }
+
+    /// 检测字符串是否包含 CJK（中日韩）字符
+    private static func containsCJK(_ text: String) -> Bool {
+        text.unicodeScalars.contains { scalar in
+            // CJK Unified Ideographs + Extension A/B + CJK Compatibility
+            (0x4E00...0x9FFF).contains(scalar.value) ||
+            (0x3400...0x4DBF).contains(scalar.value) ||
+            // Hiragana + Katakana
+            (0x3040...0x30FF).contains(scalar.value) ||
+            // Hangul Syllables
+            (0xAC00...0xD7AF).contains(scalar.value)
         }
     }
 

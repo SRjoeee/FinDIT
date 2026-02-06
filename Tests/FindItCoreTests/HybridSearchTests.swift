@@ -145,6 +145,90 @@ final class HybridSearchTests: XCTestCase {
         XCTAssertEqual(w.vectorWeight, 0.0)
     }
 
+    // MARK: - resolveWeights CJK 阈值
+
+    func testResolveWeightsCJKMediumQuery() {
+        // "艺术工作室绘画" = 7 字符, CJK 阈值 5, 7 > 5 → semantic
+        let w = SearchEngine.resolveWeights(query: "艺术工作室绘画", mode: .auto, hasEmbedding: true)
+        XCTAssertEqual(w.ftsWeight, 0.2, accuracy: 0.01)
+        XCTAssertEqual(w.vectorWeight, 0.8, accuracy: 0.01)
+    }
+
+    func testResolveWeightsEnglishMediumQuery() {
+        // "beach scene" = 11 字符, 非 CJK 阈值 10, 11 > 10 → semantic
+        let w = SearchEngine.resolveWeights(query: "beach scene", mode: .auto, hasEmbedding: true)
+        XCTAssertEqual(w.ftsWeight, 0.2, accuracy: 0.01)
+        XCTAssertEqual(w.vectorWeight, 0.8, accuracy: 0.01)
+    }
+
+    func testResolveWeightsEnglishShortQuery() {
+        // "beach sun" = 9 字符, 非 CJK 阈值 10, 9 <= 10 → default
+        let w = SearchEngine.resolveWeights(query: "beach sun", mode: .auto, hasEmbedding: true)
+        XCTAssertEqual(w.ftsWeight, 0.4, accuracy: 0.01)
+        XCTAssertEqual(w.vectorWeight, 0.6, accuracy: 0.01)
+    }
+
+    // MARK: - v3 Migration (index_status 索引)
+
+    func testV3MigrationFolderDB() throws {
+        let db = try makeFolderDB()
+        // 验证索引存在
+        let indexExists = try db.read { dbConn in
+            try Bool.fetchOne(dbConn, sql: """
+                SELECT COUNT(*) > 0 FROM sqlite_master
+                WHERE type = 'index' AND name = 'idx_videos_index_status'
+                """)
+        }
+        XCTAssertEqual(indexExists, true, "idx_videos_index_status 索引应存在")
+    }
+
+    // MARK: - fusionSearch 归一化正确性
+
+    func testFusionSearchNormalization() throws {
+        let db = try makeGlobalDB()
+
+        // 插入 3 个 clip，分别有不同的 FTS 相关度和向量相似度
+        let vec1: [Float] = [1.0, 0.0, 0.0]  // 与 query 最相似
+        let vec2: [Float] = [0.7, 0.7, 0.0]  // 中等
+        let vec3: [Float] = [0.0, 0.0, 1.0]  // 最不相似
+
+        try insertGlobalClip(db, sourceClipId: 1, description: "海边日落沙滩",
+                             tags: "海滩 日落 沙滩", embedding: EmbeddingUtils.serializeEmbedding(vec1),
+                             embeddingModel: "test")
+        try insertGlobalClip(db, sourceClipId: 2, description: "海边散步",
+                             tags: "海滩 散步", embedding: EmbeddingUtils.serializeEmbedding(vec2),
+                             embeddingModel: "test")
+        try insertGlobalClip(db, sourceClipId: 3, description: "森林漫步",
+                             tags: "森林 散步", embedding: EmbeddingUtils.serializeEmbedding(vec3),
+                             embeddingModel: "test")
+
+        let queryVec: [Float] = [1.0, 0.0, 0.0]
+        let results = try db.read { dbConn in
+            try SearchEngine.hybridSearch(
+                dbConn, query: "海滩",
+                queryEmbedding: queryVec,
+                embeddingModel: "test",
+                mode: .hybrid
+            )
+        }
+
+        // 应该有结果
+        XCTAssertGreaterThan(results.count, 0)
+        // 所有 finalScore 应在 [0, 1] 范围内
+        for result in results {
+            if let score = result.finalScore {
+                XCTAssertGreaterThanOrEqual(score, 0.0, "finalScore 不应小于 0")
+                XCTAssertLessThanOrEqual(score, 1.0, "finalScore 不应大于 1")
+            }
+        }
+        // clip 1 和 clip 2 都应在结果中（都含"海滩"相关文本）
+        // 注意：BM25 对短文档有加成，clip 2 的 FTS 分数可能高于 clip 1，
+        // 因此不对具体排名做断言，只验证都在结果集中
+        let resultClipIds = Set(results.map { $0.sourceClipId })
+        XCTAssertTrue(resultClipIds.contains(1), "clip 1 应在结果中")
+        XCTAssertTrue(resultClipIds.contains(2), "clip 2 应在结果中")
+    }
+
     // MARK: - hybridSearch FTS fallback
 
     func testHybridSearchFTSFallback() throws {

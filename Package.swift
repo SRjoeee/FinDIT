@@ -23,8 +23,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
 
         // --- 以下依赖在后续阶段启用 ---
-        // Stage 2: WhisperKit STT
-        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0"),
+        // Stage 2: WhisperKit STT (v0.15.x, pre-1.0 可能有破坏性变更)
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", .upToNextMinor(from: "0.15.0")),
         // Stage 3.5: MLX Swift for 本地 VLM 推理
         .package(url: "https://github.com/ml-explore/mlx-swift-lm/", .upToNextMinor(from: "2.30.3")),
         // Stage 3: ONNX Runtime for BGE-M3 向量嵌入

@@ -199,6 +199,80 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(result.syncedClips, 0)
     }
 
+    // MARK: - 强制同步
+
+    func testForceSyncUpdatesExistingClips() throws {
+        try seedFolderData(videoCount: 1, clipsPerVideo: 2)
+
+        // 首次同步
+        _ = try SyncEngine.sync(folderPath: folderPath, folderDB: folderDB, globalDB: globalDB)
+
+        // 验证全局库 embedding 为空
+        let beforeEmbedding = try globalDB.read { db in
+            try Row.fetchOne(db, sql: "SELECT embedding FROM clips WHERE clip_id = 1")
+        }
+        XCTAssertTrue(beforeEmbedding?["embedding"] == nil || beforeEmbedding?["embedding"] is NSNull)
+
+        // 在文件夹库中更新 clip 的 embedding（模拟 embed 命令）
+        let fakeEmbedding = EmbeddingUtils.serializeEmbedding([0.1, 0.2, 0.3])
+        try folderDB.write { db in
+            try db.execute(
+                sql: "UPDATE clips SET embedding = ?, embedding_model = ? WHERE clip_id = 1",
+                arguments: [fakeEmbedding, "gemini"]
+            )
+        }
+
+        // 普通增量同步检测不到更新（clip_id 未变）
+        let normalResult = try SyncEngine.sync(
+            folderPath: folderPath, folderDB: folderDB, globalDB: globalDB
+        )
+        XCTAssertEqual(normalResult.syncedClips, 0, "增量同步不感知已有记录的字段更新")
+
+        // 全局库 embedding 仍然为空
+        let stillEmpty = try globalDB.read { db in
+            try Data.fetchOne(db, sql: "SELECT embedding FROM clips WHERE clip_id = 1")
+        }
+        XCTAssertNil(stillEmpty, "增量同步后全局库 embedding 应仍为空")
+
+        // 强制同步可以同步更新
+        let forceResult = try SyncEngine.sync(
+            folderPath: folderPath, folderDB: folderDB, globalDB: globalDB, force: true
+        )
+        XCTAssertEqual(forceResult.syncedClips, 2, "force 应重新同步所有 clips")
+
+        // 全局库 embedding 已更新
+        let afterEmbedding = try globalDB.read { db in
+            try Data.fetchOne(db, sql: "SELECT embedding FROM clips WHERE source_clip_id = 1 AND source_folder = ?",
+                              arguments: [folderPath])
+        }
+        XCTAssertNotNil(afterEmbedding, "force 同步后全局库应有 embedding 数据")
+
+        let afterModel = try globalDB.read { db in
+            try String.fetchOne(db, sql: "SELECT embedding_model FROM clips WHERE source_clip_id = 1 AND source_folder = ?",
+                                arguments: [folderPath])
+        }
+        XCTAssertEqual(afterModel, "gemini")
+    }
+
+    func testForceSyncDoesNotDuplicateRecords() throws {
+        try seedFolderData(videoCount: 1, clipsPerVideo: 2)
+
+        // 首次同步
+        _ = try SyncEngine.sync(folderPath: folderPath, folderDB: folderDB, globalDB: globalDB)
+
+        // 强制同步（重复 upsert）
+        let forceResult = try SyncEngine.sync(
+            folderPath: folderPath, folderDB: folderDB, globalDB: globalDB, force: true
+        )
+        XCTAssertEqual(forceResult.syncedClips, 2)
+
+        // 全局库记录数不变（ON CONFLICT 更新而非插入）
+        let totalClips = try globalDB.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM clips")
+        }
+        XCTAssertEqual(totalClips, 2, "force 同步不应创建重复记录")
+    }
+
     // MARK: - sync_meta
 
     func testSyncMetaUpdated() throws {

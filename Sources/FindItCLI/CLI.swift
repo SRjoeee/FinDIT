@@ -227,6 +227,9 @@ struct SyncCommand: ParsableCommand {
     @Option(name: .long, help: "素材文件夹路径")
     var folder: String
 
+    @Flag(name: .long, help: "强制全量同步（忽略增量游标，重新同步所有记录）")
+    var force = false
+
     func run() throws {
         let folderPath = (folder as NSString).standardizingPath
         let folderDB = try DatabaseManager.openFolderDatabase(at: folderPath)
@@ -235,7 +238,8 @@ struct SyncCommand: ParsableCommand {
         let result = try SyncEngine.sync(
             folderPath: folderPath,
             folderDB: folderDB,
-            globalDB: globalDB
+            globalDB: globalDB,
+            force: force
         )
 
         if result.syncedVideos == 0 && result.syncedClips == 0 {
@@ -1015,12 +1019,13 @@ struct EmbedCommand: AsyncParsableCommand {
 
         print("\n完成! 嵌入 \(embedded) 个片段, 失败 \(failed) 个")
 
-        // 同步到全局库
+        // 同步到全局库（force: true 因为 embedding 更新不改变 rowid）
         let globalDB = try DatabaseManager.openGlobalDatabase()
         let syncResult = try SyncEngine.sync(
             folderPath: folderPath,
             folderDB: folderDB,
-            globalDB: globalDB
+            globalDB: globalDB,
+            force: true
         )
         print("同步到全局索引: \(syncResult.syncedClips) 个片段")
     }

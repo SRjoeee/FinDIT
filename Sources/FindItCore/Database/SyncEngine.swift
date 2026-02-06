@@ -30,11 +30,14 @@ public enum SyncEngine {
     ///   - folderPath: 文件夹路径（用于 source_folder 标识和 sync_meta 追踪）
     ///   - folderDB: 文件夹级数据库连接（只读）
     ///   - globalDB: 全局搜索索引数据库连接（读写）
-    /// - Returns: 同步结果（新增的 video/clip 条数）
+    ///   - force: 强制全量同步（忽略增量游标，重新同步所有记录）。
+    ///            适用于已有记录被更新（如 embedding 填充）但 rowid 未变的情况。
+    /// - Returns: 同步结果（同步的 video/clip 条数）
     public static func sync(
         folderPath: String,
         folderDB: DatabaseReader,
-        globalDB: DatabaseWriter
+        globalDB: DatabaseWriter,
+        force: Bool = false
     ) throws -> SyncResult {
         // 1. 从全局库读取该文件夹的同步进度
         let meta = try globalDB.read { db in
@@ -43,8 +46,8 @@ public enum SyncEngine {
                 FROM sync_meta WHERE folder_path = ?
                 """, arguments: [folderPath])
         }
-        var currentVideoRowId: Int64 = meta?["last_synced_video_rowid"] ?? 0
-        var currentClipRowId: Int64 = meta?["last_synced_clip_rowid"] ?? 0
+        var currentVideoRowId: Int64 = force ? 0 : (meta?["last_synced_video_rowid"] ?? 0)
+        var currentClipRowId: Int64 = force ? 0 : (meta?["last_synced_clip_rowid"] ?? 0)
 
         var totalSyncedVideos = 0
         var totalSyncedClips = 0

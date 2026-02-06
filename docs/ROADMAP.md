@@ -125,27 +125,32 @@
 **Tag: `v0.3-search**` — 已完成
 
 ### 3a: EmbeddingProvider 协议 + EmbeddingUtils
+
 - EmbeddingProvider 协议 (name, dimensions, isAvailable, embed, embedBatch)
 - EmbeddingUtils: composeClipText, cosineSimilarity (vDSP SIMD), serialize/deserialize, minMaxNormalize
 - 22 个单元测试
 
 ### 3b: GeminiEmbeddingProvider
+
 - Gemini text-embedding-004 (768 维, 多语言, 免费 1500 RPM)
 - embedContent + batchEmbedContents API, 指数退避重试
 - 20 个单元测试
 
 ### 3c: NLEmbeddingProvider
+
 - Apple NaturalLanguage 框架 (512 维, 离线, 零依赖)
 - 语言自动检测 + 词级嵌入平均
 - 10 个单元测试
 
 ### 3d: DB 迁移 + 混合搜索
+
 - v2 迁移: embedding_model 列 (文件夹库 + 全局库)
 - SearchMode (fts/vector/hybrid/auto) + SearchWeights 自适应
 - hybridSearch: FTS5 + 向量融合 (min-max 归一化)
 - 17 个单元测试
 
 ### 3e: Pipeline 集成 + CLI
+
 - PipelineManager 嵌入步骤 (非致命)
 - CLI `search` 混合搜索 (--mode) + `embed` 命令 (--provider gemini/nl)
 - 317 个测试全部通过

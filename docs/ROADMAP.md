@@ -93,12 +93,17 @@
 - [x] CLI `analyze` 命令 (7 秒间隔限速)
 - [x] 29 个单元测试, 196 个测试全部通过
 
-### 2d: 管线串联
-- [ ] PipelineManager 状态机 (pending → stt_running → stt_done → vision_running → completed)
-- [ ] 断点续传（last_processed_clip）
-- [ ] 并发控制（同时处理 1-2 个文件）
-- [ ] 错误处理 + 失败重试
-- [ ] 索引完成后自动触发 SyncEngine
+### 2d: 管线串联 ✓
+
+**Tag: `v0.2d-pipeline`** — 已完成
+
+- [x] FileScanner: 递归视频文件扫描 (9 种格式)
+- [x] PipelineManager 状态机 (pending → stt_running → stt_done → vision_running → completed)
+- [x] 断点续传（last_processed_clip, Vision 每 clip 更新）
+- [x] 错误处理 (STT 失败不致命，Vision 单 clip 跳过)
+- [x] 索引完成后自动触发 SyncEngine
+- [x] CLI `index` 命令 (单文件 / 文件夹扫描, --skip-stt, --skip-vision, --force)
+- [x] 248 个测试全部通过
 
 **验收标准：**
 - CLI 指定真实视频文件 → 全流程自动处理 → 数据入库

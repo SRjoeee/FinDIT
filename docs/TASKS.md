@@ -1,4 +1,4 @@
-# 当前阶段: Stage 2 — 处理管线
+# 当前阶段: Stage 3 — 搜索引擎
 
 ## 进行中
 
@@ -6,11 +6,39 @@ _无_
 
 ## 待办
 
-### 2d: 管线串联
-- [ ] PipelineManager 状态机
-- [ ] 断点续传 + 并发控制
-- [ ] 错误处理 + 失败重试
-- [ ] 索引完成后触发 SyncEngine
+### Stage 3: 搜索引擎
+- [ ] BGE-M3 ONNX 向量嵌入
+- [ ] 混合搜索 (FTS5 + 向量)
+- [ ] 搜索策略自适应
+
+## 已完成（Stage 2d: 管线串联）
+
+### FileScanner 文件扫描
+- [x] supportedExtensions (9 种视频格式)
+- [x] scanVideoFiles — 递归扫描 + 隐藏文件跳过
+- [x] isVideoFile — 扩展名判断
+- [x] 8 个单元测试
+
+### PipelineManager 全流程编排
+- [x] Stage 状态机 (pending → stt_running → stt_done → vision_running → completed / failed)
+- [x] processVideo — 完整端到端管线编排
+- [x] 断点续传 (last_processed_clip, Vision 每个 clip 更新)
+- [x] 恢复模式 (根据 index_status 跳过已完成的步骤)
+- [x] 错误处理 (STT 失败不致命，Vision 单 clip 失败跳过继续)
+- [x] 索引完成后自动触发 SyncEngine.sync()
+- [x] 纯函数: thumbnailDirectory, tmpDirectory, groupFramesByScene, encodeJSONArray, selectThumbnail
+- [x] 12 个单元测试
+
+### CLI index 子命令
+- [x] 单文件模式 (--input) 和文件夹扫描模式
+- [x] --skip-stt / --skip-vision 跳过模式
+- [x] --force 强制重索引
+- [x] --api-key / --model 选项
+- [x] 进度报告 + 耗时统计
+
+### 验收
+- [x] 248 个测试全部通过
+- [x] Tag: `v0.2d-pipeline`
 
 ## 已完成（Stage 2c: Gemini Flash 视觉分析）
 

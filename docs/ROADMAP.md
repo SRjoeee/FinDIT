@@ -81,13 +81,17 @@
 - [x] CLI `transcribe` 子命令（AsyncParsableCommand）
 - [x] 167 个测试全部通过
 
-### 2c: Gemini Flash 视觉分析
-- [ ] REST API 调用封装（URLSession）
-- [ ] 多帧批量发送 + 结构化 JSON 输出
-- [ ] API Key 管理（macOS Keychain）
-- [ ] 速率限制 + 重试逻辑
-- [ ] API 额度管理（调用计数、接近限额自动暂停）
-- [ ] Tags 提取：从 JSON 各字段去重合成 JSON 数组
+### 2c: Gemini Flash 视觉分析 ✓
+
+**Tag: `v0.2c-vision`** — 已完成
+
+- [x] VisionAnalyzer: Gemini 2.5 Flash REST API (纯 URLSession, 无新依赖)
+- [x] API Key 管理 (配置文件 + 环境变量 + CLI 选项)
+- [x] AnalysisResult: 9 字段 + composeTags 自动去重合成
+- [x] 结构化输出: response_schema 确保 JSON 格式
+- [x] 重试逻辑: 指数退避 (429/503/500)
+- [x] CLI `analyze` 命令 (7 秒间隔限速)
+- [x] 29 个单元测试, 196 个测试全部通过
 
 ### 2d: 管线串联
 - [ ] PipelineManager 状态机 (pending → stt_running → stt_done → vision_running → completed)

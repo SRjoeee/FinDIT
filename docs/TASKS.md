@@ -6,13 +6,30 @@ _无_
 
 ## 待办
 
-### 2c: Gemini Flash 视觉分析
-- [ ] REST API 调用封装（URLSession）
-- [ ] 多帧批量发送 + 结构化 JSON 输出
-- [ ] API Key 管理
-- [ ] 速率限制 + 重试逻辑
-- [ ] Tags 提取
-- [ ] CLI `analyze` 子命令
+### 2d: 管线串联
+- [ ] PipelineManager 状态机
+- [ ] 断点续传 + 并发控制
+- [ ] 错误处理 + 失败重试
+- [ ] 索引完成后触发 SyncEngine
+
+## 已完成（Stage 2c: Gemini Flash 视觉分析）
+
+### VisionAnalyzer 视觉分析
+- [x] VisionAnalyzerError 错误枚举（6 种错误）
+- [x] VisionAnalyzer.Config (model, maxImages, timeout, retries)
+- [x] API Key 管理 (resolveAPIKey: CLI 选项 > 配置文件 > 环境变量)
+- [x] API Key 文件: `~/.config/findit/gemini-api-key.txt`
+- [x] AnalysisResult 数据结构 + composeTags 自动去重合成
+- [x] encodeImageToBase64 — JPEG → base64
+- [x] buildRequestBody — Gemini API JSON 请求体 + response_schema
+- [x] formatPrompt — PRODUCT_SPEC 3.2.5 提示词
+- [x] parseResponse / parseErrorResponse — Gemini 响应解析
+- [x] sendRequest — URLSession + 指数退避重试 (429/503/500)
+- [x] analyzeScene — 主异步入口
+- [x] 29 个单元测试（key 管理 8 + 纯函数 12 + HTTP 5 + Config 4）
+- [x] CLI `analyze` 子命令 (AsyncParsableCommand)
+- [x] 196 个测试全部通过
+- [x] Tag: `v0.2c-vision`
 
 ## 已完成（Stage 2b: WhisperKit STT）
 

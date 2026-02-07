@@ -9,6 +9,7 @@ import FindItCore
 struct ResultsGrid: View {
     let results: [SearchEngine.SearchResult]
     let resultCount: Int
+    let offlineFolders: Set<String>
     @Binding var selectedClipId: Int64?
     @Binding var columnsPerRow: Int
     @Binding var scrollOnSelect: Bool
@@ -25,6 +26,7 @@ struct ResultsGrid: View {
                         ClipCard(
                             result: result,
                             isSelected: result.clipId == selectedClipId,
+                            isOffline: offlineFolders.contains(result.sourceFolder),
                             onSelect: { selectedClipId = result.clipId }
                         )
                         .id(result.clipId)

@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var showFolderSheet = false
     @State private var selectedClipId: Int64?
     @State private var qlCoordinator = QuickLookCoordinator()
+    @State private var volumeMonitor = VolumeMonitor()
     @State private var columnsPerRow: Int = 3
     @State private var scrollOnSelect = false
 
@@ -56,6 +57,10 @@ struct ContentView: View {
             searchState.appState = appState
             indexingManager.appState = appState
             appState.indexingManager = indexingManager
+            volumeMonitor.appState = appState
+            volumeMonitor.indexingManager = indexingManager
+            volumeMonitor.startMonitoring()
+            NotificationManager.requestPermission()
             await appState.initialize()
         }
         .onReceive(NotificationCenter.default.publisher(for: .addFolder)) { _ in
@@ -93,6 +98,7 @@ struct ContentView: View {
             ResultsGrid(
                 results: searchState.results,
                 resultCount: searchState.resultCount,
+                offlineFolders: offlineFolderPaths,
                 selectedClipId: $selectedClipId,
                 columnsPerRow: $columnsPerRow,
                 scrollOnSelect: $scrollOnSelect
@@ -154,6 +160,11 @@ struct ContentView: View {
     /// 无结果时隐藏 toolbar 背景（含分隔线），保持界面干净。
     private var hasScrollableContent: Bool {
         appState.isInitialized && !searchState.query.isEmpty && !searchState.results.isEmpty
+    }
+
+    /// 离线文件夹路径集合（用于搜索结果离线蒙层）
+    private var offlineFolderPaths: Set<String> {
+        Set(appState.folders.filter { !$0.isAvailable }.map(\.folderPath))
     }
 
     // MARK: - Actions

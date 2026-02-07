@@ -9,6 +9,7 @@ import FindItCore
 struct ClipCard: View {
     let result: SearchEngine.SearchResult
     let isSelected: Bool
+    var isOffline: Bool = false
     var onSelect: () -> Void = {}
 
     @State private var isHovering = false
@@ -21,6 +22,16 @@ struct ClipCard: View {
             // 缩略图区域
             ZStack(alignment: .bottomTrailing) {
                 ThumbnailView(path: result.thumbnailPath)
+
+                // 离线蒙层
+                if isOffline {
+                    ZStack {
+                        Color.black.opacity(0.4)
+                        Image(systemName: "icloud.slash")
+                            .font(.title2)
+                            .foregroundStyle(.white.opacity(0.8))
+                    }
+                }
 
                 // 片段时长角标
                 Text(formatDuration(result.endTime - result.startTime))

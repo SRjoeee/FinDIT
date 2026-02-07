@@ -4,8 +4,10 @@ import FindItCore
 /// 文件夹管理 Sheet
 ///
 /// 通过 ⌘, 或 File 菜单唤起，管理已注册的素材文件夹。
+/// 显示每个文件夹的索引状态，支持重新索引和删除。
 struct FolderManagementSheet: View {
     let appState: AppState
+    let indexingManager: IndexingManager
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -32,14 +34,22 @@ struct FolderManagementSheet: View {
             } else {
                 List {
                     ForEach(appState.folders, id: \.folderPath) { folder in
-                        FolderManagementRow(folder: folder, onRemove: {
-                            try? appState.removeFolder(path: folder.folderPath)
-                        })
+                        FolderManagementRow(
+                            folder: folder,
+                            progress: indexingManager.folderProgress[folder.folderPath],
+                            isCurrentFolder: indexingManager.currentFolder == folder.folderPath,
+                            onReindex: {
+                                indexingManager.queueFolder(folder.folderPath)
+                            },
+                            onRemove: {
+                                try? appState.removeFolder(path: folder.folderPath)
+                            }
+                        )
                     }
                 }
             }
         }
-        .frame(width: 480, height: 360)
+        .frame(width: 520, height: 360)
     }
 }
 
@@ -47,6 +57,9 @@ struct FolderManagementSheet: View {
 
 private struct FolderManagementRow: View {
     let folder: WatchedFolder
+    let progress: FolderIndexProgress?
+    let isCurrentFolder: Bool
+    let onReindex: () -> Void
     let onRemove: () -> Void
 
     var body: some View {
@@ -57,22 +70,68 @@ private struct FolderManagementRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(URL(fileURLWithPath: folder.folderPath).lastPathComponent)
                     .lineLimit(1)
-                Text(folder.folderPath)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+
+                HStack(spacing: 4) {
+                    Text(folder.folderPath)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                // 索引状态行
+                if let progress = progress {
+                    indexingStatusLabel(progress)
+                }
             }
 
             Spacer()
 
-            Button(role: .destructive) {
-                onRemove()
-            } label: {
-                Image(systemName: "trash")
-                    .foregroundStyle(.secondary)
+            // 操作按钮
+            HStack(spacing: 8) {
+                // 重新索引按钮（仅非索引中时显示）
+                if !isCurrentFolder {
+                    Button {
+                        onReindex()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("重新索引")
+                }
+
+                Button(role: .destructive) {
+                    onRemove()
+                } label: {
+                    Image(systemName: "trash")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
+    }
+
+    @ViewBuilder
+    private func indexingStatusLabel(_ progress: FolderIndexProgress) -> some View {
+        HStack(spacing: 4) {
+            if isCurrentFolder {
+                ProgressView()
+                    .controlSize(.mini)
+                Text("索引中 \(progress.completedVideos + progress.failedVideos)/\(progress.totalVideos)")
+            } else if progress.isComplete {
+                if progress.failedVideos > 0 {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text("\(progress.completedVideos) 完成, \(progress.failedVideos) 失败")
+                } else {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("索引完成")
+                }
+            }
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
     }
 }

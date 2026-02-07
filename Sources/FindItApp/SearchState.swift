@@ -37,8 +37,11 @@ final class SearchState {
     /// 向量搜索 debounce Task
     private var vectorSearchTask: Task<Void, Never>?
 
-    /// Gemini embedding provider（懒初始化，key 不存在时允许后续重试）
-    private var embeddingProvider: GeminiEmbeddingProvider?
+    /// Embedding provider（懒初始化，Gemini 优先，NLEmbedding 回退）
+    private var embeddingProvider: (any EmbeddingProvider)?
+
+    /// 是否已尝试初始化 provider（避免反复尝试）
+    private var hasTriedInitProvider = false
 
     // MARK: - FTS5 即时搜索
 
@@ -122,21 +125,33 @@ final class SearchState {
         }
     }
 
-    /// 获取或初始化 Gemini embedding provider
+    /// 获取或初始化 embedding provider
     ///
+    /// 策略：Gemini（768 维，云端） → NLEmbedding（512 维，离线）。
     /// 已初始化时直接返回缓存实例。
-    /// 未初始化时尝试读取 API key，失败则返回 nil（下次调用会重试）。
-    private func getEmbeddingProvider() -> GeminiEmbeddingProvider? {
+    /// 首次初始化失败后不再反复尝试（API key 配置后需重启 App）。
+    private func getEmbeddingProvider() -> (any EmbeddingProvider)? {
         if let provider = embeddingProvider {
             return provider
         }
+        guard !hasTriedInitProvider else { return nil }
+        hasTriedInitProvider = true
 
-        guard let apiKey = try? VisionAnalyzer.resolveAPIKey() else {
-            return nil
+        // 优先 Gemini
+        if let apiKey = try? VisionAnalyzer.resolveAPIKey() {
+            let provider = GeminiEmbeddingProvider(apiKey: apiKey)
+            self.embeddingProvider = provider
+            return provider
         }
-        let provider = GeminiEmbeddingProvider(apiKey: apiKey)
-        self.embeddingProvider = provider
-        return provider
+
+        // 回退 NLEmbedding（离线）
+        let nlProvider = NLEmbeddingProvider()
+        if nlProvider.isAvailable() {
+            self.embeddingProvider = nlProvider
+            return nlProvider
+        }
+
+        return nil
     }
 
     // MARK: - 公开方法

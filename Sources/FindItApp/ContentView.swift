@@ -4,12 +4,13 @@ import AppKit
 struct ContentView: View {
     @State private var appState = AppState()
     @State private var searchState = SearchState()
+    @State private var indexingManager = IndexingManager()
     @State private var columnVisibility: NavigationSplitViewVisibility = .detailOnly
     @State private var showFolderSheet = false
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarView(appState: appState)
+            SidebarView(appState: appState, indexingManager: indexingManager)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
         } detail: {
             detailContent
@@ -33,10 +34,12 @@ struct ContentView: View {
         }
         .frame(minWidth: 680, minHeight: 460)
         .sheet(isPresented: $showFolderSheet) {
-            FolderManagementSheet(appState: appState)
+            FolderManagementSheet(appState: appState, indexingManager: indexingManager)
         }
         .task {
             searchState.appState = appState
+            indexingManager.appState = appState
+            appState.indexingManager = indexingManager
             await appState.initialize()
         }
         .onReceive(NotificationCenter.default.publisher(for: .addFolder)) { _ in

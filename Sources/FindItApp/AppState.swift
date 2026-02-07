@@ -21,6 +21,9 @@ final class AppState {
     /// 初始化错误信息
     var initError: String?
 
+    /// IndexingManager 引用（由 ContentView 注入）
+    weak var indexingManager: IndexingManager?
+
     // MARK: - 初始化
 
     /// 初始化全局数据库并加载文件夹列表
@@ -32,7 +35,7 @@ final class AppState {
                 try DatabaseManager.openGlobalDatabase()
             }.value
             self.globalDB = db
-            try loadFolders()
+            try reloadFolders()
             self.isInitialized = true
         } catch {
             self.initError = error.localizedDescription
@@ -73,7 +76,10 @@ final class AppState {
             )
         }.value
 
-        try loadFolders()
+        try reloadFolders()
+
+        // 触发后台索引
+        indexingManager?.queueFolder(path)
     }
 
     /// 移除文件夹
@@ -81,13 +87,16 @@ final class AppState {
         guard let globalDB = globalDB else { return }
 
         try SyncEngine.removeFolderData(folderPath: path, from: globalDB)
-        try loadFolders()
+        try reloadFolders()
     }
 
-    // MARK: - Private
+    // MARK: - 文件夹列表
 
     /// 从全局库加载文件夹列表
-    private func loadFolders() throws {
+    ///
+    /// 刷新 `folders` 数组。IndexingManager 索引完成后也需调用此方法
+    /// 以反映新同步的数据。
+    func reloadFolders() throws {
         guard let globalDB = globalDB else { return }
 
         // 从 sync_meta 获取所有已同步的文件夹路径

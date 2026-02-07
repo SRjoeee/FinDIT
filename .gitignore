@@ -20,6 +20,10 @@ DerivedData/
 .vscode/
 .idea/
 
+# Tool config
+.agents/
+.claude/
+
 # Environment / Secrets
 .env
 *.key

@@ -30,11 +30,7 @@ struct ContentView: View {
                 .frame(minWidth: 160, maxWidth: 320)
             }
         }
-        .toolbarBackground(.hidden, for: .windowToolbar)
-        .background {
-            VisualEffectBackground()
-                .ignoresSafeArea()
-        }
+        .toolbarBackground(hasScrollableContent ? .automatic : .hidden, for: .windowToolbar)
         .frame(minWidth: 680, minHeight: 460)
         .sheet(isPresented: $showFolderSheet) {
             FolderManagementSheet(appState: appState, indexingManager: indexingManager)
@@ -144,6 +140,16 @@ struct ContentView: View {
 
         guard newIndex != currentIndex else { return }
         selectedClipId = results[newIndex].clipId
+    }
+
+    // MARK: - Helpers
+
+    /// detail 区域是否有可滚动的结果内容
+    ///
+    /// 用于控制 toolbar 背景：有结果时系统自动处理 Liquid Glass + 滚动分隔线，
+    /// 无结果时隐藏 toolbar 背景（含分隔线），保持界面干净。
+    private var hasScrollableContent: Bool {
+        appState.isInitialized && !searchState.query.isEmpty && !searchState.results.isEmpty
     }
 
     // MARK: - Actions

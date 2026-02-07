@@ -37,15 +37,21 @@ public enum SpeechAnalyzerBridge {
         "he": "he_IL",
     ]
 
-    /// 将 WhisperKit 语言代码转换为 Locale
+    /// 将语言代码转换为 Locale
     ///
-    /// - Parameter language: ISO 639-1 语言代码（如 "ja", "zh", "en"），nil 默认英语
+    /// 支持 ISO 639-1 (如 "zh") 和 NLLanguage rawValue (如 "zh-Hans")。
+    /// - Parameter language: 语言代码，nil 默认英语
     /// - Returns: 对应的 Locale
     public static func localeForLanguage(_ language: String?) -> Locale {
         guard let lang = language?.lowercased() else {
             return Locale(identifier: "en_US")
         }
-        let identifier = languageToLocale[lang] ?? "en_US"
+        if let identifier = languageToLocale[lang] {
+            return Locale(identifier: identifier)
+        }
+        // NLLanguage rawValue 含区域后缀 (如 "zh-hans")，尝试基础语言码
+        let base = String(lang.prefix(while: { $0 != "-" }))
+        let identifier = languageToLocale[base] ?? "en_US"
         return Locale(identifier: identifier)
     }
 

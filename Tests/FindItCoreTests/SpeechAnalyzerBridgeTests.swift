@@ -58,6 +58,22 @@ final class SpeechAnalyzerBridgeTests: XCTestCase {
         }
     }
 
+    // MARK: - NLLanguage rawValue 兼容
+
+    func testLocaleForLanguageNLRawValueZhHans() {
+        if #available(macOS 26.0, *) {
+            let locale = SpeechAnalyzerBridge.localeForLanguage("zh-Hans")
+            XCTAssertEqual(locale.identifier, "zh_CN", "NLLanguage zh-Hans 应映射到 zh_CN")
+        }
+    }
+
+    func testLocaleForLanguageNLRawValueZhHant() {
+        if #available(macOS 26.0, *) {
+            let locale = SpeechAnalyzerBridge.localeForLanguage("zh-Hant")
+            XCTAssertEqual(locale.identifier, "zh_CN", "NLLanguage zh-Hant 应映射到中文")
+        }
+    }
+
     // MARK: - languageToLocale coverage
 
     func testLanguageToLocaleHasAllExpected() {

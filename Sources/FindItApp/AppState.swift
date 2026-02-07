@@ -24,6 +24,9 @@ final class AppState {
     /// IndexingManager 引用（由 ContentView 注入）
     weak var indexingManager: IndexingManager?
 
+    /// 卷信息缓存（避免每次 reloadFolders 都做文件系统调用）
+    private var volumeInfoCache: [String: VolumeResolver.VolumeInfo] = [:]
+
     // MARK: - 初始化
 
     /// 初始化全局数据库并加载文件夹列表
@@ -55,6 +58,10 @@ final class AppState {
         let exists = folders.contains { $0.folderPath == path }
         guard !exists else { return }
 
+        // 解析卷信息并缓存
+        let volumeInfo = VolumeResolver.resolve(path: path)
+        volumeInfoCache[path] = volumeInfo
+
         // 在后台线程执行数据库操作
         try await Task.detached(priority: .userInitiated) {
             let folderDB = try DatabaseManager.openFolderDatabase(at: path)
@@ -64,7 +71,12 @@ final class AppState {
                     "SELECT * FROM watched_folders WHERE folder_path = ?",
                     arguments: [path])
                 if existing == nil {
-                    var folder = WatchedFolder(folderPath: path)
+                    var folder = WatchedFolder(
+                        folderPath: path,
+                        volumeName: volumeInfo.name,
+                        volumeUuid: volumeInfo.uuid,
+                        lastSeenAt: Clip.sqliteDatetime()
+                    )
                     try folder.insert(db)
                 }
             }
@@ -94,8 +106,8 @@ final class AppState {
 
     /// 从全局库加载文件夹列表
     ///
-    /// 刷新 `folders` 数组。IndexingManager 索引完成后也需调用此方法
-    /// 以反映新同步的数据。
+    /// 刷新 `folders` 数组，包含卷信息和统计数据。
+    /// IndexingManager 索引完成后也需调用此方法以反映新同步的数据。
     func reloadFolders() throws {
         guard let globalDB = globalDB else { return }
 
@@ -104,12 +116,39 @@ final class AppState {
             try Row.fetchAll(db, sql: "SELECT folder_path FROM sync_meta ORDER BY folder_path")
         }
 
-        self.folders = rows.map { row in
+        self.folders = try rows.map { row in
             let path: String = row["folder_path"]
-            let isAvailable = FileManager.default.fileExists(atPath: path)
+            var isAvailable = FileManager.default.fileExists(atPath: path)
+
+            // 缓存卷信息（仅在缓存未命中且路径可达时解析）
+            if volumeInfoCache[path] == nil, isAvailable {
+                volumeInfoCache[path] = VolumeResolver.resolve(path: path)
+            }
+
+            let volumeInfo = volumeInfoCache[path]
+
+            // 如果路径不可达但有 UUID，尝试通过 UUID 恢复
+            if !isAvailable, let uuid = volumeInfo?.uuid {
+                if let newPath = VolumeResolver.resolveUpdatedPath(oldPath: path, volumeUUID: uuid) {
+                    // 挂载点变更：路径变了但卷还在
+                    // 注意：实际路径更新需要同步到数据库，这里暂只用于可用性判断
+                    isAvailable = true
+                }
+            }
+
+            // 从全局库查询统计
+            let stats = try globalDB.read { db in
+                try SearchEngine.folderStats(db, folderPath: path)
+            }
+
             return WatchedFolder(
                 folderPath: path,
-                isAvailable: isAvailable
+                volumeName: volumeInfo?.name,
+                volumeUuid: volumeInfo?.uuid,
+                isAvailable: isAvailable,
+                lastSeenAt: isAvailable ? Clip.sqliteDatetime() : nil,
+                totalFiles: stats.videoCount,
+                indexedFiles: stats.clipCount
             )
         }
     }

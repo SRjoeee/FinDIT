@@ -247,6 +247,24 @@ final class IndexingManager {
 
         // 刷新文件夹列表（可能有新数据同步到全局库）
         try? appState?.reloadFolders()
+
+        // 发送系统通知
+        let folderName = URL(fileURLWithPath: folderPath).lastPathComponent
+        if let progress = folderProgress[folderPath] {
+            if progress.failedVideos > 0 {
+                NotificationManager.notifyIndexFailed(
+                    folderName: folderName,
+                    failedCount: progress.failedVideos,
+                    reason: progress.errors.first?.message
+                )
+            } else {
+                NotificationManager.notifyIndexComplete(
+                    folderName: folderName,
+                    videoCount: progress.completedVideos,
+                    clipCount: 0 // 片段数需从数据库查询，此处简化
+                )
+            }
+        }
     }
 
     /// 确保 scheduler 存在，模式变更时重建

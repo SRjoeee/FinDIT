@@ -7,6 +7,9 @@ struct ContentView: View {
     @State private var indexingManager = IndexingManager()
     @State private var columnVisibility: NavigationSplitViewVisibility = .detailOnly
     @State private var showFolderSheet = false
+    @State private var selectedClipId: Int64?
+    @State private var qlCoordinator = QuickLookCoordinator()
+    @State private var columnsPerRow: Int = 3
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -36,6 +39,20 @@ struct ContentView: View {
         .sheet(isPresented: $showFolderSheet) {
             FolderManagementSheet(appState: appState, indexingManager: indexingManager)
         }
+        .onKeyPress(.space) {
+            handleSpaceKey()
+        }
+        .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow]) { keyPress in
+            handleArrowKey(keyPress.key)
+        }
+        .onChange(of: selectedClipId) {
+            // QL 面板已打开时，选中变更自动更新预览
+            guard let clipId = selectedClipId,
+                  let result = searchState.results.first(where: { $0.clipId == clipId }),
+                  let path = result.filePath,
+                  FileManager.default.fileExists(atPath: path) else { return }
+            qlCoordinator.updateIfVisible(url: URL(fileURLWithPath: path))
+        }
         .task {
             searchState.appState = appState
             indexingManager.appState = appState
@@ -47,6 +64,17 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .manageFolder)) { _ in
             showFolderSheet = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .qlNavigateClip)) { notification in
+            // QL 面板中方向键导航：event monitor → Notification → 此处执行导航
+            guard let direction = notification.userInfo?["direction"] as? String else { return }
+            switch direction {
+            case "left":  _ = handleArrowKey(.leftArrow)
+            case "right": _ = handleArrowKey(.rightArrow)
+            case "up":    _ = handleArrowKey(.upArrow)
+            case "down":  _ = handleArrowKey(.downArrow)
+            default: break
+            }
         }
     }
 
@@ -67,8 +95,61 @@ struct ContentView: View {
         } else if searchState.results.isEmpty {
             ContentUnavailableView.search(text: searchState.query)
         } else {
-            ResultsGrid(results: searchState.results, resultCount: searchState.resultCount)
+            ResultsGrid(
+                results: searchState.results,
+                resultCount: searchState.resultCount,
+                selectedClipId: $selectedClipId,
+                columnsPerRow: $columnsPerRow
+            )
         }
+    }
+
+    // MARK: - Keyboard Actions
+
+    /// 空格键：切换 Quick Look 预览
+    private func handleSpaceKey() -> KeyPress.Result {
+        guard let clipId = selectedClipId,
+              let result = searchState.results.first(where: { $0.clipId == clipId }),
+              let path = result.filePath,
+              FileManager.default.fileExists(atPath: path) else {
+            return .ignored
+        }
+        qlCoordinator.toggle(url: URL(fileURLWithPath: path))
+        return .handled
+    }
+
+    /// 方向键：网格导航
+    ///
+    /// 左/右移动 ±1，上/下按列数跳行。
+    /// 无选中时按任意方向键选中第一项。
+    private func handleArrowKey(_ key: KeyEquivalent) -> KeyPress.Result {
+        let results = searchState.results
+        guard !results.isEmpty else { return .ignored }
+
+        // 无选中 → 选第一项
+        guard let currentId = selectedClipId,
+              let currentIndex = results.firstIndex(where: { $0.clipId == currentId }) else {
+            selectedClipId = results[0].clipId
+            return .handled
+        }
+
+        let newIndex: Int
+        switch key {
+        case .leftArrow:
+            newIndex = max(0, currentIndex - 1)
+        case .rightArrow:
+            newIndex = min(results.count - 1, currentIndex + 1)
+        case .upArrow:
+            newIndex = max(0, currentIndex - columnsPerRow)
+        case .downArrow:
+            newIndex = min(results.count - 1, currentIndex + columnsPerRow)
+        default:
+            return .ignored
+        }
+
+        guard newIndex != currentIndex else { return .handled }
+        selectedClipId = results[newIndex].clipId
+        return .handled
     }
 
     // MARK: - Actions

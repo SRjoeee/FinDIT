@@ -4,9 +4,15 @@ import FindItCore
 /// 搜索结果卡片
 ///
 /// 显示缩略图、描述摘要、文件名和时间码。
-/// 对应 PRODUCT_SPEC 5.2 卡片布局。
+/// 点击选中，悬停 700ms 显示悬浮信息卡。
 struct ClipCard: View {
     let result: SearchEngine.SearchResult
+    let isSelected: Bool
+    var onSelect: () -> Void = {}
+
+    @State private var isHovering = false
+    @State private var showHoverCard = false
+    @State private var hoverTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -47,8 +53,31 @@ struct ClipCard: View {
         .background(.background, in: RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(.quaternary, lineWidth: 0.5)
+                .strokeBorder(
+                    isSelected ? Color.accentColor : (isHovering ? Color.secondary.opacity(0.3) : Color.clear.opacity(0)),
+                    lineWidth: isSelected ? 2 : 1
+                )
         )
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .onTapGesture { onSelect() }
+        .onHover { hovering in
+            isHovering = hovering
+            if hovering {
+                hoverTask?.cancel()
+                hoverTask = Task {
+                    try? await Task.sleep(for: .milliseconds(700))
+                    guard !Task.isCancelled else { return }
+                    showHoverCard = true
+                }
+            } else {
+                hoverTask?.cancel()
+                hoverTask = nil
+                showHoverCard = false
+            }
+        }
+        .popover(isPresented: $showHoverCard, arrowEdge: .trailing) {
+            ClipHoverCard(result: result)
+        }
     }
 
     // MARK: - Helpers

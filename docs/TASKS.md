@@ -6,12 +6,57 @@
 
 ## 待办
 
-### Stage 4: macOS App
+### Stage 4: macOS App（后续功能）
 
-- Xcode 项目创建 + SwiftUI 界面
-- 搜索框 + 实时搜索 (FTS5 即时 + 向量 300ms debounce)
-- 缩略图网格视图
-- BGE-M3 ONNX 本地嵌入 (可选增强)
+- Quick Look 预览（QLPreviewPanel + 空格键）
+- 筛选栏（匹配类型 + 来源文件夹）+ 排序
+- 右键菜单（复制时间码、Finder 显示、导出、查看标签）
+- NLE 导出（EDL + FCPXML，单个/批量）
+- 拖拽到 NLE（NSItemProvider）
+- 后台任务管理面板（进度、暂停/恢复/取消）
+- 全局快捷键 ⌘⇧F（后台唤起）
+- 外接硬盘监听（DiskArbitration）
+- 系统通知（索引完成/失败/硬盘恢复）
+- 设置页：API Key 管理、当日 API 额度显示
+- 热门标签展示（从 clips.tags 统计 TOP N）
+
+## 已完成（Stage 4a: SwiftUI 骨架）
+
+### App 入口 + 状态管理
+
+- FindItApp: @main 入口 + macOS 菜单命令（添加/管理文件夹）
+- AppState: 全局 DB 初始化、文件夹 CRUD、async addFolder
+- SearchState: FTS5 即时搜索 + 向量 300ms debounce + Gemini embedding 懒初始化
+
+### 视图层
+
+- ContentView: NavigationSplitView + toolbar 搜索框 + 状态路由
+- NativeSearchField: NSSearchField 封装（macOS 原生外观）
+- SidebarView: 文件夹列表 + 可用性状态
+- ResultsGrid: LazyVGrid 缩略图网格 + clip 元数据
+- ClipCard + ThumbnailView: 异步图片加载 + 时间码覆盖
+- EmptyStateView: 新用户引导
+- FolderManagementSheet: 文件夹添加/删除管理
+- VisualEffectBackground: NSVisualEffectView 毛玻璃背景
+
+## 已完成（Code Review 修复 — Rounds 5-7）
+
+### 性能与正确性
+
+- CIContext 静态复用（LocalVisionAnalyzer，避免每帧 GPU 分配）
+- DB 索引: clips(embedding_model) + clips(video_id)，文件夹库 + 全局库
+- 融合排序稳定性: clipId tie-break（vectorSearch + fusionSearch）
+- API key 可重试初始化（移除 one-shot 标志）
+- addFolder 异步化（Task.detached 避免主线程阻塞）
+
+### Sendable 一致性
+
+- 7 个 Config 结构体 + SearchWeights 全部加 `: Sendable`
+
+### 测试
+
+- 4 个索引契约测试（embedding_model × 2 + video_id × 2）
+- 414 个测试全部通过
 
 ## 已完成（Stage 3.7: VisionField 重构）
 

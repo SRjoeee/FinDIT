@@ -3,7 +3,7 @@ import Foundation
 // MARK: - VisionAnalyzerError
 
 /// 视觉分析相关错误
-public enum VisionAnalyzerError: LocalizedError {
+public enum VisionAnalyzerError: LocalizedError, Sendable {
     /// API Key 未找到（文件/环境变量/CLI 均无）
     case apiKeyNotFound
     /// 图片文件不存在或无法读取
@@ -45,7 +45,7 @@ public enum VisionAnalyzerError: LocalizedError {
 ///
 /// 对应 Clip 模型的 scene/subjects/actions/objects/mood/shotType/lighting/colors/description 字段。
 /// `tags` 从所有字段去重合成。
-public struct AnalysisResult: Equatable, Codable {
+public struct AnalysisResult: Equatable, Codable, Sendable {
     public let scene: String?
     public let subjects: [String]
     public let actions: [String]

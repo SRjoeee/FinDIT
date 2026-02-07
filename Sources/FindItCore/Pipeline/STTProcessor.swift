@@ -7,7 +7,7 @@ import WhisperKit
 /// 转录片段（项目内部类型，不依赖 WhisperKit）
 ///
 /// 表示一段带时间戳的转录文本，用于 SRT 生成和 Clip 映射。
-public struct TranscriptSegment: Equatable {
+public struct TranscriptSegment: Equatable, Sendable {
     /// 片段序号（1-based，用于 SRT 编号）
     public let index: Int
     /// 起始时间（秒）
@@ -114,7 +114,7 @@ public enum STTProcessor {
     // MARK: - 场景感知语言检测
 
     /// 语言检测结果
-    public struct LanguageDetectionResult: Equatable {
+    public struct LanguageDetectionResult: Equatable, Sendable {
         /// 检测到的语言代码（ISO 639-1，如 "ja", "zh", "en"）
         public let language: String
         /// 最高概率的 log probability
@@ -128,7 +128,7 @@ public enum STTProcessor {
     }
 
     /// 采样区间
-    public struct SampleRange: Equatable {
+    public struct SampleRange: Equatable, Sendable {
         public let startTime: Double
         public let endTime: Double
 

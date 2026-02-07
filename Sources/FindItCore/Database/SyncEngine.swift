@@ -12,7 +12,7 @@ import GRDB
 public enum SyncEngine {
 
     /// 同步结果
-    public struct SyncResult {
+    public struct SyncResult: Sendable {
         /// 本次同步的视频数
         public let syncedVideos: Int
         /// 本次同步的片段数

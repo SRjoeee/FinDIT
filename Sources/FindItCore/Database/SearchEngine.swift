@@ -39,7 +39,7 @@ public enum SearchEngine {
     // MARK: - 搜索结果
 
     /// 搜索结果
-    public struct SearchResult {
+    public struct SearchResult: Sendable {
         /// 全局库 clip_id
         public let clipId: Int64
         /// 来源文件夹路径
@@ -135,6 +135,7 @@ public enum SearchEngine {
     ///   - query: 搜索关键词
     ///   - queryEmbedding: 查询文本的嵌入向量（nil = 退化为纯 FTS5）
     ///   - embeddingModel: 嵌入模型名称（只匹配此模型的向量）
+    ///   - vectorStoreResults: VectorStore 预计算的 (clipId, similarity) 对（nil = 回退逐行扫描）
     ///   - mode: 搜索模式
     ///   - limit: 最大返回条数
     /// - Returns: 按融合得分排序的搜索结果
@@ -143,6 +144,7 @@ public enum SearchEngine {
         query: String,
         queryEmbedding: [Float]? = nil,
         embeddingModel: String? = nil,
+        vectorStoreResults: [(clipId: Int64, similarity: Float)]? = nil,
         mode: SearchMode = .auto,
         limit: Int = 50
     ) throws -> [SearchResult] {
@@ -154,6 +156,9 @@ public enum SearchEngine {
 
         // 纯向量模式
         if mode == .vector || (mode == .auto && weights.ftsWeight == 0) {
+            if let storeResults = vectorStoreResults {
+                return try vectorSearchFromStore(db, storeResults: storeResults, limit: limit)
+            }
             guard let embedding = queryEmbedding, let model = embeddingModel else {
                 return [] // 无向量时返回空
             }
@@ -175,6 +180,7 @@ public enum SearchEngine {
             query: trimmed,
             queryEmbedding: embedding,
             embeddingModel: model,
+            vectorStoreResults: vectorStoreResults,
             weights: weights,
             limit: limit
         )
@@ -234,6 +240,66 @@ public enum SearchEngine {
         return Array(results.prefix(limit).map { $0.0 })
     }
 
+    // MARK: - VectorStore 加速搜索
+
+    /// 从 VectorStore 预计算结果构建 SearchResult
+    ///
+    /// VectorStore 只返回 (clipId, similarity)，此方法从数据库查询元数据补全。
+    static func vectorSearchFromStore(
+        _ db: Database,
+        storeResults: [(clipId: Int64, similarity: Float)],
+        limit: Int = 50
+    ) throws -> [SearchResult] {
+        guard !storeResults.isEmpty else { return [] }
+
+        let topK = Array(storeResults.prefix(limit))
+        let similarities = Dictionary(uniqueKeysWithValues: topK.map { ($0.clipId, Double($0.similarity)) })
+        let clipIds = topK.map { $0.clipId }
+
+        // 查询元数据
+        let placeholders = clipIds.map { _ in "?" }.joined(separator: ", ")
+        var args = StatementArguments()
+        for id in clipIds { args += [id] }
+
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
+                   v.file_path, v.file_name,
+                   c.start_time, c.end_time, c.scene, c.description,
+                   c.tags, c.transcript, c.thumbnail_path
+            FROM clips c
+            LEFT JOIN videos v ON v.video_id = c.video_id
+            WHERE c.clip_id IN (\(placeholders))
+            """, arguments: args)
+
+        // 构建结果并按相似度排序
+        var results: [SearchResult] = []
+        for row in rows {
+            let clipId: Int64 = row["clip_id"]
+            let sim = similarities[clipId] ?? 0.0
+            results.append(SearchResult(
+                clipId: clipId,
+                sourceFolder: row["source_folder"],
+                sourceClipId: row["source_clip_id"],
+                videoId: row["video_id"],
+                filePath: row["file_path"],
+                fileName: row["file_name"],
+                startTime: row["start_time"],
+                endTime: row["end_time"],
+                scene: row["scene"],
+                clipDescription: row["description"],
+                tags: row["tags"],
+                transcript: row["transcript"],
+                thumbnailPath: row["thumbnail_path"],
+                rank: 0.0,
+                similarity: sim,
+                finalScore: sim
+            ))
+        }
+
+        results.sort { ($0.similarity ?? 0) > ($1.similarity ?? 0) }
+        return results
+    }
+
     // MARK: - 融合搜索
 
     /// FTS5 + 向量融合搜索
@@ -242,17 +308,23 @@ public enum SearchEngine {
         query: String,
         queryEmbedding: [Float],
         embeddingModel: String,
+        vectorStoreResults: [(clipId: Int64, similarity: Float)]? = nil,
         weights: SearchWeights,
         limit: Int
     ) throws -> [SearchResult] {
         // 1. FTS5 搜索
         let ftsResults = try search(db, query: query, limit: limit * 2)
 
-        // 2. 向量搜索
-        let vectorResults = try vectorSearch(
-            db, queryEmbedding: queryEmbedding,
-            embeddingModel: embeddingModel, limit: limit * 2
-        )
+        // 2. 向量搜索（VectorStore 加速或逐行扫描回退）
+        let vectorResults: [SearchResult]
+        if let storeResults = vectorStoreResults {
+            vectorResults = try vectorSearchFromStore(db, storeResults: storeResults, limit: limit * 2)
+        } else {
+            vectorResults = try vectorSearch(
+                db, queryEmbedding: queryEmbedding,
+                embeddingModel: embeddingModel, limit: limit * 2
+            )
+        }
 
         // 3. 构建 clipId → 数据映射
         var ftsScores: [Int64: Double] = [:]

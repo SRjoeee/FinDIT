@@ -43,6 +43,12 @@ final class SearchState {
     /// 是否已尝试初始化 provider（避免反复尝试）
     private var hasTriedInitProvider = false
 
+    /// 内存向量存储（批量矩阵搜索，100K clips ~25ms）
+    private var vectorStore: VectorStore?
+
+    /// 是否正在加载 VectorStore（避免重复加载）
+    private var isLoadingVectorStore = false
+
     // MARK: - FTS5 即时搜索
 
     /// 执行 FTS5 即时搜索
@@ -103,18 +109,31 @@ final class SearchState {
         defer { isVectorSearching = false }
 
         do {
+            // 确保 VectorStore 已加载
+            await loadVectorStoreIfNeeded(provider: provider, db: db)
+
             let queryEmbedding = try await provider.embed(text: trimmed)
 
             // 再次检查查询没变
             guard trimmed == self.query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
 
+            // VectorStore 批量搜索（~25ms for 100K clips）
+            let storeResults: [(clipId: Int64, similarity: Float)]?
+            if let store = vectorStore {
+                storeResults = await store.search(query: queryEmbedding, limit: 100)
+            } else {
+                storeResults = nil
+            }
+
             let mode = self.searchMode
+            let capturedStoreResults = storeResults
             let hybridResults = try await db.read { dbConn in
                 try SearchEngine.hybridSearch(
                     dbConn,
                     query: trimmed,
                     queryEmbedding: queryEmbedding,
                     embeddingModel: provider.name,
+                    vectorStoreResults: capturedStoreResults,
                     mode: mode,
                     limit: 50
                 )
@@ -122,6 +141,34 @@ final class SearchState {
             self.results = hybridResults
         } catch {
             // 向量搜索失败不影响已有 FTS5 结果
+        }
+    }
+
+    /// 懒加载 VectorStore（首次向量搜索时触发）
+    private func loadVectorStoreIfNeeded(provider: any EmbeddingProvider, db: DatabasePool) async {
+        guard vectorStore == nil, !isLoadingVectorStore else { return }
+        isLoadingVectorStore = true
+        defer { isLoadingVectorStore = false }
+
+        do {
+            let entries: [(clipId: Int64, embeddingData: Data)] = try await db.read { dbConn in
+                let rows = try Row.fetchAll(dbConn, sql: """
+                    SELECT clip_id, embedding
+                    FROM clips
+                    WHERE embedding IS NOT NULL AND embedding_model = ?
+                    """, arguments: [provider.name])
+                return rows.compactMap { row in
+                    guard let clipId = row["clip_id"] as? Int64,
+                          let data = row["embedding"] as? Data else { return nil }
+                    return (clipId: clipId, embeddingData: data)
+                }
+            }
+
+            let store = VectorStore(dimensions: provider.dimensions, embeddingModel: provider.name)
+            await store.load(entries: entries)
+            self.vectorStore = store
+        } catch {
+            // 加载失败不致命，回退到逐行扫描
         }
     }
 

@@ -48,7 +48,7 @@ public enum PipelineManager {
     }
 
     /// 单视频处理结果
-    public struct ProcessingResult {
+    public struct ProcessingResult: Sendable {
         /// 视频 ID
         public let videoId: Int64
         /// 创建的 clip 数量

@@ -12,7 +12,7 @@ import CoreImage
 public enum LocalVisionAnalyzer {
 
     /// 本地分析错误
-    public enum AnalysisError: LocalizedError {
+    public enum AnalysisError: LocalizedError, Sendable {
         case imageLoadFailed(path: String)
         case analysisRequestFailed(detail: String)
 

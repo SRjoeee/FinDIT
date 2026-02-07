@@ -14,7 +14,7 @@ struct FolderCommands: Commands {
             Button("管理文件夹...") {
                 NotificationCenter.default.post(name: .manageFolder, object: nil)
             }
-            .keyboardShortcut(",", modifiers: .command)
+            .keyboardShortcut("m", modifiers: [.command, .shift])
         }
 
         // ⌘F 聚焦搜索框（添加到 Edit 菜单尾部，不替换系统项）

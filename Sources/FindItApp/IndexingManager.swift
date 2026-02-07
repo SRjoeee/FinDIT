@@ -32,6 +32,8 @@ struct FolderIndexProgress {
 ///
 /// 共享资源（GeminiRateLimiter、EmbeddingProvider）懒初始化并复用。
 /// 并发数由 `ResourceMonitor` 根据系统状态动态调整。
+///
+/// 读取 `IndexingOptions` 控制功能开关和性能模式（Settings 页面配置）。
 @Observable
 @MainActor
 final class IndexingManager {
@@ -64,8 +66,8 @@ final class IndexingManager {
     /// 当前处理 Task（用于取消）
     private var processingTask: Task<Void, Never>?
 
-    /// 并行调度器
-    private let scheduler = IndexingScheduler(mode: .balanced)
+    /// 并行调度器（根据 IndexingOptions.performanceMode 初始化）
+    private var scheduler: IndexingScheduler?
 
     /// 共享 Gemini 限速器
     private var rateLimiter: GeminiRateLimiter?
@@ -107,7 +109,9 @@ final class IndexingManager {
         processingTask = nil
         pendingFolders.removeAll()
         // 唤醒可能阻塞在信号量上的等待者
-        Task { await scheduler.releaseWaiters() }
+        if let scheduler = scheduler {
+            Task { await scheduler.releaseWaiters() }
+        }
         isIndexing = false
         currentFolder = nil
         currentVideoName = nil
@@ -185,22 +189,33 @@ final class IndexingManager {
             return
         }
 
+        // 读取索引选项（每个文件夹处理前读一次，反映最新设置）
+        let options = IndexingOptions.load()
+
         // 懒初始化共享资源
-        initSharedResources()
+        initSharedResources(options: options)
 
         let globalDB = appState?.globalDB
 
-        print("[IndexingManager] 开始并行索引: \(videoFiles.count) 个视频")
+        // 根据 skip 标志决定传递什么参数
+        let effectiveAPIKey = options.skipVision ? nil : resolvedAPIKey
+        let effectiveEmbeddingProvider = options.skipEmbedding ? nil : embeddingProvider
+
+        print("[IndexingManager] 开始并行索引: \(videoFiles.count) 个视频 (模式: \(options.performanceMode.displayName))")
+
+        // 确保 scheduler 存在
+        let currentScheduler = ensureScheduler(mode: options.performanceMode)
 
         // 通过调度器并行处理视频
-        await scheduler.processVideos(
+        await currentScheduler.processVideos(
             videoFiles,
             folderPath: folderPath,
             folderDB: folderDB,
             globalDB: globalDB,
-            apiKey: resolvedAPIKey,
+            apiKey: effectiveAPIKey,
             rateLimiter: rateLimiter,
-            embeddingProvider: embeddingProvider,
+            embeddingProvider: effectiveEmbeddingProvider,
+            skipStt: options.skipStt,
             onProgress: { [weak self] progress in
                 Task { @MainActor [weak self] in
                     self?.currentVideoName = progress.fileName
@@ -234,8 +249,21 @@ final class IndexingManager {
         try? appState?.reloadFolders()
     }
 
+    /// 确保 scheduler 存在，模式变更时重建
+    private var currentMode: PerformanceMode?
+
+    private func ensureScheduler(mode: PerformanceMode) -> IndexingScheduler {
+        if let existing = scheduler, currentMode == mode {
+            return existing
+        }
+        let newScheduler = IndexingScheduler(mode: mode)
+        scheduler = newScheduler
+        currentMode = mode
+        return newScheduler
+    }
+
     /// 懒初始化共享资源
-    private func initSharedResources() {
+    private func initSharedResources(options: IndexingOptions) {
         let config = ProviderConfig.load()
 
         // API Key
@@ -249,8 +277,8 @@ final class IndexingManager {
             rateLimiter = GeminiRateLimiter(config: config.toRateLimiterConfig())
         }
 
-        // EmbeddingProvider: Gemini 优先，NLEmbedding 回退
-        if embeddingProvider == nil {
+        // EmbeddingProvider: 仅在未跳过时初始化
+        if embeddingProvider == nil, !options.skipEmbedding {
             if let apiKey = resolvedAPIKey {
                 embeddingProvider = GeminiEmbeddingProvider(
                     apiKey: apiKey,

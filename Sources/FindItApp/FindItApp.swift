@@ -20,5 +20,9 @@ struct FindItApp: App {
         .defaultSize(width: 960, height: 640)
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands { FolderCommands() }
+
+        Settings {
+            SettingsView()
+        }
     }
 }

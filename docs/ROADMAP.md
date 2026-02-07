@@ -269,18 +269,42 @@ E2E 测试暴露的 4 个管线 bug 修复：
 
 ## Stage 4: macOS App
 
-**Tag: `v0.4-app**`
+### 4a: SwiftUI 骨架 ✓
 
-- Xcode 项目创建，引入 FindItCore
-- 搜索框 + 实时搜索（FTS5 即时 + 向量 300ms debounce）
-- 缩略图网格视图（LazyVGrid）
-- 侧边栏素材库管理（文件夹添加/删除/状态）
-- Quick Look 预览（QLPreviewPanel + 空格键）
+- App 入口 + AppState / SearchState 状态管理
+- ContentView: NavigationSplitView + toolbar 搜索框
+- SidebarView / ResultsGrid / ClipCard / ThumbnailView
+- EmptyStateView / FolderManagementSheet
+- 416 个测试全部通过
+
+### 4b+4c: 索引管理 + 并行调度 ✓
+
+- IndexingManager: UI 层索引协调
+- IndexingScheduler + ResourceMonitor: 资源池并行调度
+- 索引进度 UI (IndexingStatusBar + IndexingDetailSheet)
+- 448 个测试全部通过
+
+### 4e: 视频预览 + 键盘导航 ✓
+
+- ClipDetailPanel: AVPlayer 内嵌预览
+- 统一键盘导航 (NSEvent.addLocalMonitorForEvents)
+- 空格键 Play/Pause，方向键网格导航
+
+### 4f: 上下文菜单 ✓
+
+- 右键菜单：复制时间码、在 Finder 中显示、查看详细标签
+
+### 性能优化 ✓
+
+- VectorStore: BLAS 批量矩阵搜索 (100K clips ~25ms)
+- ThumbnailView: CGImageSource 下采样 + NSCache 缓存
+- composeClipText: JSON 数组字段解析去噪
+
+### 待实现
+
 - 筛选栏（匹配类型 + 来源文件夹）+ 排序
-- 右键菜单（复制时间码、Finder 显示、导出、查看标签）
 - NLE 导出（EDL + FCPXML，单个/批量）
 - 拖拽到 NLE（NSItemProvider）
-- 后台任务管理面板（进度、暂停/恢复/取消）
 - 全局快捷键 ⌘⇧F（后台唤起）
 - 外接硬盘监听（DiskArbitration）
 - 系统通知（索引完成/失败/硬盘恢复）

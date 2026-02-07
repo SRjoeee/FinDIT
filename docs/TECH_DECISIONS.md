@@ -40,20 +40,21 @@
 - **备选**: Firebase AI Logic SDK（官方推荐但过重）、OpenAI Vision（更贵）
 - **日期**: 2026-02-06
 
-## ADR-004: 向量嵌入 — BGE-M3 + ONNX Runtime
+## ADR-004: 向量嵌入 — Gemini text-embedding-004 + Apple NLEmbedding
 
-- **决策**: BGE-M3 ONNX 模型 + onnxruntime-swift-package-manager
-- **原因**:
-  - 中英双语原生支持（100+ 语言）
-  - 1024 维密集向量，语义质量高
-  - ~100MB 模型体积可接受
-  - ONNX Runtime 提供官方 Swift SPM 包
-- **挑战**: Swift 缺少原生 BPE tokenizer
-  - 方案 A: swift-transformers (Hugging Face)
-  - 方案 B: 自实现 BPE（参考 tokenizer.json）
-  - 方案 C: 备用 — 轻量 tokenizer + 更简单的模型
-- **策略**: Stage 1-2 先用纯 FTS5，Stage 3 再加向量搜索
-- **日期**: 2026-02-06
+- **决策**: 双 provider 策略 — Gemini 云端优先，NLEmbedding 离线回退
+- **Gemini text-embedding-004**:
+  - 768 维密集向量，多语言支持
+  - 免费额度 1500 RPM，零本地模型依赖
+  - REST API 调用（复用 VisionAnalyzer 的 API Key 管理）
+- **Apple NLEmbedding**:
+  - 512 维，NaturalLanguage 框架内置
+  - 完全离线，零依赖，无需 API Key
+  - 作为 Gemini 不可用时的回退方案
+- **搜索加速**: VectorStore actor 将全部 embedding 加载到连续内存，
+  利用 cblas_sgemv (BLAS) 矩阵运算批量搜索（100K clips ~25ms）
+- **原计划**: BGE-M3 + ONNX Runtime（因 tokenizer 集成复杂度放弃）
+- **日期**: 2026-02-06（初版），2026-02-08（更新为实际实现）
 
 ## ADR-005: macOS 目标版本 — macOS 14 (Sonoma)
 

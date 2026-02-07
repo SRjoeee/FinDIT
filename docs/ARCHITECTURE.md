@@ -15,17 +15,13 @@
 │   ┌────────────┐  ┌───────────────────┐    │
 │   │SearchEngine │  │  PipelineManager  │    │
 │   │ FTS5+向量   │  │  调度 STT/视觉管线 │    │
+│   │ VectorStore │  │  IndexingScheduler│    │
 │   └──────┬─────┘  └─────────┬─────────┘    │
 │          │                   │               │
 │   ┌──────┴─────┐  ┌─────────┴──────────┐   │
 │   │  Database   │  │  FFmpegBridge      │   │
 │   │  GRDB/FTS5  │  │  STTProcessor      │   │
 │   │  向量 BLOB  │  │  VisionAnalyzer    │   │
-│   └────────────┘  └────────────────────┘   │
-│                                             │
-│   ┌────────────┐  ┌────────────────────┐   │
-│   │VolumeManager│  │  Exporters         │   │
-│   │ 卷监听/离线  │  │  EDL / FCPXML      │   │
 │   └────────────┘  └────────────────────┘   │
 ├─────────────────────────────────────────────┤
 │   双层 SQLite 存储                           │
@@ -53,13 +49,24 @@ Sources/FindItCore/
 ├── Pipeline/
 │   ├── PipelineManager.swift       # 统一管线调度 + 状态机
 │   ├── FFmpegBridge.swift          # FFmpeg 子进程调用封装
-│   ├── STTProcessor.swift          # WhisperKit 封装
-│   └── VisionAnalyzer.swift        # Gemini REST API 调用
-├── Volume/
-│   └── VolumeManager.swift         # DiskArbitration 卷监听
-└── Export/
-    ├── EDLExporter.swift           # CMX 3600 EDL 生成
-    └── FCPXMLExporter.swift        # FCPXML 1.11 生成
+│   ├── SceneDetector.swift         # 场景检测 + 关键帧提取
+│   ├── KeyframeExtractor.swift     # 关键帧抽取 (512px 短边 JPEG)
+│   ├── AudioExtractor.swift        # 音频提取 (16kHz mono WAV)
+│   ├── STTProcessor.swift          # WhisperKit + SpeechAnalyzer 封装
+│   ├── SpeechAnalyzerBridge.swift  # macOS 26+ Speech 框架封装
+│   ├── VisionAnalyzer.swift        # Gemini REST API 调用
+│   ├── LocalVisionAnalyzer.swift   # Apple Vision 框架本地分析
+│   ├── LocalVLMAnalyzer.swift      # mlx-swift-lm 本地 VLM
+│   ├── VisionField.swift           # 9 字段元数据枚举（单一事实来源）
+│   ├── FileScanner.swift           # 递归视频文件扫描
+│   └── IndexingScheduler.swift     # 并行索引调度 + ResourceMonitor
+├── Search/
+│   ├── EmbeddingProvider.swift     # 嵌入协议 + EmbeddingUtils
+│   ├── GeminiEmbeddingProvider.swift  # Gemini text-embedding-004 (768 维)
+│   ├── NLEmbeddingProvider.swift   # Apple NLEmbedding 离线 (512 维)
+│   └── VectorStore.swift           # 内存向量存储 (BLAS 批量搜索)
+└── Config/
+    └── ProviderConfig.swift        # API Key + 模型配置管理
 ```
 
 ## 模块职责
@@ -69,13 +76,16 @@ Sources/FindItCore/
 | **Database** | 连接管理、建表迁移、CRUD、事务（文件夹库 + 全局库） | GRDB.swift |
 | **SyncEngine** | 文件夹库 → 全局搜索索引的数据同步、增量更新 | Database |
 | **SearchEngine** | FTS5 搜索、向量余弦相似度、融合排序（操作全局库） | Database |
-| **FFmpegBridge** | 构建 FFmpeg/FFprobe 命令、解析输出、临时文件管理 | Foundation (Process) |
-| **STTProcessor** | WhisperKit 初始化/转录、SRT 生成 | WhisperKit |
+| **VectorStore** | 内存向量存储，BLAS 批量矩阵搜索（100K clips ~25ms） | Accelerate |
+| **FFmpegBridge** | 构建 FFmpeg 命令、解析输出、临时文件管理 | Foundation (Process) |
+| **STTProcessor** | WhisperKit/SpeechAnalyzer 双引擎转录、SRT 生成 | WhisperKit, Speech |
 | **VisionAnalyzer** | Gemini API 调用、图片 Base64 编码、JSON 解析 | Foundation (URLSession) |
-| **PipelineManager** | 管线调度、状态机管理、断点续传、并发控制 | 上述所有模块 |
-| **VolumeManager** | DiskArbitration 监听、卷 UUID 匹配、离线/恢复 | DiskArbitration |
-| **EDLExporter** | CMX 3600 EDL 格式文本生成 | Database |
-| **FCPXMLExporter** | FCPXML 1.11 XML 生成 | Database |
+| **LocalVisionAnalyzer** | Apple Vision 框架本地分析（6/9 字段，零网络） | Vision, CoreImage |
+| **LocalVLMAnalyzer** | mlx-swift-lm 本地 VLM（Qwen3-VL-4B） | mlx-swift-lm |
+| **VisionField** | 9 字段元数据枚举，数据驱动的 schema/prompt/SQL 生成 | — |
+| **EmbeddingProvider** | 嵌入向量协议 + Gemini/NLEmbedding 双实现 | NaturalLanguage |
+| **IndexingScheduler** | 资源池并行调度，动态并发控制 | — |
+| **PipelineManager** | 管线调度、状态机管理、断点续传 | 上述所有模块 |
 
 ## 数据流
 
@@ -197,7 +207,7 @@ CREATE TABLE clips (
     description     TEXT,                    -- 自然语言描述
     tags            TEXT,                    -- 所有标签（JSON 数组，供 FTS 搜索）
     transcript      TEXT,                    -- 该时间段内的台词
-    embedding       BLOB,                    -- BGE-M3 向量（1024维 float32）
+    embedding       BLOB,                    -- 嵌入向量（Gemini 768维 / NL 512维 float32）
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))  -- 用于增量同步
 );
 ```

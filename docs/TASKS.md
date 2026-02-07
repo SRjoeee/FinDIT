@@ -8,17 +8,43 @@
 
 ### Stage 4: macOS App（后续功能）
 
-- Quick Look 预览（QLPreviewPanel + 空格键）
 - 筛选栏（匹配类型 + 来源文件夹）+ 排序
-- 右键菜单（复制时间码、Finder 显示、导出、查看标签）
 - NLE 导出（EDL + FCPXML，单个/批量）
 - 拖拽到 NLE（NSItemProvider）
-- 后台任务管理面板（进度、暂停/恢复/取消）
 - 全局快捷键 ⌘⇧F（后台唤起）
 - 外接硬盘监听（DiskArbitration）
 - 系统通知（索引完成/失败/硬盘恢复）
 - 设置页：API Key 管理、当日 API 额度显示
 - 热门标签展示（从 clips.tags 统计 TOP N）
+
+## 已完成（性能优化 — 搜索 + 缩略图 + 嵌入质量）
+
+### VectorStore 批量矩阵搜索
+
+- VectorStore actor: 连续 Float 内存 + cblas_sgemv BLAS 批量搜索
+- 预计算 L2 范数，100K clips ~25ms（vs 逐行扫描 ~6s，240x 加速）
+- SearchEngine.hybridSearch 集成 VectorStore 预计算结果
+- SearchState 懒加载 VectorStore（首次向量搜索触发）
+- 19 个新增测试
+
+### composeClipText JSON 数组解析
+
+- 数组字段 (subjects/actions/objects) 的 JSON 字符串解析为逗号分隔文本
+- `["男子", "女子"]` → `男子, 女子`，消除嵌入向量的语法噪声
+- 2 个新增测试
+
+### ThumbnailView 缓存 + 下采样
+
+- CGImageSource + kCGImageSourceThumbnailMaxPixelSize 解码阶段下采样
+- 全局 NSCache (countLimit=200) LRU 淘汰
+- 512×288 → 300×169，内存减少约 50%
+
+### 文档更新
+
+- ARCHITECTURE.md: 移除幻影模块 (Volume/Export)，补充实际模块
+- TECH_DECISIONS.md: ADR-004 更新为 Gemini + NLEmbedding
+- ROADMAP.md: Stage 4 子 block 完成状态
+- TASKS.md: 测试数量更新
 
 ## 已完成（Stage 4a: SwiftUI 骨架）
 

@@ -62,6 +62,39 @@ final class EmbeddingUtilsTests: XCTestCase {
         XCTAssertTrue(text.contains("一间现代化的办公室"))
     }
 
+    func testComposeClipTextParsesJSONArrayFields() {
+        let clip = Clip(
+            startTime: 0.0,
+            endTime: 10.0,
+            scene: "海滩",
+            subjects: "[\"男子\",\"女子\"]",
+            actions: "[\"散步\",\"拍照\"]",
+            objects: "[\"帽子\",\"相机\"]"
+        )
+        let text = EmbeddingUtils.composeClipText(clip: clip)
+        // JSON 数组应被解析为逗号分隔文本
+        XCTAssertTrue(text.contains("男子"), "subjects 应包含解析后的元素")
+        XCTAssertTrue(text.contains("女子"))
+        XCTAssertTrue(text.contains("散步"))
+        XCTAssertTrue(text.contains("拍照"))
+        XCTAssertTrue(text.contains("帽子"))
+        XCTAssertTrue(text.contains("相机"))
+        // 不应包含 JSON 语法字符
+        XCTAssertFalse(text.contains("["), "不应包含 JSON 方括号")
+        XCTAssertFalse(text.contains("]"), "不应包含 JSON 方括号")
+    }
+
+    func testComposeClipTextPlainStringArrayFields() {
+        // 非 JSON 格式的数组字段应直接使用原始文本
+        let clip = Clip(
+            startTime: 0.0,
+            endTime: 10.0,
+            subjects: "男子"
+        )
+        let text = EmbeddingUtils.composeClipText(clip: clip)
+        XCTAssertTrue(text.contains("男子"))
+    }
+
     func testComposeClipTextTagsExcluded() {
         var clip = Clip(startTime: 0.0, endTime: 5.0, scene: "森林")
         clip.setTags(["户外", "自然", "绿色"])

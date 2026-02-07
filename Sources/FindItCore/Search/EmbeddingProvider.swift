@@ -4,7 +4,7 @@ import Accelerate
 // MARK: - EmbeddingError
 
 /// 向量嵌入相关错误
-public enum EmbeddingError: LocalizedError {
+public enum EmbeddingError: LocalizedError, Sendable {
     /// Provider 不可用（未安装模型、无 API Key 等）
     case providerNotAvailable(name: String)
     /// 嵌入计算失败
@@ -97,7 +97,14 @@ public enum EmbeddingUtils {
             var groupParts: [String] = []
             for field in fieldsInGroup {
                 if let v = clip.visionValue(for: field), !v.isEmpty {
-                    groupParts.append(v)
+                    if field.isArray,
+                       let data = v.data(using: .utf8),
+                       let arr = try? JSONSerialization.jsonObject(with: data) as? [String] {
+                        let text = arr.filter { !$0.isEmpty }.joined(separator: ", ")
+                        if !text.isEmpty { groupParts.append(text) }
+                    } else {
+                        groupParts.append(v)
+                    }
                 }
             }
             if !groupParts.isEmpty {

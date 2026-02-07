@@ -31,6 +31,16 @@ final class SearchState {
     /// 搜索模式
     var searchMode: SearchEngine.SearchMode = .auto
 
+    /// 文件夹过滤（nil = 全局搜索，非空 = 仅搜索指定文件夹）
+    var folderFilter: Set<String>? = nil {
+        didSet {
+            if folderFilter != oldValue {
+                performFTSSearch()
+                scheduleVectorSearch()
+            }
+        }
+    }
+
     /// 全局数据库引用（由外部注入）
     weak var appState: AppState?
 
@@ -63,8 +73,9 @@ final class SearchState {
         guard let db = appState?.globalDB else { return }
 
         do {
+            let filter = self.folderFilter
             let searchResults = try db.read { dbConn in
-                try SearchEngine.search(dbConn, query: trimmed, limit: 50)
+                try SearchEngine.search(dbConn, query: trimmed, folderPaths: filter, limit: 50)
             }
             self.results = searchResults
         } catch {
@@ -126,6 +137,7 @@ final class SearchState {
             }
 
             let mode = self.searchMode
+            let filter = self.folderFilter
             let capturedStoreResults = storeResults
             let hybridResults = try await db.read { dbConn in
                 try SearchEngine.hybridSearch(
@@ -135,6 +147,7 @@ final class SearchState {
                     embeddingModel: provider.name,
                     vectorStoreResults: capturedStoreResults,
                     mode: mode,
+                    folderPaths: filter,
                     limit: 50
                 )
             }

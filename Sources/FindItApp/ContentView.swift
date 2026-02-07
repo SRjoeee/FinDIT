@@ -12,11 +12,17 @@ struct ContentView: View {
     @State private var volumeMonitor = VolumeMonitor()
     @State private var columnsPerRow: Int = 3
     @State private var scrollOnSelect = false
+    @State private var sidebarSelection: SidebarSelection = .all
+    @State private var folderErrorMessage: String?
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarView(appState: appState, indexingManager: indexingManager)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
+            SidebarView(
+                appState: appState,
+                indexingManager: indexingManager,
+                selection: $sidebarSelection
+            )
+            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 240)
         } detail: {
             detailContent
         }
@@ -37,6 +43,16 @@ struct ContentView: View {
         .sheet(isPresented: $showFolderSheet) {
             FolderManagementSheet(appState: appState, indexingManager: indexingManager)
         }
+        .alert("无法添加文件夹", isPresented: Binding(
+            get: { folderErrorMessage != nil },
+            set: { if !$0 { folderErrorMessage = nil } }
+        )) {
+            Button("好") { folderErrorMessage = nil }
+        } message: {
+            if let msg = folderErrorMessage {
+                Text(msg)
+            }
+        }
         .onChange(of: selectedClipId) {
             // 点击卡片时让搜索框失焦，event monitor 可处理后续键盘事件
             if selectedClipId != nil {
@@ -51,6 +67,14 @@ struct ContentView: View {
                   let path = result.filePath,
                   FileManager.default.fileExists(atPath: path) else { return }
             qlCoordinator.updateIfVisible(url: URL(fileURLWithPath: path))
+        }
+        .onChange(of: sidebarSelection) {
+            switch sidebarSelection {
+            case .all:
+                searchState.folderFilter = nil
+            case .folder(let path):
+                searchState.folderFilter = [path]
+            }
         }
         .task {
             qlCoordinator.startMonitoring()
@@ -181,8 +205,10 @@ struct ContentView: View {
         Task {
             do {
                 try await appState.addFolder(path: url.path)
+            } catch let error as FolderError {
+                folderErrorMessage = error.localizedDescription
             } catch {
-                print("添加文件夹失败: \(error)")
+                folderErrorMessage = error.localizedDescription
             }
         }
     }

@@ -2,6 +2,18 @@ import Foundation
 import GRDB
 import FindItCore
 
+/// 文件夹操作错误
+enum FolderError: LocalizedError {
+    /// 待添加的文件夹与现有文件夹存在父子重叠
+    case overlap(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .overlap(let message): return message
+        }
+    }
+}
+
 /// App 全局状态
 ///
 /// 管理数据库连接、文件夹列表等应用级状态。
@@ -57,6 +69,23 @@ final class AppState {
         // 检查是否已存在
         let exists = folders.contains { $0.folderPath == path }
         guard !exists else { return }
+
+        // 检测父子文件夹重叠
+        for existing in folders {
+            let existingName = URL(fileURLWithPath: existing.folderPath).lastPathComponent
+            let newName = URL(fileURLWithPath: path).lastPathComponent
+
+            if path.hasPrefix(existing.folderPath + "/") {
+                throw FolderError.overlap(
+                    "「\(newName)」已包含在「\(existingName)」中，其视频已被索引"
+                )
+            }
+            if existing.folderPath.hasPrefix(path + "/") {
+                throw FolderError.overlap(
+                    "已有子文件夹「\(existingName)」被单独索引，添加父文件夹会导致重复索引"
+                )
+            }
+        }
 
         // 解析卷信息并缓存
         let volumeInfo = VolumeResolver.resolve(path: path)

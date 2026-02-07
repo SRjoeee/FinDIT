@@ -84,9 +84,15 @@ public enum SearchEngine {
     /// - 精确短语：`"海滩日落"`
     /// - 排除：`海滩 NOT 雨天`
     /// - 列过滤：`tags:海滩`
-    public static func search(_ db: Database, query: String, limit: Int = 50) throws -> [SearchResult] {
+    public static func search(_ db: Database, query: String, folderPaths: Set<String>? = nil, limit: Int = 50) throws -> [SearchResult] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
+
+        let filterSQL = folderFilterSQL(folderPaths: folderPaths)
+        var args = StatementArguments()
+        args += [trimmed]
+        appendFolderArgs(&args, folderPaths: folderPaths)
+        args += [limit]
 
         let rows = try Row.fetchAll(db, sql: """
             SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
@@ -97,10 +103,10 @@ public enum SearchEngine {
             FROM clips_fts
             JOIN clips c ON c.clip_id = clips_fts.rowid
             LEFT JOIN videos v ON v.video_id = c.video_id
-            WHERE clips_fts MATCH ?
+            WHERE clips_fts MATCH ?\(filterSQL)
             ORDER BY clips_fts.rank
             LIMIT ?
-            """, arguments: [trimmed, limit])
+            """, arguments: args)
 
         return rows.map { row in
             SearchResult(
@@ -146,6 +152,7 @@ public enum SearchEngine {
         embeddingModel: String? = nil,
         vectorStoreResults: [(clipId: Int64, similarity: Float)]? = nil,
         mode: SearchMode = .auto,
+        folderPaths: Set<String>? = nil,
         limit: Int = 50
     ) throws -> [SearchResult] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -157,22 +164,22 @@ public enum SearchEngine {
         // 纯向量模式
         if mode == .vector || (mode == .auto && weights.ftsWeight == 0) {
             if let storeResults = vectorStoreResults {
-                return try vectorSearchFromStore(db, storeResults: storeResults, limit: limit)
+                return try vectorSearchFromStore(db, storeResults: storeResults, folderPaths: folderPaths, limit: limit)
             }
             guard let embedding = queryEmbedding, let model = embeddingModel else {
                 return [] // 无向量时返回空
             }
-            return try vectorSearch(db, queryEmbedding: embedding, embeddingModel: model, limit: limit)
+            return try vectorSearch(db, queryEmbedding: embedding, embeddingModel: model, folderPaths: folderPaths, limit: limit)
         }
 
         // 纯 FTS 模式或无向量
         if mode == .fts || queryEmbedding == nil {
-            return try search(db, query: trimmed, limit: limit)
+            return try search(db, query: trimmed, folderPaths: folderPaths, limit: limit)
         }
 
         // 混合模式
         guard let embedding = queryEmbedding, let model = embeddingModel else {
-            return try search(db, query: trimmed, limit: limit)
+            return try search(db, query: trimmed, folderPaths: folderPaths, limit: limit)
         }
 
         return try fusionSearch(
@@ -182,6 +189,7 @@ public enum SearchEngine {
             embeddingModel: model,
             vectorStoreResults: vectorStoreResults,
             weights: weights,
+            folderPaths: folderPaths,
             limit: limit
         )
     }
@@ -195,8 +203,14 @@ public enum SearchEngine {
         _ db: Database,
         queryEmbedding: [Float],
         embeddingModel: String,
+        folderPaths: Set<String>? = nil,
         limit: Int = 50
     ) throws -> [SearchResult] {
+        let filterSQL = folderFilterSQL(folderPaths: folderPaths)
+        var args = StatementArguments()
+        args += [embeddingModel]
+        appendFolderArgs(&args, folderPaths: folderPaths)
+
         let rows = try Row.fetchAll(db, sql: """
             SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
                    v.file_path, v.file_name,
@@ -204,8 +218,8 @@ public enum SearchEngine {
                    c.tags, c.transcript, c.thumbnail_path, c.embedding
             FROM clips c
             LEFT JOIN videos v ON v.video_id = c.video_id
-            WHERE c.embedding IS NOT NULL AND c.embedding_model = ?
-            """, arguments: [embeddingModel])
+            WHERE c.embedding IS NOT NULL AND c.embedding_model = ?\(filterSQL)
+            """, arguments: args)
 
         var results: [(SearchResult, Double)] = []
 
@@ -248,6 +262,7 @@ public enum SearchEngine {
     static func vectorSearchFromStore(
         _ db: Database,
         storeResults: [(clipId: Int64, similarity: Float)],
+        folderPaths: Set<String>? = nil,
         limit: Int = 50
     ) throws -> [SearchResult] {
         guard !storeResults.isEmpty else { return [] }
@@ -256,10 +271,12 @@ public enum SearchEngine {
         let similarities = Dictionary(uniqueKeysWithValues: topK.map { ($0.clipId, Double($0.similarity)) })
         let clipIds = topK.map { $0.clipId }
 
-        // 查询元数据
+        // 查询元数据（含文件夹过滤）
         let placeholders = clipIds.map { _ in "?" }.joined(separator: ", ")
+        let filterSQL = folderFilterSQL(folderPaths: folderPaths)
         var args = StatementArguments()
         for id in clipIds { args += [id] }
+        appendFolderArgs(&args, folderPaths: folderPaths)
 
         let rows = try Row.fetchAll(db, sql: """
             SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
@@ -268,7 +285,7 @@ public enum SearchEngine {
                    c.tags, c.transcript, c.thumbnail_path
             FROM clips c
             LEFT JOIN videos v ON v.video_id = c.video_id
-            WHERE c.clip_id IN (\(placeholders))
+            WHERE c.clip_id IN (\(placeholders))\(filterSQL)
             """, arguments: args)
 
         // 构建结果并按相似度排序
@@ -310,19 +327,20 @@ public enum SearchEngine {
         embeddingModel: String,
         vectorStoreResults: [(clipId: Int64, similarity: Float)]? = nil,
         weights: SearchWeights,
+        folderPaths: Set<String>? = nil,
         limit: Int
     ) throws -> [SearchResult] {
         // 1. FTS5 搜索
-        let ftsResults = try search(db, query: query, limit: limit * 2)
+        let ftsResults = try search(db, query: query, folderPaths: folderPaths, limit: limit * 2)
 
         // 2. 向量搜索（VectorStore 加速或逐行扫描回退）
         let vectorResults: [SearchResult]
         if let storeResults = vectorStoreResults {
-            vectorResults = try vectorSearchFromStore(db, storeResults: storeResults, limit: limit * 2)
+            vectorResults = try vectorSearchFromStore(db, storeResults: storeResults, folderPaths: folderPaths, limit: limit * 2)
         } else {
             vectorResults = try vectorSearch(
                 db, queryEmbedding: queryEmbedding,
-                embeddingModel: embeddingModel, limit: limit * 2
+                embeddingModel: embeddingModel, folderPaths: folderPaths, limit: limit * 2
             )
         }
 
@@ -451,6 +469,31 @@ public enum SearchEngine {
             (0x3040...0x30FF).contains(scalar.value) ||
             // Hangul Syllables
             (0xAC00...0xD7AF).contains(scalar.value)
+        }
+    }
+
+    // MARK: - 文件夹过滤辅助
+
+    /// 生成文件夹过滤的 SQL WHERE 子句片段
+    ///
+    /// - `nil`: 不过滤（全局搜索）→ 返回空字符串
+    /// - 空集: 过滤为"无文件夹"→ 返回 ` AND 0`（零结果）
+    /// - 非空集: 返回 ` AND c.source_folder IN (?, ?, ...)`
+    private static func folderFilterSQL(folderPaths: Set<String>?) -> String {
+        guard let paths = folderPaths else { return "" }
+        if paths.isEmpty { return " AND 0" }
+        let placeholders = paths.map { _ in "?" }.joined(separator: ", ")
+        return " AND c.source_folder IN (\(placeholders))"
+    }
+
+    /// 将文件夹路径追加到 StatementArguments
+    ///
+    /// 逐个 append 避免类型擦除问题（GRDB v6 StatementArguments 陷阱）。
+    /// 排序保证确定性查询计划。
+    private static func appendFolderArgs(_ args: inout StatementArguments, folderPaths: Set<String>?) {
+        guard let paths = folderPaths else { return }
+        for path in paths.sorted() {
+            args += [path]
         }
     }
 

@@ -1,28 +1,97 @@
 import SwiftUI
+import AppKit
 import FindItCore
+
+// MARK: - 侧边栏选择模型
+
+/// 侧边栏选择状态
+///
+/// 用于 `List(selection:)` 绑定，决定搜索的文件夹范围。
+enum SidebarSelection: Hashable {
+    /// 搜索全部文件夹
+    case all
+    /// 搜索指定文件夹
+    case folder(String)
+}
+
+// MARK: - 文件夹分组
+
+/// 按卷分组的文件夹集合
+private struct FolderGroup: Identifiable {
+    let id: String
+    let displayName: String
+    let folders: [WatchedFolder]
+}
+
+// MARK: - SidebarView
 
 /// 侧边栏 — 文件夹管理
 ///
-/// 显示已注册的素材文件夹列表，支持添加新文件夹。
+/// 显示已注册的素材文件夹列表，按卷自动分组。
+/// 支持点击选择文件夹以筛选搜索范围。
 /// 每个文件夹显示在线/离线状态、视频/片段统计。
-/// 索引进行中时显示进度指示器。
 struct SidebarView: View {
     let appState: AppState
     let indexingManager: IndexingManager
+    @Binding var selection: SidebarSelection
+
+    /// 待移除的文件夹（触发确认弹窗）
+    @State private var folderToRemove: WatchedFolder?
 
     var body: some View {
-        List {
-            Section("素材库") {
-                ForEach(appState.folders, id: \.folderPath) { folder in
-                    FolderRow(
-                        folder: folder,
-                        progress: indexingManager.folderProgress[folder.folderPath],
-                        isCurrentFolder: indexingManager.currentFolder == folder.folderPath
-                    )
+        List(selection: $selection) {
+            // "全部素材" 固定行
+            AllFoldersRow(
+                totalVideos: appState.folders.reduce(0) { $0 + $1.totalFiles },
+                totalClips: appState.folders.reduce(0) { $0 + $1.indexedFiles }
+            )
+            .tag(SidebarSelection.all)
+
+            // 按卷分组
+            ForEach(folderGroups) { group in
+                Section(group.displayName) {
+                    ForEach(group.folders, id: \.folderPath) { folder in
+                        let isCurrentFolder = indexingManager.currentFolder == folder.folderPath
+                        FolderRow(
+                            folder: folder,
+                            progress: indexingManager.folderProgress[folder.folderPath],
+                            isCurrentFolder: isCurrentFolder
+                        )
+                        .tag(SidebarSelection.folder(folder.folderPath))
+                        .contextMenu {
+                            Button("在 Finder 中显示") {
+                                NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: folder.folderPath)
+                            }
+                            .disabled(!folder.isAvailable)
+
+                            Button("重新索引") {
+                                indexingManager.queueFolder(folder.folderPath)
+                            }
+                            .disabled(isCurrentFolder || !folder.isAvailable)
+
+                            Divider()
+
+                            Button("从资料库中移除…", role: .destructive) {
+                                folderToRemove = folder
+                            }
+                        }
+                    }
                 }
             }
         }
         .listStyle(.sidebar)
+        .alert("移除文件夹？", isPresented: Binding(
+            get: { folderToRemove != nil },
+            set: { if !$0 { folderToRemove = nil } }
+        )) {
+            Button("取消", role: .cancel) { folderToRemove = nil }
+            Button("移除", role: .destructive) { performRemove() }
+        } message: {
+            if let folder = folderToRemove {
+                let name = URL(fileURLWithPath: folder.folderPath).lastPathComponent
+                Text("将清除「\(name)」的索引数据（\(folder.indexedFiles) 个片段）。视频文件不受影响。")
+            }
+        }
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Button {
@@ -38,7 +107,83 @@ struct SidebarView: View {
             }
             .padding()
         }
-        // 宽度由 ContentView 的 .navigationSplitViewColumnWidth 控制
+    }
+
+    // MARK: - Actions
+
+    /// 执行文件夹移除
+    private func performRemove() {
+        guard let folder = folderToRemove else { return }
+        let removedPath = folder.folderPath
+
+        do {
+            try appState.removeFolder(path: removedPath)
+        } catch {
+            print("[SidebarView] 移除文件夹失败: \(error)")
+        }
+
+        // 如果移除的是当前选中项，切回 "全部"
+        if case .folder(let path) = selection, path == removedPath {
+            selection = .all
+        }
+
+        folderToRemove = nil
+    }
+
+    // MARK: - 分组逻辑
+
+    /// 按卷自动分组文件夹
+    ///
+    /// - 内置硬盘 → "本地"
+    /// - 外置卷 → 按 volumeName 或挂载点名称分组
+    private var folderGroups: [FolderGroup] {
+        let internalFolders = appState.folders.filter { !$0.folderPath.hasPrefix("/Volumes/") }
+        let externalFolders = appState.folders.filter { $0.folderPath.hasPrefix("/Volumes/") }
+
+        var groups: [FolderGroup] = []
+
+        if !internalFolders.isEmpty {
+            groups.append(FolderGroup(id: "internal", displayName: "本地", folders: internalFolders))
+        }
+
+        // 外置卷按卷名分组
+        let volumeDict = Dictionary(grouping: externalFolders) { folder -> String in
+            folder.volumeName
+                ?? URL(fileURLWithPath: folder.folderPath).pathComponents.dropFirst(2).first
+                ?? "外置硬盘"
+        }
+
+        for (name, folders) in volumeDict.sorted(by: { $0.key < $1.key }) {
+            groups.append(FolderGroup(id: "vol-\(name)", displayName: name, folders: folders))
+        }
+
+        return groups
+    }
+}
+
+// MARK: - AllFoldersRow
+
+/// "全部素材" 行 — 侧边栏顶部固定项
+private struct AllFoldersRow: View {
+    let totalVideos: Int
+    let totalClips: Int
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "folder.fill")
+                .foregroundStyle(.blue)
+                .frame(width: 16)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("全部素材")
+
+                if totalVideos > 0 || totalClips > 0 {
+                    Text("\(totalVideos) 个视频 · \(totalClips) 个片段")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 }
 
@@ -57,7 +202,7 @@ private struct FolderRow: View {
                 .frame(width: 6, height: 6)
 
             VStack(alignment: .leading, spacing: 2) {
-                // 文件夹名称（外接卷显示卷名前缀）
+                // 文件夹名称
                 Text(displayName)
                     .lineLimit(1)
 
@@ -83,16 +228,9 @@ private struct FolderRow: View {
 
     // MARK: - 显示名称
 
-    /// 显示名称：外接卷加卷名前缀
+    /// 显示名称：文件夹最后一段路径
     private var displayName: String {
-        let folderName = URL(fileURLWithPath: folder.folderPath).lastPathComponent
-
-        // 有卷名 + 路径在 /Volumes/ 下 = 外接卷，加前缀
-        if let volumeName = folder.volumeName,
-           folder.folderPath.hasPrefix("/Volumes/") {
-            return "\(volumeName) /\(folderName)"
-        }
-        return folderName
+        URL(fileURLWithPath: folder.folderPath).lastPathComponent
     }
 
     // MARK: - 统计文本
@@ -142,7 +280,6 @@ private struct FolderRow: View {
                     .font(.caption2)
                     .foregroundStyle(.orange)
             } else {
-                // 索引完成后显示统计
                 statsText
             }
         } else {

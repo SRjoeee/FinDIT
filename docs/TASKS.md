@@ -12,10 +12,51 @@
 - NLE 导出（EDL + FCPXML，单个/批量）
 - 拖拽到 NLE（NSItemProvider）
 - 全局快捷键 ⌘⇧F（后台唤起）
-- 外接硬盘监听（DiskArbitration）
-- 系统通知（索引完成/失败/硬盘恢复）
 - 设置页：API Key 管理、当日 API 额度显示
 - 热门标签展示（从 clips.tags 统计 TOP N）
+
+## 已完成（文件管理系统 — 卷监控 + 通知 + UI）
+
+### Core 层工具
+
+- VolumeResolver: 卷 UUID/名称解析、挂载点查找、路径恢复 (URL.resourceValues)
+- FolderStats: 每文件夹视频/片段统计查询
+- Clip.sqliteDatetime() 改为 public
+- 15 个新增测试 (VolumeResolver 12 + FolderStats 3)
+
+### 卷信息填充 + reloadFolders 增强
+
+- addFolder 时记录 volumeName/volumeUuid/lastSeenAt
+- reloadFolders 查询 FolderStats、缓存 VolumeInfo、UUID 路径恢复
+
+### VolumeMonitor 卷监控
+
+- DiskArbitration 框架实时检测卷挂载/卸载
+- 卸载 → 标记离线 + 系统通知
+- 挂载 → UUID 匹配恢复 + 路径更新 + 恢复索引
+
+### NotificationManager 系统通知
+
+- UNUserNotificationCenter macOS 通知
+- 索引完成/失败、硬盘连接/断开通知
+- Bundle identifier 防护 (SPM executable 兼容)
+
+### 侧边栏 UI 增强
+
+- 绿/红状态圆点 (在线/离线)
+- 视频/片段统计文本
+- 离线文件夹显示 "上次在线：X 天前"
+- 外接卷名前缀显示
+- 文件夹管理弹窗添加状态 badge + 统计
+
+### 搜索结果离线蒙层
+
+- ClipCard: isOffline 参数 + 半透明灰色遮罩 + icloud.slash 图标
+- ResultsGrid: offlineFolders 集合注入
+
+### 验收
+
+- 505 个测试全部通过 (448 + 15 新增 + 既有 42 未变)
 
 ## 已完成（性能优化 — 搜索 + 缩略图 + 嵌入质量）
 

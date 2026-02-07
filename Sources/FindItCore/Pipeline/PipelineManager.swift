@@ -145,6 +145,8 @@ public enum PipelineManager {
     ///   - whisperKit: WhisperKit 实例（nil = 跳过 STT，macOS 26+ 仍可用 SpeechAnalyzer）
     ///   - vlmContainer: 本地 VLM 模型容器（nil = 跳过本地 VLM）
     ///   - embeddingProvider: 向量嵌入提供者（nil = 跳过嵌入）
+    ///   - skipStt: 跳过所有语音转录（包括 SpeechAnalyzer）
+    ///   - skipSync: 跳过同步到全局索引（并行模式由调用方统一同步）
     ///   - ffmpegConfig: FFmpeg 配置
     ///   - onProgress: 进度回调
     /// - Returns: 处理结果
@@ -158,6 +160,8 @@ public enum PipelineManager {
         whisperKit: WhisperKit? = nil,
         vlmContainer: ModelContainer? = nil,
         embeddingProvider: EmbeddingProvider? = nil,
+        skipStt: Bool = false,
+        skipSync: Bool = false,
         ffmpegConfig: FFmpegConfig = .default,
         onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws -> ProcessingResult {
@@ -193,7 +197,7 @@ public enum PipelineManager {
             do {
                 // 场景检测 + 时长获取 + 可选音频提取（单次 FFmpeg 调用）
                 progress("场景检测中...")
-                let needsAudio = await isSttAvailable(whisperKit: whisperKit)
+                let needsAudio = skipStt ? false : await isSttAvailable(whisperKit: whisperKit)
                 var audioOutputPath: String?
                 if needsAudio {
                     let tmpDir = tmpDirectory(folderPath: folderPath)
@@ -301,9 +305,10 @@ public enum PipelineManager {
         }
 
         // 3. STT 阶段
+        //    skipStt=true: 跳过所有 STT（包括 SpeechAnalyzer）
         //    macOS 26+: 优先 SpeechAnalyzer（即使 whisperKit 为 nil）
         //    较旧 macOS: 需要 whisperKit
-        let sttAvailable = await isSttAvailable(whisperKit: whisperKit)
+        let sttAvailable = skipStt ? false : await isSttAvailable(whisperKit: whisperKit)
         if sttAvailable && currentStage.isBefore(.sttDone) {
             do {
                 try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .sttRunning)
@@ -564,9 +569,9 @@ public enum PipelineManager {
             progress("嵌入完成: \(clipsEmbedded)/\(allClips.count)")
         }
 
-        // 6. 同步到全局索引
+        // 6. 同步到全局索引（skipSync 时跳过，由调用方统一同步）
         var syncResult: SyncEngine.SyncResult?
-        if let globalDB = globalDB {
+        if let globalDB = globalDB, !skipSync {
             progress("同步到全局索引...")
             let sr = try SyncEngine.sync(
                 folderPath: folderPath,

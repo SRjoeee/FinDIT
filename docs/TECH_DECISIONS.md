@@ -170,3 +170,61 @@
   - 支持搜索分析（什么查询最热门）
   - 热门标签直接从现有数据统计，不增加冗余
 - **日期**: 2026-02-06
+
+## ADR-014: 并行索引调度 — 资源池模型
+
+- **决策**: 实现基于资源池的并行索引调度器，替代当前串行逐视频处理
+- **架构**: 三层分离
+
+  | 层级 | 组件 | 职责 |
+  |------|------|------|
+  | 资源管理 | `ResourceMonitor` (actor) | 采样系统状态，动态调整资源池大小 |
+  | 调度 | `IndexingScheduler` (actor) | 资源池 acquire/release，多视频并发编排 |
+  | 协调 | `IndexingManager` (@Observable) | UI 进度、队列管理，调用 Scheduler |
+
+- **资源池模型**:
+  - **CPU Pool**: 控制 FFmpeg/LocalVision 等 CPU 密集任务并发数
+  - **GPU Pool**: 控制 STT/LocalVLM 等 GPU 独占任务（slots=1）
+  - **Network Pool**: 控制 Gemini API 调用（已有 GeminiRateLimiter 管理）
+  - 每个管线阶段声明资源需求，调度器按需分配
+
+  | 任务 | CPU | GPU | Network |
+  |------|-----|-----|---------|
+  | FFmpeg 场景检测 | 1 slot | - | - |
+  | 关键帧提取 | 1 slot | - | - |
+  | STT (SpeechAnalyzer) | - | 1 slot | - |
+  | Vision (Gemini) | - | - | rate-limited |
+  | Vision (LocalVLM) | - | 1 slot | - |
+  | Vision (LocalVision) | 1 slot | - | - |
+  | Embedding (NL) | - | - | - |
+
+- **动态调整策略**:
+  - 监控 `ProcessInfo.thermalState`（nominal/fair/serious/critical）
+  - 监控 `os_proc_available_memory()` 可用内存
+  - 监控 `ProcessInfo.isLowPowerModeEnabled` 节能模式
+  - `thermalState` 升高 → 自动缩减 CPU Pool slots
+  - 可用内存不足 → 暂停新任务入队
+  - 持续采样（每 5 秒），非一次性设定
+
+- **性能模式** (`PerformanceMode` enum):
+
+  | 模式 | CPU Slots | QoS | 场景 |
+  |------|-----------|-----|------|
+  | `fullSpeed` | cores-2 | `.userInitiated` | 用户手动选择快速完成 |
+  | `balanced` | cores/2 | `.utility` | 默认模式 |
+  | `background` | max(1, cores/4) | `.background` | 最低干扰 |
+
+- **关键约束**:
+  - GPU Pool slots=1（STT 和 LocalVLM 互斥，不能并行）
+  - Gemini API 由 `GeminiRateLimiter` actor 自管理，无需额外 pool
+  - GRDB `DatabasePool` 支持并发读+串行写，多视频同时写同一个 folder DB 安全
+  - 所有管线组件是 enum + static methods，无实例状态，天然线程安全
+
+- **预估加速**:
+  - 有 API Key: ~3x（GPU 和 Network 并行）
+  - 纯本地: ~2x（FFmpeg 并行，GPU 串行）
+
+- **实现方式**: `AsyncSemaphore` actor 作为资源池原语，`TaskGroup` 管理并发视频处理
+- **可扩展性**: 未来新增分析阶段只需声明资源需求，调度器自动处理
+- **CLI 支持**: `index --parallel` 标志启用并行模式
+- **日期**: 2026-02-07

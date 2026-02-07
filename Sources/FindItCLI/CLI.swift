@@ -767,6 +767,12 @@ struct IndexCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "强制重新索引已完成的视频")
     var force: Bool = false
 
+    @Flag(name: .long, help: "并行处理多个视频（基于资源池调度器）")
+    var parallel: Bool = false
+
+    @Option(name: .long, help: "性能模式: full_speed, balanced, background (默认 balanced)")
+    var mode: String = "balanced"
+
     func run() async throws {
         let startTime = CFAbsoluteTimeGetCurrent()
         let folderPath = (folder as NSString).standardizingPath
@@ -866,21 +872,25 @@ struct IndexCommand: AsyncParsableCommand {
             }
         }
 
-        // 6. 创建限速器
+        // 6. 创建限速器 + 嵌入 provider
         let rateLimiter: GeminiRateLimiter? = resolvedApiKey != nil ? GeminiRateLimiter() : nil
 
-        // 7. 逐视频处理
-        var totalClips = 0
-        var totalAnalyzed = 0
-        var processedCount = 0
+        let embeddingProvider: (any EmbeddingProvider)?
+        if let key = resolvedApiKey {
+            embeddingProvider = GeminiEmbeddingProvider(apiKey: key)
+        } else {
+            let nlProvider = NLEmbeddingProvider()
+            embeddingProvider = nlProvider.isAvailable() ? nlProvider : nil
+        }
+        if let ep = embeddingProvider {
+            print("✓ 嵌入 provider: \(ep.name)")
+        }
 
-        print()
-        for (i, videoPath) in filteredPaths.enumerated() {
-            let fileName = (videoPath as NSString).lastPathComponent
-            print("[\(i + 1)/\(filteredPaths.count)] 处理: \(fileName)")
+        // 7. 处理视频
 
-            // 如果 --force，先重置已完成的视频状态
-            if force {
+        // 如果 --force，先重置所有已完成视频的状态
+        if force {
+            for videoPath in filteredPaths {
                 let existing = try await folderDB.read { db in
                     try Video.fetchByPath(db, path: videoPath)
                 }
@@ -894,34 +904,100 @@ struct IndexCommand: AsyncParsableCommand {
                     }
                 }
             }
+        }
 
-            do {
-                let result = try await PipelineManager.processVideo(
-                    videoPath: videoPath,
-                    folderPath: folderPath,
-                    folderDB: folderDB,
-                    globalDB: globalDB,
-                    apiKey: resolvedApiKey,
-                    rateLimiter: rateLimiter,
-                    whisperKit: whisperKit,
-                    onProgress: { msg in print("  \(msg)") }
-                )
+        var totalClips = 0
+        var totalAnalyzed = 0
+        var processedCount = 0
+        var failedCount = 0
 
-                totalClips += result.clipsCreated
-                totalAnalyzed += result.clipsAnalyzed
-                processedCount += 1
+        print()
 
-                if let srt = result.srtPath {
-                    print("  ✓ SRT: \(srt)")
-                }
-                if let sync = result.syncResult {
-                    print("  ✓ 同步: \(sync.syncedVideos) 视频, \(sync.syncedClips) 片段")
-                }
-
-            } catch {
-                print("  ✗ 失败: \(error.localizedDescription)")
-            }
+        if parallel {
+            // 并行模式：使用 IndexingScheduler
+            let perfMode = PerformanceMode(rawValue: mode) ?? .balanced
+            let scheduler = IndexingScheduler(mode: perfMode)
+            let info = await scheduler.concurrencyInfo()
+            print("并行模式: \(perfMode.displayName) (最大并发: \(info.max))")
             print()
+
+            // 线程安全计数器（使用 actor）
+            let counter = VideoCounter()
+
+            await scheduler.processVideos(
+                filteredPaths,
+                folderPath: folderPath,
+                folderDB: folderDB,
+                globalDB: globalDB,
+                apiKey: resolvedApiKey,
+                rateLimiter: rateLimiter,
+                embeddingProvider: embeddingProvider,
+                skipStt: skipStt,
+                onProgress: { progress in
+                    print("  [\(progress.fileName)] \(progress.stage)")
+                },
+                onComplete: { outcome in
+                    if outcome.success {
+                        Task { await counter.addSuccess(
+                            clips: outcome.clipsCreated,
+                            analyzed: outcome.clipsAnalyzed,
+                            embedded: outcome.clipsEmbedded
+                        )}
+                        let name = (outcome.videoPath as NSString).lastPathComponent
+                        print("  ✓ \(name): \(outcome.clipsCreated) 片段, \(outcome.clipsAnalyzed) 分析, \(outcome.clipsEmbedded) 嵌入")
+                    } else if outcome.errorMessage == "cancelled" {
+                        let name = (outcome.videoPath as NSString).lastPathComponent
+                        print("  ⊘ \(name): 已跳过")
+                    } else {
+                        Task { await counter.addFailure() }
+                        let name = (outcome.videoPath as NSString).lastPathComponent
+                        print("  ✗ \(name): \(outcome.errorMessage ?? "未知错误")")
+                    }
+                }
+            )
+
+            totalClips = await counter.clips
+            totalAnalyzed = await counter.analyzed
+            processedCount = await counter.successes
+            failedCount = await counter.failures
+
+        } else {
+            // 串行模式：原有逻辑
+            for (i, videoPath) in filteredPaths.enumerated() {
+                let fileName = (videoPath as NSString).lastPathComponent
+                print("[\(i + 1)/\(filteredPaths.count)] 处理: \(fileName)")
+
+                do {
+                    let result = try await PipelineManager.processVideo(
+                        videoPath: videoPath,
+                        folderPath: folderPath,
+                        folderDB: folderDB,
+                        globalDB: globalDB,
+                        apiKey: resolvedApiKey,
+                        rateLimiter: rateLimiter,
+                        whisperKit: whisperKit,
+                        embeddingProvider: embeddingProvider,
+                        skipStt: skipStt,
+                        onProgress: { msg in print("  \(msg)") }
+                    )
+
+                    totalClips += result.clipsCreated
+                    totalAnalyzed += result.clipsAnalyzed
+                    processedCount += 1
+
+                    if let srt = result.srtPath {
+                        print("  ✓ SRT: \(srt)")
+                    }
+                    if let sync = result.syncResult {
+                        print("  ✓ 同步: \(sync.syncedVideos) 视频, \(sync.syncedClips) 片段")
+                    }
+
+                } catch {
+                    print("  ✗ 失败: \(error.localizedDescription)")
+                    failedCount += 1
+                }
+                print()
+            }
         }
 
         // 8. 汇总
@@ -930,7 +1006,32 @@ struct IndexCommand: AsyncParsableCommand {
         let seconds = Int(elapsed) % 60
         let timeStr = minutes > 0 ? "\(minutes)分\(seconds)秒" : "\(seconds)秒"
 
-        print("完成! 处理了 \(processedCount) 个视频, \(totalClips) 个片段, 分析了 \(totalAnalyzed) 个场景, 耗时 \(timeStr)")
+        var summary = "完成! 处理了 \(processedCount) 个视频, \(totalClips) 个片段, 分析了 \(totalAnalyzed) 个场景"
+        if failedCount > 0 {
+            summary += ", \(failedCount) 个失败"
+        }
+        summary += ", 耗时 \(timeStr)"
+        print(summary)
+    }
+}
+
+/// 并行模式下的线程安全计数器
+private actor VideoCounter {
+    var successes: Int = 0
+    var failures: Int = 0
+    var clips: Int = 0
+    var analyzed: Int = 0
+    var embedded: Int = 0
+
+    func addSuccess(clips: Int, analyzed: Int, embedded: Int = 0) {
+        successes += 1
+        self.clips += clips
+        self.analyzed += analyzed
+        self.embedded += embedded
+    }
+
+    func addFailure() {
+        failures += 1
     }
 }
 

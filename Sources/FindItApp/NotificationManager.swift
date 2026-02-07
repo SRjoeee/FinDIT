@@ -12,10 +12,20 @@ enum NotificationManager {
 
     // MARK: - 权限
 
+    /// 通知功能是否可用（需要有效的 app bundle）
+    private static var isAvailable: Bool {
+        Bundle.main.bundleIdentifier != nil
+    }
+
     /// 请求通知权限
     ///
     /// App 启动时调用一次。macOS 上首次请求会弹出系统确认弹窗。
+    /// 需要有效的 app bundle，SPM 纯 executable 无法使用通知。
     static func requestPermission() {
+        guard isAvailable else {
+            print("[NotificationManager] 跳过：无有效 bundle identifier")
+            return
+        }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
             if let error = error {
                 print("[NotificationManager] 权限请求失败: \(error)")
@@ -101,9 +111,9 @@ enum NotificationManager {
 
     // MARK: - Private
 
-    /// 判断是否应发送通知（App 不在前台时才发）
+    /// 判断是否应发送通知（需有效 bundle + App 不在前台时才发）
     private static func shouldSendNotification() -> Bool {
-        !NSApp.isActive
+        isAvailable && !NSApp.isActive
     }
 
     /// 发送通知

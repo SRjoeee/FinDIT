@@ -89,25 +89,17 @@ final class VolumeMonitor {
 
         // 只关心有挂载点的卷（跳过未挂载的分区）
         guard let mountPointURL = description[kDADiskDescriptionVolumePathKey as String] as? URL else { return }
-
         let mountPoint = mountPointURL.path
 
-        // 安全提取 UUID（不使用 force cast）
-        let uuid: String?
-        if let cfUUID = description[kDADiskDescriptionVolumeUUIDKey as String],
-           CFGetTypeID(cfUUID as CFTypeRef) == CFUUIDGetTypeID() {
-            let uuidRef = unsafeBitCast(cfUUID, to: CFUUID.self)
-            uuid = CFUUIDCreateString(kCFAllocatorDefault, uuidRef) as String?
-        } else {
-            uuid = nil
-        }
-
-        let volumeName = description[kDADiskDescriptionVolumeNameKey as String] as? String
+        // 通过 VolumeResolver 获取卷信息（URL.resourceValues，安全的 Swift API）
+        let volumeInfo = VolumeResolver.resolve(path: mountPoint)
+        let volumeName = volumeInfo.name
+            ?? (description[kDADiskDescriptionVolumeNameKey as String] as? String)
 
         print("[VolumeMonitor] 卷挂载: \(volumeName ?? "未知") at \(mountPoint)" +
-              (uuid != nil ? " UUID=\(uuid!)" : ""))
+              (volumeInfo.uuid != nil ? " UUID=\(volumeInfo.uuid!)" : ""))
 
-        handleVolumeAppeared(mountPoint: mountPoint, uuid: uuid, volumeName: volumeName)
+        handleVolumeAppeared(mountPoint: mountPoint, uuid: volumeInfo.uuid, volumeName: volumeName)
     }
 
     /// 卷卸载

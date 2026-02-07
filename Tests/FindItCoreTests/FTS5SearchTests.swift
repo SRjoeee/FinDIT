@@ -219,6 +219,30 @@ final class FTS5SearchTests: XCTestCase {
         XCTAssertEqual(results.count, 1)
     }
 
+    // MARK: - thumbnailPath
+
+    func testSearchResultIncludesThumbnailPath() throws {
+        // 设置 thumbnail_path
+        try db.write { db in
+            try db.execute(sql: "UPDATE clips SET thumbnail_path = '/tmp/thumb1.jpg' WHERE clip_id = 1")
+        }
+
+        let results = try db.read { db in
+            try SearchEngine.search(db, query: "海滩")
+        }
+        let clip1 = results.first(where: { $0.clipId == 1 })
+        XCTAssertNotNil(clip1)
+        XCTAssertEqual(clip1?.thumbnailPath, "/tmp/thumb1.jpg")
+    }
+
+    func testSearchResultThumbnailPathNilWhenEmpty() throws {
+        let results = try db.read { db in
+            try SearchEngine.search(db, query: "森林")
+        }
+        XCTAssertEqual(results.count, 1)
+        XCTAssertNil(results[0].thumbnailPath, "未设置 thumbnail_path 时应为 nil")
+    }
+
     // MARK: - 搜索历史
 
     func testRecordAndFetchSearchHistory() throws {

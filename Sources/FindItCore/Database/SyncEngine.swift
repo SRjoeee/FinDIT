@@ -163,18 +163,16 @@ public enum SyncEngine {
             if batch.count < batchSize { break }
         }
 
-        // 4. 更新同步进度（仅在有数据同步时）
-        if totalSyncedVideos > 0 || totalSyncedClips > 0 {
-            try globalDB.write { db in
-                try db.execute(sql: """
-                    INSERT INTO sync_meta (folder_path, last_synced_video_rowid, last_synced_clip_rowid, last_synced_at)
-                    VALUES (?, ?, ?, datetime('now'))
-                    ON CONFLICT(folder_path) DO UPDATE SET
-                        last_synced_video_rowid = excluded.last_synced_video_rowid,
-                        last_synced_clip_rowid = excluded.last_synced_clip_rowid,
-                        last_synced_at = excluded.last_synced_at
-                    """, arguments: [folderPath, currentVideoRowId, currentClipRowId])
-            }
+        // 4. 始终更新同步进度（确保空文件夹也有记录，UI 才能显示）
+        try globalDB.write { db in
+            try db.execute(sql: """
+                INSERT INTO sync_meta (folder_path, last_synced_video_rowid, last_synced_clip_rowid, last_synced_at)
+                VALUES (?, ?, ?, datetime('now'))
+                ON CONFLICT(folder_path) DO UPDATE SET
+                    last_synced_video_rowid = excluded.last_synced_video_rowid,
+                    last_synced_clip_rowid = excluded.last_synced_clip_rowid,
+                    last_synced_at = excluded.last_synced_at
+                """, arguments: [folderPath, currentVideoRowId, currentClipRowId])
         }
 
         return SyncResult(syncedVideos: totalSyncedVideos, syncedClips: totalSyncedClips)

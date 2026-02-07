@@ -165,11 +165,16 @@ public actor GeminiRateLimiter {
         dailyCount += 1
     }
 
+    /// 日期格式化器（缓存复用，actor 内串行调用无线程安全问题）
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.timeZone = TimeZone(identifier: "UTC")
+        return f
+    }()
+
     /// 获取今日日期字符串 (YYYY-MM-DD)
     private static func todayString() -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        return formatter.string(from: Date())
+        dayFormatter.string(from: Date())
     }
 }

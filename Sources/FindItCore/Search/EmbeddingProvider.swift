@@ -39,7 +39,7 @@ public enum EmbeddingError: LocalizedError {
 /// 抽象不同的嵌入实现（Gemini API、Apple NLEmbedding、未来的 BGE-M3）。
 /// 所有实现必须提供 `name`（用于存储到 `embedding_model` 列）和
 /// `dimensions`（向量维度），搜索时只匹配同一 provider 的向量。
-public protocol EmbeddingProvider {
+public protocol EmbeddingProvider: Sendable {
     /// Provider 标识名（如 "gemini", "nl-embedding"）
     var name: String { get }
 

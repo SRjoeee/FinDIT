@@ -16,6 +16,8 @@ public enum VisionAnalyzerError: LocalizedError {
     case rateLimitExceeded
     /// 响应格式不合法
     case invalidResponse(detail: String)
+    /// 配置无效（如模型名含非法字符导致 URL 构建失败）
+    case invalidConfig(String)
 
     public var errorDescription: String? {
         switch self {
@@ -31,6 +33,8 @@ public enum VisionAnalyzerError: LocalizedError {
             return "已触发 Gemini API 速率限制 (429)，请稍后重试"
         case .invalidResponse(let detail):
             return "响应格式不合法: \(detail)"
+        case .invalidConfig(let detail):
+            return "配置无效: \(detail)"
         }
     }
 }
@@ -486,9 +490,12 @@ public enum VisionAnalyzer {
         body: Data,
         apiKey: String,
         config: Config
-    ) -> URLRequest {
+    ) throws -> URLRequest {
         let urlString = "https://generativelanguage.googleapis.com/v1beta/models/\(config.model):generateContent"
-        var request = URLRequest(url: URL(string: urlString)!)
+        guard let url = URL(string: urlString) else {
+            throw VisionAnalyzerError.invalidConfig("无效的模型名: \(config.model)")
+        }
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -516,7 +523,7 @@ public enum VisionAnalyzer {
         config: Config,
         attempt: Int = 1
     ) async throws -> Data {
-        let request = buildURLRequest(body: body, apiKey: apiKey, config: config)
+        let request = try buildURLRequest(body: body, apiKey: apiKey, config: config)
 
         let (data, response): (Data, URLResponse)
         do {

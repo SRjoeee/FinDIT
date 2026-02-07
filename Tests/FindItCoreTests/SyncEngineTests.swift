@@ -371,4 +371,30 @@ final class SyncEngineTests: XCTestCase {
         let remaining = try globalDB.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM clips") }
         XCTAssertEqual(remaining, 1)
     }
+
+    // MARK: - Fix 2: 空文件夹同步
+
+    func testSyncEmptyFolderWritesSyncMeta() throws {
+        // 只创建 watched_folder，不插入任何 video/clip
+        try folderDB.write { db in
+            var folder = WatchedFolder(folderPath: folderPath)
+            try folder.insert(db)
+        }
+
+        let result = try SyncEngine.sync(
+            folderPath: folderPath,
+            folderDB: folderDB,
+            globalDB: globalDB
+        )
+
+        XCTAssertEqual(result.syncedVideos, 0)
+        XCTAssertEqual(result.syncedClips, 0)
+
+        // sync_meta 应有记录（空文件夹也应存在）
+        let metaCount = try globalDB.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sync_meta WHERE folder_path = ?",
+                             arguments: [folderPath])
+        }
+        XCTAssertEqual(metaCount, 1, "空文件夹 sync 后 sync_meta 应有记录")
+    }
 }

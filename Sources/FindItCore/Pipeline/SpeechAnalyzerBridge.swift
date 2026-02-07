@@ -72,7 +72,7 @@ public enum SpeechAnalyzerBridge {
     public static func transcribe(
         audioPath: String,
         language: String? = nil,
-        onProgress: ((String) -> Void)? = nil
+        onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws -> [TranscriptSegment] {
         guard FileManager.default.fileExists(atPath: audioPath) else {
             throw STTError.audioFileNotFound(path: audioPath)

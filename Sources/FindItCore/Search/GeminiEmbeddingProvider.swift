@@ -161,9 +161,12 @@ public enum GeminiEmbedding {
         apiKey: String,
         endpoint: String,
         config: Config
-    ) -> URLRequest {
+    ) throws -> URLRequest {
         let urlString = "https://generativelanguage.googleapis.com/v1beta/models/\(config.model):\(endpoint)"
-        var request = URLRequest(url: URL(string: urlString)!)
+        guard let url = URL(string: urlString) else {
+            throw EmbeddingError.embeddingFailed(detail: "无效的模型名: \(config.model)")
+        }
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -180,7 +183,7 @@ public enum GeminiEmbedding {
         config: Config,
         attempt: Int = 1
     ) async throws -> Data {
-        let request = buildURLRequest(body: body, apiKey: apiKey, endpoint: endpoint, config: config)
+        let request = try buildURLRequest(body: body, apiKey: apiKey, endpoint: endpoint, config: config)
 
         let (data, response): (Data, URLResponse)
         do {
@@ -283,7 +286,7 @@ public enum GeminiEmbedding {
 ///
 /// 将 GeminiEmbedding static 方法封装为 EmbeddingProvider 实例，
 /// 便于与其他 provider 统一调用。
-public class GeminiEmbeddingProvider: EmbeddingProvider {
+public final class GeminiEmbeddingProvider: EmbeddingProvider, Sendable {
     private let apiKey: String
     private let config: GeminiEmbedding.Config
 

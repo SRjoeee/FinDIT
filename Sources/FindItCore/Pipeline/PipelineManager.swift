@@ -159,7 +159,7 @@ public enum PipelineManager {
         vlmContainer: ModelContainer? = nil,
         embeddingProvider: EmbeddingProvider? = nil,
         ffmpegConfig: FFmpegConfig = .default,
-        onProgress: ((String) -> Void)? = nil
+        onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws -> ProcessingResult {
         let progress = onProgress ?? { _ in }
 
@@ -238,6 +238,14 @@ public enum PipelineManager {
                 frameGroups = groupFramesByScene(frames: frames, sceneCount: sceneSegments.count)
 
                 // 删除旧 clips（重索引场景）
+                // 先清理全局库中该视频的旧 clips，防止孤儿记录
+                if let globalDB = globalDB {
+                    try cleanGlobalClipsForVideo(
+                        folderPath: folderPath,
+                        sourceVideoId: videoId,
+                        globalDB: globalDB
+                    )
+                }
                 try await folderDB.write { db in
                     try db.execute(
                         sql: "DELETE FROM clips WHERE video_id = ?",
@@ -317,6 +325,8 @@ public enum PipelineManager {
                         config: ffmpegConfig
                     )
                 }
+                // 确保临时音频文件在成功或失败时都被清理
+                defer { try? FileManager.default.removeItem(atPath: audioPath) }
 
                 // 语言检测
                 var detectedLanguage: String?
@@ -397,8 +407,6 @@ public enum PipelineManager {
                     )
                 }
 
-                // 清理临时音频文件
-                try? FileManager.default.removeItem(atPath: audioPath)
 
                 try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .sttDone)
 
@@ -579,6 +587,37 @@ public enum PipelineManager {
     }
 
     // MARK: - 内部辅助方法
+
+    /// 清理全局库中指定视频的旧 clips
+    ///
+    /// 在重索引视频时调用，防止旧 source_clip_id 在全局库中残留为孤儿记录。
+    ///
+    /// - Parameters:
+    ///   - folderPath: 文件夹路径
+    ///   - sourceVideoId: 文件夹库中的 video_id
+    ///   - globalDB: 全局搜索索引数据库
+    /// - Returns: 被删除的 clips 数量
+    @discardableResult
+    static func cleanGlobalClipsForVideo(
+        folderPath: String,
+        sourceVideoId: Int64,
+        globalDB: DatabaseWriter
+    ) throws -> Int {
+        try globalDB.write { db in
+            let globalVideoRow = try Row.fetchOne(db, sql: """
+                SELECT video_id FROM videos
+                WHERE source_folder = ? AND source_video_id = ?
+                """, arguments: [folderPath, sourceVideoId])
+            guard let globalVideoId: Int64 = globalVideoRow?["video_id"] else {
+                return 0
+            }
+            try db.execute(
+                sql: "DELETE FROM clips WHERE video_id = ?",
+                arguments: [globalVideoId]
+            )
+            return db.changesCount
+        }
+    }
 
     /// 注册视频到文件夹库（已存在则返回现有记录）
     static func registerVideo(

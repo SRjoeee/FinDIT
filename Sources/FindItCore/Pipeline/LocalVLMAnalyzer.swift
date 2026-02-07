@@ -20,13 +20,36 @@ public enum LocalVLMAnalyzer {
     /// 默认模型 ID
     public static let defaultModelId = "mlx-community/Qwen3-VL-4B-Instruct-4bit"
 
-    /// 模型容器缓存 actor（线程安全）
+    /// 模型容器缓存 actor（线程安全，含 single-flight 防重复加载）
     private actor ModelCache {
         var container: ModelContainer?
+        private var loadingTask: Task<ModelContainer, Error>?
 
         func get() -> ModelContainer? { container }
         func set(_ c: ModelContainer) { container = c }
-        func clear() { container = nil }
+        func clear() { container = nil; loadingTask = nil }
+
+        /// 获取缓存或发起唯一加载任务（single-flight）
+        ///
+        /// 只支持 `defaultModelId`，确保并发调用不会加载不同模型。
+        func getOrLoad() async throws -> ModelContainer {
+            if let cached = container { return cached }
+            if let task = loadingTask { return try await task.value }
+
+            let task = Task<ModelContainer, Error> {
+                try await loadModelContainer(id: LocalVLMAnalyzer.defaultModelId)
+            }
+            loadingTask = task
+            do {
+                let result = try await task.value
+                container = result
+                loadingTask = nil
+                return result
+            } catch {
+                loadingTask = nil
+                throw error
+            }
+        }
     }
 
     private static let cache = ModelCache()
@@ -45,23 +68,15 @@ public enum LocalVLMAnalyzer {
         return FileManager.default.fileExists(atPath: modelDir.path)
     }
 
-    /// 加载模型（首次调用时下载 ~3 GB）
+    /// 加载默认模型（首次调用时下载 ~3 GB）
     ///
     /// 模型容器会被缓存，后续调用直接返回。
+    /// 使用 single-flight 模式防止并发调用重复下载/加载模型。
+    /// 只支持 `defaultModelId`，不接受自定义模型。
     ///
-    /// - Parameter modelId: Hugging Face 模型 ID
     /// - Returns: 已加载的 ModelContainer
-    public static func loadModel(
-        modelId: String = defaultModelId
-    ) async throws -> ModelContainer {
-        if let cached = await cache.get() {
-            return cached
-        }
-
-        let container = try await loadModelContainer(id: modelId)
-        await cache.set(container)
-
-        return container
+    public static func loadModel() async throws -> ModelContainer {
+        try await cache.getOrLoad()
     }
 
     /// 分析单张图片

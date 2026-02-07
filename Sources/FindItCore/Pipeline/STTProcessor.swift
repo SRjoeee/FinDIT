@@ -403,7 +403,7 @@ public enum STTProcessor {
         language: String?,
         whisperKit: WhisperKit?,
         config: Config = .default,
-        onProgress: ((String) -> Void)? = nil
+        onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws -> (segments: [TranscriptSegment], engine: String) {
         // macOS 26+: 尝试 SpeechAnalyzer
         if #available(macOS 26.0, *) {

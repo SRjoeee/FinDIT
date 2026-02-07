@@ -48,6 +48,13 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
+        .executableTarget(
+            name: "FindItApp",
+            dependencies: [
+                "FindItCore",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ]
+        ),
         .testTarget(
             name: "FindItCoreTests",
             dependencies: ["FindItCore"]

@@ -357,9 +357,9 @@ final class VisionAnalyzerTests: XCTestCase {
 
     // MARK: - HTTP 请求构建
 
-    func testBuildURLRequestHeaders() {
+    func testBuildURLRequestHeaders() throws {
         let body = "test".data(using: .utf8)!
-        let request = VisionAnalyzer.buildURLRequest(
+        let request = try VisionAnalyzer.buildURLRequest(
             body: body,
             apiKey: "test-api-key",
             config: .default
@@ -373,10 +373,10 @@ final class VisionAnalyzerTests: XCTestCase {
         XCTAssertTrue(request.url?.absoluteString.contains("generateContent") ?? false)
     }
 
-    func testBuildURLRequestCustomModel() {
+    func testBuildURLRequestCustomModel() throws {
         let body = "test".data(using: .utf8)!
         let config = VisionAnalyzer.Config(model: "gemini-2.5-flash-lite")
-        let request = VisionAnalyzer.buildURLRequest(
+        let request = try VisionAnalyzer.buildURLRequest(
             body: body,
             apiKey: "key",
             config: config

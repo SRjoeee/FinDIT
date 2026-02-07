@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 @testable import FindItCore
 
 final class PipelineManagerTests: XCTestCase {
@@ -98,5 +99,78 @@ final class PipelineManagerTests: XCTestCase {
     func testSelectThumbnail() {
         XCTAssertEqual(PipelineManager.selectThumbnail(from: ["/a.jpg", "/b.jpg"]), "/a.jpg")
         XCTAssertNil(PipelineManager.selectThumbnail(from: []))
+    }
+
+    // MARK: - cleanGlobalClipsForVideo
+
+    func testCleanGlobalClipsForVideoRemovesOrphanClips() throws {
+        let folderPath = "/test/folder"
+        let folderDB = try DatabaseManager.makeFolderInMemoryDatabase()
+        let globalDB = try DatabaseManager.makeGlobalInMemoryDatabase()
+
+        // 1. 在文件夹库中创建 watched_folder + video + clips
+        try folderDB.write { db in
+            var folder = WatchedFolder(folderPath: folderPath)
+            try folder.insert(db)
+            var video = Video(
+                folderId: folder.folderId,
+                filePath: "\(folderPath)/test.mp4",
+                fileName: "test.mp4"
+            )
+            try video.insert(db)
+            for i in 0..<3 {
+                var clip = Clip(
+                    videoId: video.videoId,
+                    startTime: Double(i * 5),
+                    endTime: Double((i + 1) * 5),
+                    scene: "scene\(i)"
+                )
+                try clip.insert(db)
+            }
+        }
+
+        // 2. 同步到全局库
+        let syncResult = try SyncEngine.sync(
+            folderPath: folderPath,
+            folderDB: folderDB,
+            globalDB: globalDB
+        )
+        XCTAssertEqual(syncResult.syncedClips, 3)
+
+        // 3. 验证全局库有 3 个 clips
+        let beforeCount = try globalDB.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM clips")
+        }
+        XCTAssertEqual(beforeCount, 3)
+
+        // 4. 清理全局库中该视频的旧 clips（模拟 re-index 前的清理步骤）
+        let sourceVideoId: Int64 = try folderDB.read { db in
+            let row = try Row.fetchOne(db, sql: "SELECT video_id FROM videos LIMIT 1")!
+            return row["video_id"]
+        }
+        let deleted = try PipelineManager.cleanGlobalClipsForVideo(
+            folderPath: folderPath,
+            sourceVideoId: sourceVideoId,
+            globalDB: globalDB
+        )
+        XCTAssertEqual(deleted, 3, "应删除全局库中该视频的 3 个旧 clips")
+
+        // 5. 验证全局库 clips 已清空
+        let afterCount = try globalDB.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM clips")
+        }
+        XCTAssertEqual(afterCount, 0, "全局库不应有孤儿 clips")
+    }
+
+    func testCleanGlobalClipsForVideoNoGlobalRecord() throws {
+        let globalDB = try DatabaseManager.makeGlobalInMemoryDatabase()
+
+        // 全局库中无该视频记录，应返回 0 且不崩溃
+        let deleted = try PipelineManager.cleanGlobalClipsForVideo(
+            folderPath: "/nonexistent",
+            sourceVideoId: 999,
+            globalDB: globalDB
+        )
+        XCTAssertEqual(deleted, 0)
     }
 }

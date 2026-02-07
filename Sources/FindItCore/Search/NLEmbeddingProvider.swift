@@ -106,7 +106,7 @@ public enum NLEmbeddingUtil {
 ///
 /// 封装 NLEmbeddingUtil 为 EmbeddingProvider 协议。
 /// 完全离线，作为 Gemini API 不可用时的回退方案。
-public class NLEmbeddingProvider: EmbeddingProvider {
+public final class NLEmbeddingProvider: EmbeddingProvider, Sendable {
     public let name = "nl-embedding"
     public let dimensions = 512
 

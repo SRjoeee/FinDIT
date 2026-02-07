@@ -68,8 +68,15 @@ private struct FolderManagementRow: View {
                 .foregroundStyle(folder.isAvailable ? .blue : .orange)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(URL(fileURLWithPath: folder.folderPath).lastPathComponent)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(URL(fileURLWithPath: folder.folderPath).lastPathComponent)
+                        .lineLimit(1)
+
+                    // 在线/离线 badge
+                    Text(folder.isAvailable ? "在线" : "离线")
+                        .font(.caption2)
+                        .foregroundStyle(folder.isAvailable ? .green : .orange)
+                }
 
                 HStack(spacing: 4) {
                     Text(folder.folderPath)
@@ -77,6 +84,13 @@ private struct FolderManagementRow: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                }
+
+                // 统计信息
+                if folder.totalFiles > 0 || folder.indexedFiles > 0 {
+                    Text("\(folder.totalFiles) 个视频 · \(folder.indexedFiles) 个片段")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
 
                 // 索引状态行

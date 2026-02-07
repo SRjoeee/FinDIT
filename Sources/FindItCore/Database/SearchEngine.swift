@@ -454,6 +454,36 @@ public enum SearchEngine {
         }
     }
 
+    // MARK: - 文件夹统计
+
+    /// 文件夹统计信息
+    public struct FolderStats: Sendable {
+        /// 视频文件数
+        public let videoCount: Int
+        /// 片段数
+        public let clipCount: Int
+    }
+
+    /// 查询指定文件夹在全局库中的视频和片段统计
+    ///
+    /// - Parameters:
+    ///   - db: 全局搜索索引数据库连接
+    ///   - folderPath: 文件夹路径（对应 `clips.source_folder`）
+    /// - Returns: 视频数和片段数
+    public static func folderStats(_ db: Database, folderPath: String) throws -> FolderStats {
+        let row = try Row.fetchOne(db, sql: """
+            SELECT COUNT(DISTINCT video_id) AS video_count,
+                   COUNT(*) AS clip_count
+            FROM clips
+            WHERE source_folder = ?
+            """, arguments: [folderPath])
+
+        return FolderStats(
+            videoCount: row?["video_count"] ?? 0,
+            clipCount: row?["clip_count"] ?? 0
+        )
+    }
+
     // MARK: - 搜索历史
 
     /// 记录搜索历史

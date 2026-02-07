@@ -276,7 +276,7 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
     }()
 
     /// 生成与 SQLite `datetime('now')` 兼容的 UTC 时间字符串
-    static func sqliteDatetime() -> String {
+    public static func sqliteDatetime() -> String {
         utcFormatter.string(from: Date())
     }
 }

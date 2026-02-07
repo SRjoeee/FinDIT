@@ -121,20 +121,17 @@ public actor VectorStore {
         let queryNorm = sqrt(queryNormSq)
         guard queryNorm > 0 else { return [] }
 
-        // 2. 批量点积: query[D] × vectors[N×D]^T → dots[N]
+        // 2. 批量点积: vectors[N×D] × query[D×1] → dots[N×1]
         var dotProducts = [Float](repeating: 0, count: n)
         vectors.withUnsafeBufferPointer { vecBuf in
             query.withUnsafeBufferPointer { qBuf in
                 guard let vecPtr = vecBuf.baseAddress,
                       let qPtr = qBuf.baseAddress else { return }
-                cblas_sgemv(
-                    CblasRowMajor, CblasNoTrans,
-                    Int32(n), Int32(dimensions),
-                    1.0,
-                    vecPtr, Int32(dimensions),
+                vDSP_mmul(
+                    vecPtr, 1,
                     qPtr, 1,
-                    0.0,
-                    &dotProducts, 1
+                    &dotProducts, 1,
+                    vDSP_Length(n), 1, vDSP_Length(dimensions)
                 )
             }
         }

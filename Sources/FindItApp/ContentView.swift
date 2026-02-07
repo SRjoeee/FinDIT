@@ -39,13 +39,14 @@ struct ContentView: View {
         .sheet(isPresented: $showFolderSheet) {
             FolderManagementSheet(appState: appState, indexingManager: indexingManager)
         }
-        .onKeyPress(.space) {
-            handleSpaceKey()
-        }
-        .onKeyPress(keys: [.leftArrow, .rightArrow, .upArrow, .downArrow]) { keyPress in
-            handleArrowKey(keyPress.key)
-        }
         .onChange(of: selectedClipId) {
+            // 点击卡片时让搜索框失焦，event monitor 可处理后续键盘事件
+            if selectedClipId != nil {
+                let window = NSApp.keyWindow
+                if window?.firstResponder is NSTextView {
+                    window?.makeFirstResponder(nil)
+                }
+            }
             // QL 面板已打开时，选中变更自动更新预览
             guard let clipId = selectedClipId,
                   let result = searchState.results.first(where: { $0.clipId == clipId }),
@@ -54,6 +55,7 @@ struct ContentView: View {
             qlCoordinator.updateIfVisible(url: URL(fileURLWithPath: path))
         }
         .task {
+            qlCoordinator.startMonitoring()
             searchState.appState = appState
             indexingManager.appState = appState
             appState.indexingManager = indexingManager
@@ -65,16 +67,12 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .manageFolder)) { _ in
             showFolderSheet = true
         }
-        .onReceive(NotificationCenter.default.publisher(for: .qlNavigateClip)) { notification in
-            // QL 面板中方向键导航：event monitor → Notification → 此处执行导航
+        .onReceive(NotificationCenter.default.publisher(for: .navigateClip)) { notification in
             guard let direction = notification.userInfo?["direction"] as? String else { return }
-            switch direction {
-            case "left":  _ = handleArrowKey(.leftArrow)
-            case "right": _ = handleArrowKey(.rightArrow)
-            case "up":    _ = handleArrowKey(.upArrow)
-            case "down":  _ = handleArrowKey(.downArrow)
-            default: break
-            }
+            handleArrowKey(direction)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .toggleQuickLook)) { _ in
+            handleSpaceKey()
         }
     }
 
@@ -107,49 +105,45 @@ struct ContentView: View {
     // MARK: - Keyboard Actions
 
     /// 空格键：切换 Quick Look 预览
-    private func handleSpaceKey() -> KeyPress.Result {
+    private func handleSpaceKey() {
         guard let clipId = selectedClipId,
               let result = searchState.results.first(where: { $0.clipId == clipId }),
               let path = result.filePath,
-              FileManager.default.fileExists(atPath: path) else {
-            return .ignored
-        }
+              FileManager.default.fileExists(atPath: path) else { return }
         qlCoordinator.toggle(url: URL(fileURLWithPath: path))
-        return .handled
     }
 
     /// 方向键：网格导航
     ///
     /// 左/右移动 ±1，上/下按列数跳行。
     /// 无选中时按任意方向键选中第一项。
-    private func handleArrowKey(_ key: KeyEquivalent) -> KeyPress.Result {
+    private func handleArrowKey(_ direction: String) {
         let results = searchState.results
-        guard !results.isEmpty else { return .ignored }
+        guard !results.isEmpty else { return }
 
         // 无选中 → 选第一项
         guard let currentId = selectedClipId,
               let currentIndex = results.firstIndex(where: { $0.clipId == currentId }) else {
             selectedClipId = results[0].clipId
-            return .handled
+            return
         }
 
         let newIndex: Int
-        switch key {
-        case .leftArrow:
+        switch direction {
+        case "left":
             newIndex = max(0, currentIndex - 1)
-        case .rightArrow:
+        case "right":
             newIndex = min(results.count - 1, currentIndex + 1)
-        case .upArrow:
+        case "up":
             newIndex = max(0, currentIndex - columnsPerRow)
-        case .downArrow:
+        case "down":
             newIndex = min(results.count - 1, currentIndex + columnsPerRow)
         default:
-            return .ignored
+            return
         }
 
-        guard newIndex != currentIndex else { return .handled }
+        guard newIndex != currentIndex else { return }
         selectedClipId = results[newIndex].clipId
-        return .handled
     }
 
     // MARK: - Actions

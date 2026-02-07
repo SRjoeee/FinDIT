@@ -1,19 +1,21 @@
 import AppKit
 import Quartz
 
-/// Quick Look 预览协调器
+/// Quick Look 预览 + 键盘事件协调器
 ///
-/// 桥接 AppKit 的 QLPreviewPanel 到 SwiftUI。
-/// 按空格键打开/关闭视频预览，选择变更时自动更新预览内容。
+/// 职责：
+/// 1. 桥接 AppKit 的 QLPreviewPanel 到 SwiftUI
+/// 2. 统一管理全局键盘事件（space / 方向键）
 ///
-/// QL 面板打开时安装 local event monitor，拦截方向键转发给主窗口，
-/// 实现 Finder 式的"QL 预览中方向键切换文件"交互。
+/// 使用 NSEvent local monitor 而非 SwiftUI `.onKeyPress`，
+/// 因为 `.onKeyPress` 无法与 NSViewRepresentable 的 AppKit 焦点系统协调——
+/// 搜索框聚焦时它仍会拦截空格键，而搜索框失焦后它又不触发。
 @MainActor
 final class QuickLookCoordinator: NSObject, @preconcurrency QLPreviewPanelDataSource {
     /// 当前预览的文件 URL
     private var currentURL: URL?
 
-    /// 键盘事件监听器（QL 打开时安装，关闭时移除）
+    /// 键盘事件监听器（常驻，ContentView 启动时安装）
     private var eventMonitor: Any?
 
     /// QL 面板是否可见
@@ -47,7 +49,6 @@ final class QuickLookCoordinator: NSObject, @preconcurrency QLPreviewPanelDataSo
     func close() {
         guard isPreviewVisible else { return }
         QLPreviewPanel.shared()!.orderOut(nil)
-        removeEventMonitor()
         NSApp.mainWindow?.makeKeyAndOrderFront(nil)
     }
 
@@ -69,55 +70,36 @@ final class QuickLookCoordinator: NSObject, @preconcurrency QLPreviewPanelDataSo
         panel.dataSource = self
         panel.reloadData()
         panel.makeKeyAndOrderFront(nil)
-        installEventMonitor()
     }
 
-    // MARK: - Event Monitor
+    // MARK: - Keyboard Monitor
 
-    /// 安装键盘事件监听器
+    /// 启动键盘事件监听（ContentView 初始化时调用一次）
     ///
-    /// QL 面板获得焦点后，SwiftUI 的 `.onKeyPress` 不再触发。
-    /// 通过 `NSEvent.addLocalMonitorForEvents` 拦截应用内所有方向键/空格键，
-    /// 将方向键转发给 ContentView（通过 Notification），空格键关闭面板。
-    ///
-    /// 不限制 `event.window` 类型——`reloadData()` 后 macOS 可能短暂
-    /// 切换焦点到主窗口，导致 `event.window is QLPreviewPanel` 失败。
-    /// QL 可见期间拦截所有窗口的导航键（与 Finder 行为一致）。
-    private func installEventMonitor() {
+    /// 搜索框聚焦（firstResponder 是 NSTextView）时放行所有按键，
+    /// 否则拦截方向键和空格键并通过 Notification 转发给 ContentView。
+    func startMonitoring() {
         guard eventMonitor == nil else { return }
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self = self else { return event }
+            guard self != nil else { return event }
 
-            // QL 已关闭 → 清理 monitor，放行事件
-            if !self.isPreviewVisible {
-                self.removeEventMonitor()
+            // 文本编辑中（搜索框等）→ 放行所有按键
+            if NSApp.keyWindow?.firstResponder is NSTextView {
                 return event
             }
 
             switch event.keyCode {
-            case 123: // ←
-                Self.postNavigate("left")
-                return nil
-            case 124: // →
-                Self.postNavigate("right")
-                return nil
-            case 125: // ↓
-                Self.postNavigate("down")
-                return nil
-            case 126: // ↑
-                Self.postNavigate("up")
-                return nil
-            case 49: // space → 关闭 QL
-                self.close()
-                return nil
-            default:
-                return event
+            case 123: Self.postNavigate("left"); return nil   // ←
+            case 124: Self.postNavigate("right"); return nil  // →
+            case 125: Self.postNavigate("down"); return nil   // ↓
+            case 126: Self.postNavigate("up"); return nil     // ↑
+            case 49:  Self.postToggleQL(); return nil         // space
+            default:  return event
             }
         }
     }
 
-    /// 移除键盘事件监听器
-    private func removeEventMonitor() {
+    func stopMonitoring() {
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
             eventMonitor = nil
@@ -126,14 +108,18 @@ final class QuickLookCoordinator: NSObject, @preconcurrency QLPreviewPanelDataSo
 
     private static func postNavigate(_ direction: String) {
         NotificationCenter.default.post(
-            name: .qlNavigateClip,
+            name: .navigateClip,
             object: nil,
             userInfo: ["direction": direction]
         )
     }
+
+    private static func postToggleQL() {
+        NotificationCenter.default.post(name: .toggleQuickLook, object: nil)
+    }
 }
 
 extension Notification.Name {
-    /// QL 面板中方向键导航事件
-    static let qlNavigateClip = Notification.Name("FindIt.qlNavigateClip")
+    static let navigateClip = Notification.Name("FindIt.navigateClip")
+    static let toggleQuickLook = Notification.Name("FindIt.toggleQuickLook")
 }

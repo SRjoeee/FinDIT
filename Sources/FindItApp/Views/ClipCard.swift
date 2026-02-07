@@ -14,6 +14,7 @@ struct ClipCard: View {
     @State private var isHovering = false
     @State private var showHoverCard = false
     @State private var hoverTask: Task<Void, Never>?
+    @State private var lastClickTime: Date?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -60,7 +61,20 @@ struct ClipCard: View {
                 )
         )
         .contentShape(RoundedRectangle(cornerRadius: 8))
-        .onTapGesture { onSelect() }
+        .onTapGesture {
+            let now = Date()
+            if let last = lastClickTime,
+               now.timeIntervalSince(last) < NSEvent.doubleClickInterval {
+                // 双击 → 打开视频
+                lastClickTime = nil
+                guard let path = result.filePath else { return }
+                NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            } else {
+                // 单击 → 选中
+                lastClickTime = now
+                onSelect()
+            }
+        }
         .onHover { hovering in
             isHovering = hovering
             if hovering {

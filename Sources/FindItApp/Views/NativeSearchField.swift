@@ -69,6 +69,8 @@ struct NativeSearchField: NSViewRepresentable {
         ) -> Bool {
             if commandSelector == #selector(NSResponder.insertNewline(_:)) {
                 parent.onSubmit()
+                // 提交搜索后失焦，焦点移到结果区（space/arrow 可用于 QL/导航）
+                control.window?.makeFirstResponder(nil)
                 return true
             }
             if commandSelector == #selector(NSResponder.cancelOperation(_:)) {

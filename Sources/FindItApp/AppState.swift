@@ -129,9 +129,7 @@ final class AppState {
 
             // 如果路径不可达但有 UUID，尝试通过 UUID 恢复
             if !isAvailable, let uuid = volumeInfo?.uuid {
-                if let newPath = VolumeResolver.resolveUpdatedPath(oldPath: path, volumeUUID: uuid) {
-                    // 挂载点变更：路径变了但卷还在
-                    // 注意：实际路径更新需要同步到数据库，这里暂只用于可用性判断
+                if VolumeResolver.resolveUpdatedPath(oldPath: path, volumeUUID: uuid) != nil {
                     isAvailable = true
                 }
             }

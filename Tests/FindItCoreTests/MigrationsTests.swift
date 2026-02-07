@@ -111,6 +111,76 @@ final class MigrationsTests: XCTestCase {
         XCTAssertTrue(columns.contains("source_clip_id"), "全局 clips 应包含 source_clip_id")
     }
 
+    // MARK: - 索引结构契约
+
+    func testFolderMigrationEmbeddingModelIndex() throws {
+        let db = try DatabaseManager.makeFolderInMemoryDatabase()
+
+        let hasIndex = try db.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT * FROM pragma_index_list('clips')
+                """)
+                .contains { row in
+                    let indexName: String = row["name"]
+                    let columns = try Row.fetchAll(db, sql: "PRAGMA index_info('\(indexName)')")
+                        .map { $0["name"] as String }
+                    return columns.contains("embedding_model")
+                }
+        }
+        XCTAssertTrue(hasIndex, "文件夹库 clips 表应有覆盖 embedding_model 列的索引")
+    }
+
+    func testGlobalMigrationEmbeddingModelIndex() throws {
+        let db = try DatabaseManager.makeGlobalInMemoryDatabase()
+
+        let hasIndex = try db.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT * FROM pragma_index_list('clips')
+                """)
+                .contains { row in
+                    let indexName: String = row["name"]
+                    let columns = try Row.fetchAll(db, sql: "PRAGMA index_info('\(indexName)')")
+                        .map { $0["name"] as String }
+                    return columns.contains("embedding_model")
+                }
+        }
+        XCTAssertTrue(hasIndex, "全局库 clips 表应有覆盖 embedding_model 列的索引")
+    }
+
+    func testFolderMigrationVideoIdIndex() throws {
+        let db = try DatabaseManager.makeFolderInMemoryDatabase()
+
+        let hasIndex = try db.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT * FROM pragma_index_list('clips')
+                """)
+                .contains { row in
+                    let indexName: String = row["name"]
+                    let columns = try Row.fetchAll(db, sql: "PRAGMA index_info('\(indexName)')")
+                        .map { $0["name"] as String }
+                    return columns.contains("video_id")
+                }
+        }
+        XCTAssertTrue(hasIndex, "文件夹库 clips 表应有覆盖 video_id 列的索引")
+    }
+
+    func testGlobalMigrationVideoIdIndex() throws {
+        let db = try DatabaseManager.makeGlobalInMemoryDatabase()
+
+        let hasIndex = try db.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT * FROM pragma_index_list('clips')
+                """)
+                .contains { row in
+                    let indexName: String = row["name"]
+                    let columns = try Row.fetchAll(db, sql: "PRAGMA index_info('\(indexName)')")
+                        .map { $0["name"] as String }
+                    return columns.contains("video_id")
+                }
+        }
+        XCTAssertTrue(hasIndex, "全局库 clips 表应有覆盖 video_id 列的索引")
+    }
+
     func testGlobalMigrationSyncMetaColumns() throws {
         let db = try DatabaseManager.makeGlobalInMemoryDatabase()
 

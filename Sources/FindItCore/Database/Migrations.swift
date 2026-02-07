@@ -88,6 +88,22 @@ public enum Migrations {
             )
         }
 
+        migrator.registerMigration("v4_addEmbeddingModelIndex") { db in
+            try db.create(
+                index: "idx_clips_embedding_model",
+                on: "clips",
+                columns: ["embedding_model"]
+            )
+        }
+
+        migrator.registerMigration("v5_addClipsVideoIdIndex") { db in
+            try db.create(
+                index: "idx_clips_video_id",
+                on: "clips",
+                columns: ["video_id"]
+            )
+        }
+
         return migrator
     }
 
@@ -198,6 +214,22 @@ public enum Migrations {
             try db.alter(table: "clips") { t in
                 t.add(column: "embedding_model", .text)
             }
+        }
+
+        migrator.registerMigration("v3_addEmbeddingModelIndex") { db in
+            try db.create(
+                index: "idx_clips_embedding_model",
+                on: "clips",
+                columns: ["embedding_model"]
+            )
+        }
+
+        migrator.registerMigration("v4_addClipsVideoIdIndex") { db in
+            try db.create(
+                index: "idx_clips_video_id",
+                on: "clips",
+                columns: ["video_id"]
+            )
         }
 
         return migrator

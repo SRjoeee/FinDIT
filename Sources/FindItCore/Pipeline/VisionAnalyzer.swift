@@ -262,7 +262,7 @@ extension AnalysisResult {
 public enum VisionAnalyzer {
 
     /// 视觉分析配置
-    public struct Config {
+    public struct Config: Sendable {
         /// Gemini 模型名称
         public var model: String
         /// 每请求最大图片数

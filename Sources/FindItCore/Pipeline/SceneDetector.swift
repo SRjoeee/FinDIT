@@ -29,7 +29,7 @@ public struct SceneSegment: Equatable {
 public enum SceneDetector {
 
     /// 场景检测配置
-    public struct Config {
+    public struct Config: Sendable {
         /// 场景检测阈值（0-1，越小越敏感）
         public var threshold: Double
         /// 短镜头最小时长（秒），短于此值的片段将被合并

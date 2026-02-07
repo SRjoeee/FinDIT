@@ -568,12 +568,13 @@ public enum PipelineManager {
         var syncResult: SyncEngine.SyncResult?
         if let globalDB = globalDB {
             progress("同步到全局索引...")
-            syncResult = try SyncEngine.sync(
+            let sr = try SyncEngine.sync(
                 folderPath: folderPath,
                 folderDB: folderDB,
                 globalDB: globalDB
             )
-            progress("同步完成: \(syncResult!.syncedVideos) 视频, \(syncResult!.syncedClips) 片段")
+            syncResult = sr
+            progress("同步完成: \(sr.syncedVideos) 视频, \(sr.syncedClips) 片段")
         }
 
         return ProcessingResult(

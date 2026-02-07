@@ -64,7 +64,7 @@ public enum STTError: LocalizedError {
 public enum STTProcessor {
 
     /// STT 配置
-    public struct Config {
+    public struct Config: Sendable {
         /// WhisperKit 模型名称
         public var modelName: String
         /// 语言提示（nil = 自动检测）

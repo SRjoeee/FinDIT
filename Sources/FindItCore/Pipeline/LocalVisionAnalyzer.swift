@@ -32,6 +32,9 @@ public enum LocalVisionAnalyzer {
     /// 最多保留的分类标签数
     static let maxClassificationLabels = 8
 
+    /// 共享 CIContext（线程安全，避免每次调用重新分配 GPU 资源）
+    private static let sharedCIContext = CIContext()
+
     // MARK: - 公开接口
 
     /// 分析单张图片
@@ -248,7 +251,6 @@ public enum LocalVisionAnalyzer {
 
     /// 使用 CIAreaAverage 分析图像平均亮度
     static func analyzeLighting(ciImage: CIImage) -> String? {
-        let context = CIContext()
         let extent = ciImage.extent
 
         guard let filter = CIFilter(name: "CIAreaAverage", parameters: [
@@ -260,7 +262,7 @@ public enum LocalVisionAnalyzer {
         }
 
         var pixel = [Float](repeating: 0, count: 4)
-        context.render(outputImage, toBitmap: &pixel, rowBytes: 16,
+        sharedCIContext.render(outputImage, toBitmap: &pixel, rowBytes: 16,
                        bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
                        format: .RGBAf, colorSpace: nil)
 
@@ -283,7 +285,6 @@ public enum LocalVisionAnalyzer {
 
     /// 使用 CIKMeans 提取主色调，输出命名颜色
     static func extractDominantColors(ciImage: CIImage, count: Int = 5) -> String? {
-        let context = CIContext()
         let extent = ciImage.extent
 
         guard let filter = CIFilter(name: "CIKMeans", parameters: [
@@ -301,7 +302,7 @@ public enum LocalVisionAnalyzer {
         guard width > 0 else { return nil }
 
         var pixels = [Float](repeating: 0, count: width * 4)
-        context.render(outputImage, toBitmap: &pixels, rowBytes: width * 16,
+        sharedCIContext.render(outputImage, toBitmap: &pixels, rowBytes: width * 16,
                        bounds: outputExtent, format: .RGBAf, colorSpace: nil)
 
         var colorNames: [String] = []

@@ -183,9 +183,7 @@ public enum EmbeddingUtils {
     /// - Parameter values: 原始分数数组
     /// - Returns: 归一化后的数组
     public static func minMaxNormalize(_ values: [Double]) -> [Double] {
-        guard !values.isEmpty else { return [] }
-        let minVal = values.min()!
-        let maxVal = values.max()!
+        guard let minVal = values.min(), let maxVal = values.max() else { return [] }
         let range = maxVal - minVal
         guard range > 0 else {
             return Array(repeating: 0.0, count: values.count)

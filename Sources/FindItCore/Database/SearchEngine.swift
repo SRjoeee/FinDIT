@@ -22,7 +22,7 @@ public enum SearchEngine {
     }
 
     /// 搜索权重配置
-    public struct SearchWeights {
+    public struct SearchWeights: Sendable {
         /// FTS5 分数权重
         public var ftsWeight: Double
         /// 向量相似度权重
@@ -229,8 +229,8 @@ public enum SearchEngine {
             results.append((result, similarity))
         }
 
-        // 按相似度降序排列
-        results.sort { $0.1 > $1.1 }
+        // 按相似度降序排列（同分时按 clipId 升序保证稳定性）
+        results.sort { $0.1 > $1.1 || ($0.1 == $1.1 && $0.0.clipId < $1.0.clipId) }
         return Array(results.prefix(limit).map { $0.0 })
     }
 
@@ -273,32 +273,30 @@ public enum SearchEngine {
         // 4. 归一化（直接对 key-value 就地计算，不依赖 Dictionary 迭代顺序）
         // FTS5 rank 是负数（越小越好），取反后做 min-max 归一化
         let normalizedFTSMap: [Int64: Double]
-        if ftsScores.isEmpty {
-            normalizedFTSMap = [:]
-        } else {
-            let negatedMin = -(ftsScores.values.max()!)  // 取反后最小值
-            let negatedMax = -(ftsScores.values.min()!)  // 取反后最大值
+        if let rawMax = ftsScores.values.max(), let rawMin = ftsScores.values.min() {
+            let negatedMin = -rawMax  // 取反后最小值
+            let negatedMax = -rawMin  // 取反后最大值
             let range = negatedMax - negatedMin
             if range > 0 {
                 normalizedFTSMap = ftsScores.mapValues { (-$0 - negatedMin) / range }
             } else {
                 normalizedFTSMap = ftsScores.mapValues { _ in 0.0 }
             }
+        } else {
+            normalizedFTSMap = [:]
         }
 
         // 向量相似度已在 [0, 1] 范围，但仍归一化以确保一致性
         let normalizedVecMap: [Int64: Double]
-        if vectorScores.isEmpty {
-            normalizedVecMap = [:]
-        } else {
-            let vecMin = vectorScores.values.min()!
-            let vecMax = vectorScores.values.max()!
+        if let vecMin = vectorScores.values.min(), let vecMax = vectorScores.values.max() {
             let range = vecMax - vecMin
             if range > 0 {
                 normalizedVecMap = vectorScores.mapValues { ($0 - vecMin) / range }
             } else {
                 normalizedVecMap = vectorScores.mapValues { _ in 0.0 }
             }
+        } else {
+            normalizedVecMap = [:]
         }
 
         // 5. 融合排序
@@ -333,7 +331,8 @@ public enum SearchEngine {
             fusedResults.append((merged, finalScore))
         }
 
-        fusedResults.sort { $0.1 > $1.1 }
+        // 按融合得分降序（同分时按 clipId 升序保证稳定性）
+        fusedResults.sort { $0.1 > $1.1 || ($0.1 == $1.1 && $0.0.clipId < $1.0.clipId) }
         return Array(fusedResults.prefix(limit).map { $0.0 })
     }
 

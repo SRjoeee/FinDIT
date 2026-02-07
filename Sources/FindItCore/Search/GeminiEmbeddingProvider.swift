@@ -12,7 +12,7 @@ import Foundation
 public enum GeminiEmbedding {
 
     /// API 配置
-    public struct Config {
+    public struct Config: Sendable {
         /// 嵌入模型名称
         public var model: String
         /// 输出向量维度（gemini-embedding-001 原生 3072，可降维到 768）

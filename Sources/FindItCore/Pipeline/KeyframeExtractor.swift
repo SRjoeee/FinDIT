@@ -7,7 +7,7 @@ import Foundation
 public enum KeyframeExtractor {
 
     /// 关键帧提取配置
-    public struct Config {
+    public struct Config: Sendable {
         /// 缩略图短边像素（长边按比例缩放）
         public var thumbnailShortEdge: Int
         /// JPEG 质量 (FFmpeg -q:v, 1-31, 越小质量越高; 5 ≈ 80%)

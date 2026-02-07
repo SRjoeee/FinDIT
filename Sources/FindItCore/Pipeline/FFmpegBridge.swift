@@ -35,7 +35,7 @@ public enum FFmpegError: LocalizedError {
 }
 
 /// FFmpeg 工具路径配置
-public struct FFmpegConfig {
+public struct FFmpegConfig: Sendable {
     /// ffmpeg 可执行文件路径
     public var ffmpegPath: String
     /// 默认超时时间（秒）

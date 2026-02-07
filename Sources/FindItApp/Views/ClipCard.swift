@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import FindItCore
 
 /// 搜索结果卡片
@@ -77,6 +78,31 @@ struct ClipCard: View {
         }
         .popover(isPresented: $showHoverCard, arrowEdge: .trailing) {
             ClipHoverCard(result: result)
+        }
+        .contextMenu { contextMenuItems }
+    }
+
+    // MARK: - Context Menu
+
+    @ViewBuilder
+    private var contextMenuItems: some View {
+        if let path = result.filePath {
+            Button("在 Finder 中显示") {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+            }
+        }
+
+        Button("复制时间码") {
+            let timecode = formatTimecode(result.startTime)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(timecode, forType: .string)
+        }
+
+        if let path = result.filePath {
+            Button("复制文件路径") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(path, forType: .string)
+            }
         }
     }
 

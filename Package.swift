@@ -38,7 +38,7 @@ let package = Package(
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "MLXVLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-            ]
+            ],
         ),
         .executableTarget(
             name: "FindItCLI",

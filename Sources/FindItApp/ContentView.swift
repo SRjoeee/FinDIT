@@ -10,6 +10,7 @@ struct ContentView: View {
     @State private var selectedClipId: Int64?
     @State private var qlCoordinator = QuickLookCoordinator()
     @State private var columnsPerRow: Int = 3
+    @State private var scrollOnSelect = false
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -93,7 +94,8 @@ struct ContentView: View {
                 results: searchState.results,
                 resultCount: searchState.resultCount,
                 selectedClipId: $selectedClipId,
-                columnsPerRow: $columnsPerRow
+                columnsPerRow: $columnsPerRow,
+                scrollOnSelect: $scrollOnSelect
             )
         }
     }
@@ -120,6 +122,7 @@ struct ContentView: View {
         // 无选中 → 选第一项
         guard let currentId = selectedClipId,
               let currentIndex = results.firstIndex(where: { $0.clipId == currentId }) else {
+            scrollOnSelect = true
             selectedClipId = results[0].clipId
             return
         }
@@ -139,6 +142,7 @@ struct ContentView: View {
         }
 
         guard newIndex != currentIndex else { return }
+        scrollOnSelect = true
         selectedClipId = results[newIndex].clipId
     }
 

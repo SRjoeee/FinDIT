@@ -11,6 +11,7 @@ struct ResultsGrid: View {
     let resultCount: Int
     @Binding var selectedClipId: Int64?
     @Binding var columnsPerRow: Int
+    @Binding var scrollOnSelect: Bool
 
     private let columns = [
         GridItem(.adaptive(minimum: 200, maximum: 400), spacing: 12)
@@ -31,10 +32,10 @@ struct ResultsGrid: View {
                 }
                 .padding(16)
                 .onChange(of: selectedClipId) {
-                    if let id = selectedClipId {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            proxy.scrollTo(id, anchor: .center)
-                        }
+                    guard scrollOnSelect, let id = selectedClipId else { return }
+                    scrollOnSelect = false
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        proxy.scrollTo(id, anchor: .center)
                     }
                 }
             }
@@ -43,7 +44,10 @@ struct ResultsGrid: View {
             GeometryReader { geo in
                 Color.clear
                     .onAppear { columnsPerRow = Self.calculateColumns(width: geo.size.width) }
-                    .onChange(of: geo.size.width) { columnsPerRow = Self.calculateColumns(width: geo.size.width) }
+                    .onChange(of: geo.size.width) {
+                        let cols = Self.calculateColumns(width: geo.size.width)
+                        if cols != columnsPerRow { columnsPerRow = cols }
+                    }
             }
         }
         .safeAreaInset(edge: .top) {

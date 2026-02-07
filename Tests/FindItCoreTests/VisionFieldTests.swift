@@ -76,6 +76,14 @@ final class VisionFieldTests: XCTestCase {
         XCTAssertEqual(properties.count, 2)
     }
 
+    func testBuildGeminiSystemPrompt() {
+        let prompt = VisionField.buildGeminiSystemPrompt()
+        XCTAssertFalse(prompt.isEmpty)
+        XCTAssertTrue(prompt.contains("视频素材分析"), "应包含中文系统指令")
+        XCTAssertTrue(prompt.contains("JSON"), "应要求 JSON 格式")
+        XCTAssertTrue(prompt.contains("关键帧"), "应提及关键帧")
+    }
+
     func testBuildVLMPromptContainsAllFields() {
         let prompt = VisionField.buildVLMPrompt()
         for field in VisionField.allCases {

@@ -195,6 +195,17 @@ public enum VisionField: String, CaseIterable, Sendable {
         ]
     }
 
+    /// 构建 Gemini 视觉分析系统提示词
+    ///
+    /// 返回发送给 Gemini API 的中文系统指令。
+    /// 与 `buildResponseSchema()` 配合使用。
+    public static func buildGeminiSystemPrompt() -> String {
+        """
+        你是一个视频素材分析助手。分析以下视频片段的关键帧（按时间顺序排列）。
+        返回 JSON 格式的描述。
+        """
+    }
+
     /// 构建 VLM 分析提示词
     ///
     /// - Parameter fields: 要包含的字段（默认 allActive）

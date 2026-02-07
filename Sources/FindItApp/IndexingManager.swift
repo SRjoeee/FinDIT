@@ -236,21 +236,26 @@ final class IndexingManager {
 
     /// 懒初始化共享资源
     private func initSharedResources() {
+        let config = ProviderConfig.load()
+
         // API Key
         if !hasResolvedAPIKey {
             hasResolvedAPIKey = true
-            resolvedAPIKey = try? VisionAnalyzer.resolveAPIKey()
+            resolvedAPIKey = try? APIKeyManager.resolveAPIKey()
         }
 
-        // RateLimiter
+        // RateLimiter（使用 ProviderConfig 的 RPM 设置）
         if rateLimiter == nil, resolvedAPIKey != nil {
-            rateLimiter = GeminiRateLimiter()
+            rateLimiter = GeminiRateLimiter(config: config.toRateLimiterConfig())
         }
 
         // EmbeddingProvider: Gemini 优先，NLEmbedding 回退
         if embeddingProvider == nil {
             if let apiKey = resolvedAPIKey {
-                embeddingProvider = GeminiEmbeddingProvider(apiKey: apiKey)
+                embeddingProvider = GeminiEmbeddingProvider(
+                    apiKey: apiKey,
+                    config: config.toEmbeddingConfig()
+                )
             } else {
                 let nlProvider = NLEmbeddingProvider()
                 if nlProvider.isAvailable() {

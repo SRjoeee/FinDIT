@@ -137,9 +137,13 @@ final class SearchState {
         guard !hasTriedInitProvider else { return nil }
         hasTriedInitProvider = true
 
-        // 优先 Gemini
-        if let apiKey = try? VisionAnalyzer.resolveAPIKey() {
-            let provider = GeminiEmbeddingProvider(apiKey: apiKey)
+        // 优先 Gemini（使用 ProviderConfig 的模型设置）
+        let config = ProviderConfig.load()
+        if let apiKey = try? APIKeyManager.resolveAPIKey() {
+            let provider = GeminiEmbeddingProvider(
+                apiKey: apiKey,
+                config: config.toEmbeddingConfig()
+            )
             self.embeddingProvider = provider
             return provider
         }

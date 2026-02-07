@@ -288,7 +288,7 @@ struct SearchCommand: AsyncParsableCommand {
 
         if searchMode != .fts {
             // 尝试 Gemini embedding
-            if let apiKey = try? VisionAnalyzer.resolveAPIKey(override: apiKey) {
+            if let apiKey = try? APIKeyManager.resolveAPIKey(override: apiKey) {
                 let provider = GeminiEmbeddingProvider(apiKey: apiKey)
                 if provider.isAvailable() {
                     do {
@@ -635,7 +635,7 @@ struct AnalyzeCommand: AsyncParsableCommand {
         // 1. 解析 API Key
         let resolvedKey: String
         do {
-            resolvedKey = try VisionAnalyzer.resolveAPIKey(override: apiKey)
+            resolvedKey = try APIKeyManager.resolveAPIKey(override: apiKey)
         } catch {
             print("错误: \(error.localizedDescription)")
             print()
@@ -864,7 +864,7 @@ struct IndexCommand: AsyncParsableCommand {
         var resolvedApiKey: String? = nil
         if !skipVision {
             do {
-                resolvedApiKey = try VisionAnalyzer.resolveAPIKey(override: apiKey)
+                resolvedApiKey = try APIKeyManager.resolveAPIKey(override: apiKey)
                 print("✓ Gemini API Key 已就绪")
             } catch {
                 print("警告: \(error.localizedDescription)")
@@ -1072,7 +1072,7 @@ struct EmbedCommand: AsyncParsableCommand {
             embProvider = p
             print("使用 NLEmbedding (512 维, 离线)")
         default:
-            let key = try VisionAnalyzer.resolveAPIKey(override: apiKey)
+            let key = try APIKeyManager.resolveAPIKey(override: apiKey)
             let p = GeminiEmbeddingProvider(apiKey: key)
             guard p.isAvailable() else {
                 print("错误: Gemini API Key 无效")

@@ -8,7 +8,7 @@ import Foundation
 /// 默认使用 gemini-embedding-001 模型，通过 outputDimensionality 控制输出维度（默认 768）。
 ///
 /// 所有方法为 static，遵循项目 enum + static 模式。
-/// 复用 `VisionAnalyzer.resolveAPIKey()` 的 Key 管理逻辑。
+/// 复用 `APIKeyManager` 的 Key 管理逻辑。
 public enum GeminiEmbedding {
 
     /// API 配置
@@ -305,7 +305,7 @@ public final class GeminiEmbeddingProvider: EmbeddingProvider, Sendable {
     }
 
     public func isAvailable() -> Bool {
-        VisionAnalyzer.validateAPIKey(apiKey)
+        APIKeyManager.validateAPIKey(apiKey)
     }
 
     public func embed(text: String) async throws -> [Float] {

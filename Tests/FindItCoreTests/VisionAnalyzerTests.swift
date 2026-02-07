@@ -3,70 +3,7 @@ import XCTest
 
 final class VisionAnalyzerTests: XCTestCase {
 
-    // MARK: - API Key 管理
-
-    func testResolveAPIKeyFromOverride() throws {
-        let key = try VisionAnalyzer.resolveAPIKey(override: "AIzaSyD1234567890abcdefghij")
-        XCTAssertEqual(key, "AIzaSyD1234567890abcdefghij")
-    }
-
-    func testResolveAPIKeyOverrideTooShort() {
-        // override 太短 → 降级到配置文件/环境变量
-        // 如果都没有 → 抛 apiKeyNotFound
-        // 如果配置文件有 key → 返回配置文件的 key（不应返回 "abc"）
-        do {
-            let key = try VisionAnalyzer.resolveAPIKey(override: "abc")
-            // 降级到其他来源，返回的 key 不应是 "abc"
-            XCTAssertNotEqual(key, "abc")
-            XCTAssertTrue(VisionAnalyzer.validateAPIKey(key))
-        } catch {
-            guard case VisionAnalyzerError.apiKeyNotFound = error else {
-                XCTFail("应抛出 apiKeyNotFound，实际: \(error)")
-                return
-            }
-        }
-    }
-
-    func testValidateAPIKeyValid() {
-        XCTAssertTrue(VisionAnalyzer.validateAPIKey("AIzaSyD1234567890abcdefghij"))
-        XCTAssertTrue(VisionAnalyzer.validateAPIKey("1234567890")) // 刚好 10 字符
-    }
-
-    func testValidateAPIKeyInvalid() {
-        XCTAssertFalse(VisionAnalyzer.validateAPIKey(""))
-        XCTAssertFalse(VisionAnalyzer.validateAPIKey("short"))
-        XCTAssertFalse(VisionAnalyzer.validateAPIKey("   "))
-    }
-
-    func testReadAPIKeyFromFileNonExistent() {
-        let result = VisionAnalyzer.readAPIKeyFromFile("/nonexistent/path/key.txt")
-        XCTAssertNil(result)
-    }
-
-    func testReadAPIKeyFromFileTrimming() throws {
-        let tmpDir = NSTemporaryDirectory()
-        let keyPath = (tmpDir as NSString).appendingPathComponent("test_api_key.txt")
-        defer { try? FileManager.default.removeItem(atPath: keyPath) }
-
-        try "  AIzaSyTestKey12345678  \n".write(toFile: keyPath, atomically: true, encoding: .utf8)
-        let result = VisionAnalyzer.readAPIKeyFromFile(keyPath)
-        XCTAssertEqual(result, "AIzaSyTestKey12345678")
-    }
-
-    func testReadAPIKeyFromFileEmpty() throws {
-        let tmpDir = NSTemporaryDirectory()
-        let keyPath = (tmpDir as NSString).appendingPathComponent("test_empty_key.txt")
-        defer { try? FileManager.default.removeItem(atPath: keyPath) }
-
-        try "  \n  ".write(toFile: keyPath, atomically: true, encoding: .utf8)
-        let result = VisionAnalyzer.readAPIKeyFromFile(keyPath)
-        XCTAssertNil(result)
-    }
-
-    func testEnsureConfigDirectory() throws {
-        let dir = try VisionAnalyzer.ensureConfigDirectory()
-        XCTAssertTrue(FileManager.default.fileExists(atPath: dir))
-    }
+    // API Key 管理测试已迁移到 APIKeyManagerTests
 
     // MARK: - composeTags
 

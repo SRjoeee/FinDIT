@@ -292,75 +292,7 @@ public enum VisionAnalyzer {
         }
     }
 
-    // MARK: - API Key 默认路径
-
-    /// 默认 API Key 文件路径
-    public static let defaultAPIKeyPath = "~/.config/findit/gemini-api-key.txt"
-
-    /// API Key 环境变量名
-    public static let apiKeyEnvVar = "GEMINI_API_KEY"
-
-    // MARK: - API Key 管理
-
-    /// 解析 API Key（优先级：override > 文件 > 环境变量）
-    ///
-    /// - Parameter override: CLI 传入的 Key（最高优先级）
-    /// - Returns: 有效的 API Key
-    public static func resolveAPIKey(override: String? = nil) throws -> String {
-        // 1. CLI override
-        if let key = override, validateAPIKey(key) {
-            return key
-        }
-
-        // 2. 配置文件
-        let expandedPath = (defaultAPIKeyPath as NSString).expandingTildeInPath
-        if let key = readAPIKeyFromFile(expandedPath), validateAPIKey(key) {
-            return key
-        }
-
-        // 3. 环境变量
-        if let key = ProcessInfo.processInfo.environment[apiKeyEnvVar],
-           validateAPIKey(key) {
-            return key
-        }
-
-        throw VisionAnalyzerError.apiKeyNotFound
-    }
-
-    /// 从文件读取 API Key
-    ///
-    /// - Parameter path: 文件绝对路径
-    /// - Returns: trim 后的 Key，文件不存在或为空返回 nil
-    static func readAPIKeyFromFile(_ path: String) -> String? {
-        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else {
-            return nil
-        }
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    /// 验证 API Key 格式（基本检查）
-    ///
-    /// Gemini API Key 通常以 "AIza" 开头，长度约 39 字符。
-    /// 这里只做最基本的非空 + 最短长度检查。
-    static func validateAPIKey(_ key: String) -> Bool {
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.count >= 10
-    }
-
-    /// 确保 API Key 配置目录存在
-    ///
-    /// - Returns: 展开后的目录路径
-    @discardableResult
-    public static func ensureConfigDirectory() throws -> String {
-        let expandedPath = (defaultAPIKeyPath as NSString).expandingTildeInPath
-        let dir = (expandedPath as NSString).deletingLastPathComponent
-        try FileManager.default.createDirectory(
-            atPath: dir,
-            withIntermediateDirectories: true
-        )
-        return dir
-    }
+    // API Key 管理已迁移到 APIKeyManager
 
     // MARK: - 图片编码
 
@@ -380,12 +312,9 @@ public enum VisionAnalyzer {
 
     // MARK: - Prompt
 
-    /// 生成 Gemini 分析提示词（来自 PRODUCT_SPEC 3.2.5）
+    /// 生成 Gemini 分析提示词（委托 VisionField 集中管理）
     static func formatPrompt() -> String {
-        """
-        你是一个视频素材分析助手。分析以下视频片段的关键帧（按时间顺序排列）。
-        返回 JSON 格式的描述。
-        """
+        VisionField.buildGeminiSystemPrompt()
     }
 
     // MARK: - Response Schema

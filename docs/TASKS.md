@@ -1,4 +1,4 @@
-# 当前阶段: Stage 4 — macOS App
+# 当前阶段: Stage 6 — 实时同步 + 导出
 
 ## 进行中
 
@@ -8,18 +8,51 @@
 
 ### Stage 6: 实时同步 + 导出
 
-- **FSEvents 文件系统监控**
-  - 监听已注册文件夹内的文件增删改
-  - 新增文件 → 自动加入索引队列
-  - 删除文件 → 从全局库移除对应 clips + 清理缩略图
-  - 修改文件 → 比对 fileHash，内容变更则重新索引
-  - 低开销后台运行，不影响电池寿命
 - NLE 导出（EDL + FCPXML，单个/批量）
 - 拖拽到 NLE（NSItemProvider）
 - 全局快捷键 ⌘⇧F（后台唤起）
 - 批量多选操作（selectedClipId → Set\<Int64\>）
 - Smart Folders / 保存的搜索
 - 去重检测 UI（基于 fileHash）
+
+## 已完成（Stage 6: FSEvents 文件系统实时监控）
+
+### Core 层: FileSystemWatcher
+
+- FSEvents 框架封装，per-folder 独立 FSEventStream
+- FileChangeEvent: .added / .removed / .modified / .rescanNeeded
+- 1.5s 延迟合并窗口 + 同路径去重
+- 仅监控视频文件 (FileScanner.supportedExtensions)，自动过滤 .clip-index 目录
+- classifyEvent: FSEvents 标志 + 文件实际存在性双重判断
+- 内核缓冲区溢出/根目录变更 → rescanNeeded 事件
+- 29 个单元测试
+
+### Core 层: VideoManager
+
+- removeVideo / removeVideos: 双层数据库删除 (文件夹库 + 全局库)
+- 文件夹库 CASCADE 自动删除关联 clips
+- 全局库手动删除 clips + videos (按 source_folder + source_video_id)
+- 文件系统清理: 缩略图目录 + SRT 文件
+- 11 个单元测试
+
+### App 层: FileWatcherManager
+
+- @Observable @MainActor，参照 VolumeMonitor 模式
+- 生命周期: startWatching / watchFolder / unwatchFolder / stopWatching
+- 事件路由: .added/.modified → IndexingManager.queueVideos(), .removed → VideoManager.removeVideos(), .rescanNeeded → IndexingManager.queueFolder()
+- 索引冲突避免: folderIndexingStarted/Finished + deferredEvents 延迟缓存
+- 删除时通知 SearchState 失效 VectorStore 缓存
+
+### App 层: IndexingManager 增量队列
+
+- queueVideos(): 单/多个视频增量索引（跳过全量扫描）
+- processSpecificVideos(): 直接处理指定视频列表
+- processQueue(): 全量扫描优先于增量视频
+
+### 验收
+
+- 665 个测试全部通过 (654 + 11 新增 VideoManager)
+- 数据流: FSEvents → FileSystemWatcher → FileWatcherManager → IndexingManager/VideoManager
 
 ## 已完成（文件管理系统 — 卷监控 + 通知 + UI）
 

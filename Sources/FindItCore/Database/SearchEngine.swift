@@ -69,9 +69,9 @@ public enum SearchEngine {
         /// 用户自定义标签
         public let userTags: String?
         /// 星级评分 (0-5, 0=未评分)
-        public let rating: Int
+        public var rating: Int
         /// 颜色标签
-        public let colorLabel: String?
+        public var colorLabel: String?
         /// 镜头类型
         public let shotType: String?
         /// 情绪/氛围

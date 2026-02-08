@@ -74,6 +74,173 @@ final class ClipLabelTests: XCTestCase {
         XCTAssertEqual(decoded, original)
     }
 
+    // MARK: - finderLabelNumber
+
+    func testFinderLabelNumberMapping() {
+        XCTAssertEqual(ColorLabel.red.finderLabelNumber, 6)
+        XCTAssertEqual(ColorLabel.orange.finderLabelNumber, 7)
+        XCTAssertEqual(ColorLabel.yellow.finderLabelNumber, 5)
+        XCTAssertEqual(ColorLabel.green.finderLabelNumber, 2)
+        XCTAssertEqual(ColorLabel.blue.finderLabelNumber, 4)
+        XCTAssertEqual(ColorLabel.purple.finderLabelNumber, 3)
+        XCTAssertEqual(ColorLabel.gray.finderLabelNumber, 1)
+    }
+
+    func testFinderLabelNumberAllUnique() {
+        let numbers = ColorLabel.allCases.map(\.finderLabelNumber)
+        XCTAssertEqual(Set(numbers).count, 7, "所有 Finder 标签编号应唯一")
+        // 所有编号应在 1-7 范围内
+        for num in numbers {
+            XCTAssertTrue((1...7).contains(num), "\(num) 应在 1-7 范围内")
+        }
+    }
+
+    func testFinderTagName() {
+        XCTAssertEqual(ColorLabel.red.finderTagName, "Red")
+        XCTAssertEqual(ColorLabel.orange.finderTagName, "Orange")
+        XCTAssertEqual(ColorLabel.yellow.finderTagName, "Yellow")
+        XCTAssertEqual(ColorLabel.green.finderTagName, "Green")
+        XCTAssertEqual(ColorLabel.blue.finderTagName, "Blue")
+        XCTAssertEqual(ColorLabel.purple.finderTagName, "Purple")
+        XCTAssertEqual(ColorLabel.gray.finderTagName, "Gray")
+    }
+
+    // MARK: - syncFinderTag
+
+    /// 用 NSURL 直接读取资源值（绕过 URL struct 缓存）
+    private func readFinderLabel(_ path: String) throws -> (labelNumber: Int, tagNames: [String]) {
+        let nsurl = URL(fileURLWithPath: path) as NSURL
+        var labelValue: AnyObject?
+        try nsurl.getResourceValue(&labelValue, forKey: .labelNumberKey)
+        var tagValue: AnyObject?
+        try nsurl.getResourceValue(&tagValue, forKey: .tagNamesKey)
+        return (
+            labelNumber: (labelValue as? NSNumber)?.intValue ?? 0,
+            tagNames: (tagValue as? [String]) ?? []
+        )
+    }
+
+    func testSyncFinderTagSetsLabelAndTag() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FindItTest-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let file = tempDir.appendingPathComponent("test.mp4")
+        FileManager.default.createFile(atPath: file.path, contents: Data("test".utf8))
+
+        try ClipLabel.syncFinderTag(filePath: file.path, label: .red)
+
+        let result = try readFinderLabel(file.path)
+        XCTAssertEqual(result.labelNumber, 6, "应设置 Red 的 Finder 标签编号 6")
+        XCTAssertTrue(result.tagNames.contains("Red"), "应包含 Red 标签名")
+    }
+
+    func testSyncFinderTagClearsLabel() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FindItTest-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let file = tempDir.appendingPathComponent("test.mp4")
+        FileManager.default.createFile(atPath: file.path, contents: Data("test".utf8))
+
+        // 先设置，再清除
+        try ClipLabel.syncFinderTag(filePath: file.path, label: .blue)
+        try ClipLabel.syncFinderTag(filePath: file.path, label: nil)
+
+        let result = try readFinderLabel(file.path)
+        XCTAssertEqual(result.labelNumber, 0, "清除后 labelNumber 应为 0")
+        let colorNames = Set(ColorLabel.allCases.map(\.finderTagName))
+        let remaining = result.tagNames.filter { colorNames.contains($0) }
+        XCTAssertTrue(remaining.isEmpty, "清除后不应有颜色标签名")
+    }
+
+    func testSyncFinderTagPreservesNonColorTags() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FindItTest-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let file = tempDir.appendingPathComponent("test.mp4")
+        FileManager.default.createFile(atPath: file.path, contents: Data("test".utf8))
+
+        // 预设自定义标签
+        try (file as NSURL).setResourceValue(["B-roll", "Interview"], forKey: .tagNamesKey)
+
+        try ClipLabel.syncFinderTag(filePath: file.path, label: .green)
+
+        let result = try readFinderLabel(file.path)
+        XCTAssertTrue(result.tagNames.contains("B-roll"), "应保留非颜色标签 B-roll")
+        XCTAssertTrue(result.tagNames.contains("Interview"), "应保留非颜色标签 Interview")
+        XCTAssertTrue(result.tagNames.contains("Green"), "应添加颜色标签 Green")
+    }
+
+    func testSyncFinderTagReplacesColorTag() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FindItTest-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let file = tempDir.appendingPathComponent("test.mp4")
+        FileManager.default.createFile(atPath: file.path, contents: Data("test".utf8))
+
+        try ClipLabel.syncFinderTag(filePath: file.path, label: .red)
+        try ClipLabel.syncFinderTag(filePath: file.path, label: .blue)
+
+        let result = try readFinderLabel(file.path)
+        XCTAssertFalse(result.tagNames.contains("Red"), "旧颜色标签 Red 应被移除")
+        XCTAssertTrue(result.tagNames.contains("Blue"), "新颜色标签 Blue 应存在")
+    }
+
+    // MARK: - effectiveVideoColor
+
+    func testEffectiveVideoColorReturnsLatest() throws {
+        let db = try DatabaseManager.makeFolderInMemoryDatabase()
+
+        try db.write { conn in
+            try conn.execute(sql: "INSERT INTO watched_folders (folder_path) VALUES ('/test')")
+            try conn.execute(sql: """
+                INSERT INTO videos (folder_id, file_path, file_name) VALUES (1, '/t.mp4', 't.mp4')
+                """)
+            // clip 1: red
+            try conn.execute(sql: """
+                INSERT INTO clips (video_id, start_time, end_time, color_label)
+                VALUES (1, 0, 5, 'red')
+                """)
+            // clip 2: blue（最新）
+            try conn.execute(sql: """
+                INSERT INTO clips (video_id, start_time, end_time, color_label)
+                VALUES (1, 5, 10, 'blue')
+                """)
+        }
+
+        let label = try db.read { conn in
+            try ClipLabel.effectiveVideoColor(conn, videoId: 1)
+        }
+        XCTAssertEqual(label, .blue, "应返回最新设置的颜色")
+    }
+
+    func testEffectiveVideoColorReturnsNilWhenAllCleared() throws {
+        let db = try DatabaseManager.makeFolderInMemoryDatabase()
+
+        try db.write { conn in
+            try conn.execute(sql: "INSERT INTO watched_folders (folder_path) VALUES ('/test')")
+            try conn.execute(sql: """
+                INSERT INTO videos (folder_id, file_path, file_name) VALUES (1, '/t.mp4', 't.mp4')
+                """)
+            try conn.execute(sql: """
+                INSERT INTO clips (video_id, start_time, end_time, color_label)
+                VALUES (1, 0, 5, NULL)
+                """)
+        }
+
+        let label = try db.read { conn in
+            try ClipLabel.effectiveVideoColor(conn, videoId: 1)
+        }
+        XCTAssertNil(label, "所有片段无颜色时应返回 nil")
+    }
+
     // MARK: - updateRating
 
     func testUpdateRating() throws {

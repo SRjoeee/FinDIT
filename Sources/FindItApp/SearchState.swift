@@ -265,6 +265,22 @@ final class SearchState {
         }
     }
 
+    // MARK: - 元数据内存同步
+
+    /// 更新片段评分（内存同步，触发 displayResults 重算）
+    func updateClipRating(clipId: Int64, rating: Int) {
+        if let index = results.firstIndex(where: { $0.clipId == clipId }) {
+            results[index].rating = rating
+        }
+    }
+
+    /// 更新片段颜色标签（内存同步，触发 displayResults 重算）
+    func updateClipColorLabel(clipId: Int64, colorLabel: String?) {
+        if let index = results.firstIndex(where: { $0.clipId == clipId }) {
+            results[index].colorLabel = colorLabel
+        }
+    }
+
     // MARK: - 公开方法
 
     /// 记录搜索到历史

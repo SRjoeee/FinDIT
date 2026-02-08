@@ -27,6 +27,7 @@ struct ContentView: View {
         } detail: {
             detailContent
         }
+        .environment(searchState)
         .navigationSplitViewStyle(.prominentDetail)
         .transaction { $0.disablesAnimations = true }
         .toolbar {

@@ -20,9 +20,15 @@ DerivedData/
 .vscode/
 .idea/
 
-# Tool config
+# AI / Claude Code
 .agents/
 .claude/
+CLAUDE.md
+
+# Internal development docs (not for public repo)
+docs/TASKS.md
+docs/PRODUCT_SPEC*.md
+docs/E2E_TEST_REPORT*.md
 
 # Environment / Secrets
 .env

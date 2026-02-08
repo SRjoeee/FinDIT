@@ -121,6 +121,24 @@ public enum Migrations {
             }
         }
 
+        // Stage 5d: 星级评分 & 颜色标签
+        migrator.registerMigration("v8_addRatingColorLabel") { db in
+            try db.alter(table: "clips") { t in
+                t.add(column: "rating", .integer).defaults(to: 0)
+                t.add(column: "color_label", .text)
+            }
+            try db.create(
+                index: "idx_clips_rating",
+                on: "clips",
+                columns: ["rating"]
+            )
+            try db.create(
+                index: "idx_clips_color_label",
+                on: "clips",
+                columns: ["color_label"]
+            )
+        }
+
         return migrator
     }
 
@@ -315,6 +333,24 @@ public enum Migrations {
 
             // 从现有数据重建 FTS 索引
             try db.execute(sql: "INSERT INTO clips_fts(clips_fts) VALUES('rebuild')")
+        }
+
+        // Stage 5d: 星级评分 & 颜色标签
+        migrator.registerMigration("v7_addRatingColorLabel") { db in
+            try db.alter(table: "clips") { t in
+                t.add(column: "rating", .integer).defaults(to: 0)
+                t.add(column: "color_label", .text)
+            }
+            try db.create(
+                index: "idx_clips_rating",
+                on: "clips",
+                columns: ["rating"]
+            )
+            try db.create(
+                index: "idx_clips_color_label",
+                on: "clips",
+                columns: ["color_label"]
+            )
         }
 
         return migrator

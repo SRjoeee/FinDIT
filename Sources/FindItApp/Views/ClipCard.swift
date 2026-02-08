@@ -145,6 +145,80 @@ struct ClipCard: View {
         Button("管理标签…") {
             showTagEditor = true
         }
+
+        // 评分子菜单
+        Menu("评分") {
+            ForEach(0...5, id: \.self) { stars in
+                Button {
+                    setRating(stars)
+                } label: {
+                    if stars == 0 {
+                        Text("无评分")
+                    } else {
+                        Text(String(repeating: "★", count: stars) + String(repeating: "☆", count: 5 - stars))
+                    }
+                }
+            }
+        }
+
+        // 颜色标签子菜单
+        Menu("颜色标签") {
+            Button("无") { setColorLabel(nil) }
+            Divider()
+            ForEach(ColorLabel.allCases, id: \.rawValue) { label in
+                Button {
+                    setColorLabel(label)
+                } label: {
+                    HStack {
+                        Circle()
+                            .fill(Color(red: label.rgb.r, green: label.rgb.g, blue: label.rgb.b))
+                            .frame(width: 10, height: 10)
+                        Text(label.displayName)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Rating & Color Actions
+
+    private func setRating(_ rating: Int) {
+        do {
+            let folderDB = try DatabaseManager.openFolderDatabase(at: result.sourceFolder)
+            try folderDB.write { db in
+                try ClipLabel.updateRating(db, clipId: result.sourceClipId, rating: rating)
+            }
+            syncToGlobal()
+        } catch {
+            print("[ClipCard] 设置评分失败: \(error)")
+        }
+    }
+
+    private func setColorLabel(_ label: ColorLabel?) {
+        do {
+            let folderDB = try DatabaseManager.openFolderDatabase(at: result.sourceFolder)
+            try folderDB.write { db in
+                try ClipLabel.updateColorLabel(db, clipId: result.sourceClipId, label: label)
+            }
+            syncToGlobal()
+        } catch {
+            print("[ClipCard] 设置颜色标签失败: \(error)")
+        }
+    }
+
+    private func syncToGlobal() {
+        guard let gdb = globalDB else { return }
+        do {
+            let folderDB = try DatabaseManager.openFolderDatabase(at: result.sourceFolder)
+            _ = try SyncEngine.sync(
+                folderPath: result.sourceFolder,
+                folderDB: folderDB,
+                globalDB: gdb,
+                force: true
+            )
+        } catch {
+            print("[ClipCard] 同步失败: \(error)")
+        }
     }
 
     // MARK: - Helpers

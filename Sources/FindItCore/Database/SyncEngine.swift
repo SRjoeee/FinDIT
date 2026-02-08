@@ -110,11 +110,13 @@ public enum SyncEngine {
         let allCols = ["source_folder", "source_clip_id", "video_id",
                        "start_time", "end_time", "thumbnail_path"]
             + visionCols
-            + ["tags", "transcript", "embedding", "embedding_model", "user_tags"]
+            + ["tags", "transcript", "embedding", "embedding_model", "user_tags",
+               "rating", "color_label"]
         let placeholders = allCols.map { _ in "?" }.joined(separator: ", ")
         let conflictSet = (["video_id", "start_time", "end_time", "thumbnail_path"]
             + visionCols
-            + ["tags", "transcript", "embedding", "embedding_model", "user_tags"])
+            + ["tags", "transcript", "embedding", "embedding_model", "user_tags",
+               "rating", "color_label"])
             .map { "\($0) = excluded.\($0)" }
             .joined(separator: ",\n                            ")
         let clipSQL = """
@@ -154,6 +156,8 @@ public enum SyncEngine {
                     args.append(clip.embedding)
                     args.append(clip.embeddingModel)
                     args.append(userTagsForFTS)
+                    args.append(clip.rating)
+                    args.append(clip.colorLabel)
 
                     try db.execute(sql: clipSQL, arguments: StatementArguments(args))
                     if let cid = clip.clipId, cid > currentClipRowId {

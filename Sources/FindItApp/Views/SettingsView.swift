@@ -24,10 +24,12 @@ private struct GeneralTab: View {
     @State private var apiKey: String = ""
     @State private var apiKeyStatus: APIKeyStatus = .unknown
     @State private var options = IndexingOptions.load()
+    @AppStorage("FindIt.showOfflineFiles") private var showOfflineFiles = false
 
     var body: some View {
         Form {
             apiKeySection
+            displaySection
             indexingSection
         }
         .formStyle(.grouped)
@@ -98,6 +100,21 @@ private struct GeneralTab: View {
             apiKeyStatus = APIKeyManager.validateAPIKey(trimmed) ? .valid : .invalid
         } catch {
             apiKeyStatus = .invalid
+        }
+    }
+
+    // MARK: Display
+
+    @ViewBuilder
+    private var displaySection: some View {
+        Section {
+            Toggle("显示离线文件夹的素材", isOn: $showOfflineFiles)
+        } header: {
+            Text("显示")
+        } footer: {
+            Text("关闭时，已断开的外接硬盘等离线文件夹的素材不会出现在搜索结果中。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 

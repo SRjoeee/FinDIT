@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var scrollOnSelect = false
     @State private var sidebarSelection: SidebarSelection = .all
     @State private var folderErrorMessage: String?
+    @AppStorage("FindIt.showOfflineFiles") private var showOfflineFiles = false
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -40,7 +41,7 @@ struct ContentView: View {
                 .frame(minWidth: 160, maxWidth: 320)
             }
         }
-        .toolbarBackground(hasScrollableContent ? .automatic : .hidden, for: .windowToolbar)
+        .toolbarBackground(.hidden, for: .windowToolbar)
         .frame(minWidth: 680, minHeight: 460)
         .sheet(isPresented: $showFolderSheet) {
             FolderManagementSheet(appState: appState, indexingManager: indexingManager)
@@ -65,7 +66,7 @@ struct ContentView: View {
             }
             // QL 面板已打开时，选中变更自动更新预览
             guard let clipId = selectedClipId,
-                  let result = searchState.displayResults.first(where: { $0.clipId == clipId }),
+                  let result = visibleResults.first(where: { $0.clipId == clipId }),
                   let path = result.filePath,
                   FileManager.default.fileExists(atPath: path) else { return }
             qlCoordinator.updateIfVisible(url: URL(fileURLWithPath: path))
@@ -142,12 +143,13 @@ struct ContentView: View {
                     )
                 }
 
-                if searchState.displayResults.isEmpty {
+                if visibleResults.isEmpty {
                     ContentUnavailableView.search(text: searchState.query)
+                        .frame(maxHeight: .infinity)
                 } else {
                     ResultsGrid(
-                        results: searchState.displayResults,
-                        resultCount: searchState.displayResultCount,
+                        results: visibleResults,
+                        resultCount: visibleResults.count,
                         offlineFolders: offlineFolderPaths,
                         globalDB: appState.globalDB,
                         selectedClipId: $selectedClipId,
@@ -164,7 +166,7 @@ struct ContentView: View {
     /// 空格键：切换 Quick Look 预览
     private func handleSpaceKey() {
         guard let clipId = selectedClipId,
-              let result = searchState.displayResults.first(where: { $0.clipId == clipId }),
+              let result = visibleResults.first(where: { $0.clipId == clipId }),
               let path = result.filePath,
               FileManager.default.fileExists(atPath: path) else { return }
         qlCoordinator.toggle(url: URL(fileURLWithPath: path))
@@ -175,7 +177,7 @@ struct ContentView: View {
     /// 左/右移动 ±1，上/下按列数跳行。
     /// 无选中时按任意方向键选中第一项。
     private func handleArrowKey(_ direction: String) {
-        let results = searchState.displayResults
+        let results = visibleResults
         guard !results.isEmpty else { return }
 
         // 无选中 → 选第一项
@@ -207,17 +209,18 @@ struct ContentView: View {
 
     // MARK: - Helpers
 
-    /// detail 区域是否有可滚动的结果内容
-    ///
-    /// 用于控制 toolbar 背景：有结果时系统自动处理 Liquid Glass + 滚动分隔线，
-    /// 无结果时隐藏 toolbar 背景（含分隔线），保持界面干净。
-    private var hasScrollableContent: Bool {
-        appState.isInitialized && !searchState.query.isEmpty && !searchState.displayResults.isEmpty
-    }
-
-    /// 离线文件夹路径集合（用于搜索结果离线蒙层）
+    /// 离线文件夹路径集合
     private var offlineFolderPaths: Set<String> {
         Set(appState.folders.filter { !$0.isAvailable }.map(\.folderPath))
+    }
+
+    /// 对用户可见的搜索结果（过滤 + 排序 + 离线过滤）
+    private var visibleResults: [SearchEngine.SearchResult] {
+        let results = searchState.displayResults
+        guard !showOfflineFiles else { return results }
+        let offline = offlineFolderPaths
+        guard !offline.isEmpty else { return results }
+        return results.filter { !offline.contains($0.sourceFolder) }
     }
 
     // MARK: - Actions

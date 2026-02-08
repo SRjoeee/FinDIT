@@ -6,14 +6,20 @@
 
 ## 待办
 
-### Stage 4: macOS App（后续功能）
+### Stage 6: 实时同步 + 导出
 
-- 筛选栏（匹配类型 + 来源文件夹）+ 排序
+- **FSEvents 文件系统监控**
+  - 监听已注册文件夹内的文件增删改
+  - 新增文件 → 自动加入索引队列
+  - 删除文件 → 从全局库移除对应 clips + 清理缩略图
+  - 修改文件 → 比对 fileHash，内容变更则重新索引
+  - 低开销后台运行，不影响电池寿命
 - NLE 导出（EDL + FCPXML，单个/批量）
 - 拖拽到 NLE（NSItemProvider）
 - 全局快捷键 ⌘⇧F（后台唤起）
-- 设置页：API Key 管理、当日 API 额度显示
-- 热门标签展示（从 clips.tags 统计 TOP N）
+- 批量多选操作（selectedClipId → Set\<Int64\>）
+- Smart Folders / 保存的搜索
+- 去重检测 UI（基于 fileHash）
 
 ## 已完成（文件管理系统 — 卷监控 + 通知 + UI）
 

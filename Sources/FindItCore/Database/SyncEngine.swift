@@ -52,7 +52,19 @@ public enum SyncEngine {
         var totalSyncedVideos = 0
         var totalSyncedClips = 0
 
-        // 2. 分批同步 videos
+        // 2. 发现已注册的子文件夹（由子文件夹自行同步，父文件夹跳过其记录）
+        //    使用 FolderHierarchy 统一层级判断逻辑。
+        let childFolderPaths: Set<String> = try globalDB.read { db in
+            let allPaths = try String.fetchAll(db, sql:
+                "SELECT folder_path FROM sync_meta WHERE folder_path != ?",
+                arguments: [folderPath])
+            return Set(FolderHierarchy.findChildren(of: folderPath, in: allPaths))
+        }
+
+        // 被排除的 source_video_id 集合（用于跳过对应的 clips）
+        var excludedSourceVideoIds = Set<Int64>()
+
+        // 3. 分批同步 videos
         while true {
             let batch = try folderDB.read { db in
                 try Video.fetchAfterRowId(db, rowId: currentVideoRowId, limit: batchSize)
@@ -61,22 +73,42 @@ public enum SyncEngine {
 
             try globalDB.write { db in
                 for video in batch {
-                    try db.execute(sql: """
-                        INSERT INTO videos
-                            (source_folder, source_video_id, file_path, file_name, duration, file_size, file_hash, srt_path)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(source_folder, source_video_id) DO UPDATE SET
-                            file_path = excluded.file_path,
-                            file_name = excluded.file_name,
-                            duration = excluded.duration,
-                            file_size = excluded.file_size,
-                            file_hash = excluded.file_hash,
-                            srt_path = excluded.srt_path
-                        """, arguments: [
-                            folderPath, video.videoId,
-                            video.filePath, video.fileName,
-                            video.duration, video.fileSize, video.fileHash, video.srtPath
-                        ])
+                    // 跳过属于已注册子文件夹的视频（子文件夹有独立索引库，由其自行同步）
+                    if !childFolderPaths.isEmpty,
+                       childFolderPaths.contains(where: { video.filePath.hasPrefix($0 + "/") }) {
+                        if let vid = video.videoId { excludedSourceVideoIds.insert(vid) }
+                        if let vid = video.videoId, vid > currentVideoRowId {
+                            currentVideoRowId = vid
+                        }
+                        continue
+                    }
+
+                    do {
+                        try db.execute(sql: """
+                            INSERT INTO videos
+                                (source_folder, source_video_id, file_path, file_name, duration, file_size, file_hash, srt_path)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(source_folder, source_video_id) DO UPDATE SET
+                                file_path = excluded.file_path,
+                                file_name = excluded.file_name,
+                                duration = excluded.duration,
+                                file_size = excluded.file_size,
+                                file_hash = excluded.file_hash,
+                                srt_path = excluded.srt_path
+                            """, arguments: [
+                                folderPath, video.videoId,
+                                video.filePath, video.fileName,
+                                video.duration, video.fileSize, video.fileHash, video.srtPath
+                            ])
+                    } catch DatabaseError.SQLITE_CONSTRAINT {
+                        // file_path 被其他 source_folder 占据 → 跳过（该文件由另一个文件夹"拥有"）
+                        print("[SyncEngine] 跳过冲突视频: \(video.filePath) (source_folder=\(folderPath))")
+                        if let vid = video.videoId { excludedSourceVideoIds.insert(vid) }
+                        if let vid = video.videoId, vid > currentVideoRowId {
+                            currentVideoRowId = vid
+                        }
+                        continue
+                    }
                     if let vid = video.videoId, vid > currentVideoRowId {
                         currentVideoRowId = vid
                     }
@@ -87,7 +119,7 @@ public enum SyncEngine {
             if batch.count < batchSize { break }
         }
 
-        // 3. 批量查出该文件夹的 source_video_id → global video_id 映射
+        // 4. 批量查出该文件夹的 source_video_id → global video_id 映射
         //    避免在 clip 循环内逐条 SELECT（N+1 → O(1)）
         let videoIdMap: [Int64: Int64] = try globalDB.read { db in
             var map: [Int64: Int64] = [:]
@@ -104,7 +136,7 @@ public enum SyncEngine {
             return map
         }
 
-        // 4. 分批同步 clips
+        // 5. 分批同步 clips
         // 动态生成 vision 列名和 SQL（循环外构建一次）
         let visionCols = VisionField.sqlColumnNames()
         let allCols = ["source_folder", "source_clip_id", "video_id",
@@ -136,6 +168,14 @@ public enum SyncEngine {
 
             try globalDB.write { db in
                 for clip in batch {
+                    // 跳过属于被排除视频的 clips
+                    if let videoId = clip.videoId, excludedSourceVideoIds.contains(videoId) {
+                        if let cid = clip.clipId, cid > currentClipRowId {
+                            currentClipRowId = cid
+                        }
+                        continue
+                    }
+
                     let globalVideoId = clip.videoId.flatMap { videoIdMap[$0] }
 
                     let tagsForFTS = convertTagsForFTS(clip.tags)
@@ -159,7 +199,15 @@ public enum SyncEngine {
                     args.append(clip.rating)
                     args.append(clip.colorLabel)
 
-                    try db.execute(sql: clipSQL, arguments: StatementArguments(args))
+                    do {
+                        try db.execute(sql: clipSQL, arguments: StatementArguments(args))
+                    } catch DatabaseError.SQLITE_CONSTRAINT {
+                        print("[SyncEngine] 跳过冲突片段: clip_id=\(clip.clipId ?? -1) (source_folder=\(folderPath))")
+                        if let cid = clip.clipId, cid > currentClipRowId {
+                            currentClipRowId = cid
+                        }
+                        continue
+                    }
                     if let cid = clip.clipId, cid > currentClipRowId {
                         currentClipRowId = cid
                     }
@@ -170,7 +218,7 @@ public enum SyncEngine {
             if batch.count < batchSize { break }
         }
 
-        // 4. 始终更新同步进度（确保空文件夹也有记录，UI 才能显示）
+        // 6. 始终更新同步进度（确保空文件夹也有记录，UI 才能显示）
         try globalDB.write { db in
             try db.execute(sql: """
                 INSERT INTO sync_meta (folder_path, last_synced_video_rowid, last_synced_clip_rowid, last_synced_at)

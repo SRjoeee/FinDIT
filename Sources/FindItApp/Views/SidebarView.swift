@@ -52,8 +52,8 @@ struct SidebarView: View {
 
     /// 待移除的文件夹（触发确认弹窗）
     @State private var folderToRemove: WatchedFolder?
-    /// 待移除的书签路径
-    @State private var bookmarkToRemove: String?
+    /// 文件夹移除确认弹窗
+    @State private var showFolderRemoveAlert = false
 
     var body: some View {
         List(selection: $selection) {
@@ -69,58 +69,20 @@ struct SidebarView: View {
                 Section(group.displayName) {
                     ForEach(group.items) { item in
                         if item.isBookmark {
-                            // 子文件夹书签行
-                            BookmarkRow(displayName: item.displayName)
-                                .tag(SidebarSelection.subfolder(item.path))
+                            bookmarkRowView(path: item.path, displayName: item.displayName)
                                 .padding(.leading, 16)
-                                .contextMenu {
-                                    Button("在 Finder 中显示") {
-                                        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: item.path)
-                                    }
-                                    Button("取消钉住") {
-                                        bookmarkToRemove = item.path
-                                    }
-                                }
                         } else if let folder = item.folder {
-                            // 注册的文件夹行
-                            let isCurrentFolder = indexingManager.currentFolder == folder.folderPath
-                            FolderRow(
-                                folder: folder,
-                                progress: indexingManager.folderProgress[folder.folderPath],
-                                isCurrentFolder: isCurrentFolder
-                            )
-                            .tag(SidebarSelection.folder(folder.folderPath))
-                            .contextMenu {
-                                Button("在 Finder 中显示") {
-                                    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: folder.folderPath)
-                                }
-                                .disabled(!folder.isAvailable)
+                            folderRowView(folder)
 
-                                Button("重新索引") {
-                                    indexingManager.queueFolder(folder.folderPath)
-                                }
-                                .disabled(isCurrentFolder || !folder.isAvailable)
-
-                                Divider()
-
-                                Button("从资料库中移除…", role: .destructive) {
-                                    folderToRemove = folder
-                                }
-                            }
-
-                            // 子文件夹书签（缩进展示）
+                            // 子项（注册的子文件夹 + 子文件夹书签，缩进展示）
                             ForEach(item.children) { child in
-                                BookmarkRow(displayName: child.displayName)
-                                    .tag(SidebarSelection.subfolder(child.path))
-                                    .padding(.leading, 16)
-                                    .contextMenu {
-                                        Button("在 Finder 中显示") {
-                                            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: child.path)
-                                        }
-                                        Button("取消钉住") {
-                                            bookmarkToRemove = child.path
-                                        }
-                                    }
+                                if child.isBookmark {
+                                    bookmarkRowView(path: child.path, displayName: child.displayName)
+                                        .padding(.leading, 16)
+                                } else if let childFolder = child.folder {
+                                    folderRowView(childFolder)
+                                        .padding(.leading, 16)
+                                }
                             }
                         }
                     }
@@ -128,29 +90,27 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
-        .alert("移除文件夹？", isPresented: Binding(
-            get: { folderToRemove != nil },
-            set: { if !$0 { folderToRemove = nil } }
-        )) {
-            Button("取消", role: .cancel) { folderToRemove = nil }
-            Button("移除", role: .destructive) { performRemove() }
-        } message: {
-            if let folder = folderToRemove {
-                let name = URL(fileURLWithPath: folder.folderPath).lastPathComponent
-                Text("将清除「\(name)」的索引数据（\(folder.indexedFiles) 个片段）。视频文件不受影响。")
+        .alert("移除文件夹？", isPresented: $showFolderRemoveAlert, presenting: folderToRemove) { folder in
+            Button("取消", role: .cancel) { }
+            Button("移除", role: .destructive) {
+                let removedPath = folder.folderPath
+                do {
+                    try appState.removeFolder(path: removedPath)
+                } catch {
+                    print("[SidebarView] 移除文件夹失败: \(error)")
+                }
+                switch selection {
+                case .folder(let path) where path == removedPath:
+                    selection = .all
+                case .subfolder(let path) where path.hasPrefix(removedPath + "/"):
+                    selection = .all
+                default:
+                    break
+                }
             }
-        }
-        .alert("取消钉住？", isPresented: Binding(
-            get: { bookmarkToRemove != nil },
-            set: { if !$0 { bookmarkToRemove = nil } }
-        )) {
-            Button("取消", role: .cancel) { bookmarkToRemove = nil }
-            Button("取消钉住") { performRemoveBookmark() }
-        } message: {
-            if let path = bookmarkToRemove {
-                let name = URL(fileURLWithPath: path).lastPathComponent
-                Text("将从侧边栏移除「\(name)」快捷入口。索引数据不受影响。")
-            }
+        } message: { folder in
+            let name = URL(fileURLWithPath: folder.folderPath).lastPathComponent
+            Text("将清除「\(name)」的索引数据（\(folder.indexedFiles) 个片段）。视频文件不受影响。")
         }
         .safeAreaInset(edge: .bottom) {
             HStack {
@@ -169,42 +129,62 @@ struct SidebarView: View {
         }
     }
 
-    // MARK: - Actions
+    // MARK: - 共用行渲染
 
-    /// 执行文件夹移除
-    private func performRemove() {
-        guard let folder = folderToRemove else { return }
-        let removedPath = folder.folderPath
+    /// 渲染注册文件夹行 + 上下文菜单（顶级和子级共用，消除重复）
+    @ViewBuilder
+    private func folderRowView(_ folder: WatchedFolder) -> some View {
+        let isCurrent = indexingManager.currentFolder == folder.folderPath
+        FolderRow(
+            folder: folder,
+            progress: indexingManager.folderProgress[folder.folderPath],
+            isCurrentFolder: isCurrent
+        )
+        .tag(SidebarSelection.folder(folder.folderPath))
+        .contextMenu {
+            Button("在 Finder 中显示") {
+                NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: folder.folderPath)
+            }
+            .disabled(!folder.isAvailable)
 
-        do {
-            try appState.removeFolder(path: removedPath)
-        } catch {
-            print("[SidebarView] 移除文件夹失败: \(error)")
+            Button("重新索引") {
+                indexingManager.queueFolder(folder.folderPath)
+            }
+            .disabled(isCurrent || !folder.isAvailable)
+
+            Divider()
+
+            Button("从资料库中移除…", role: .destructive) {
+                folderToRemove = folder
+                showFolderRemoveAlert = true
+            }
         }
-
-        // 如果移除的是当前选中项，切回 "全部"
-        switch selection {
-        case .folder(let path) where path == removedPath:
-            selection = .all
-        case .subfolder(let path) where path.hasPrefix(removedPath + "/"):
-            selection = .all
-        default:
-            break
-        }
-
-        folderToRemove = nil
     }
 
-    /// 执行书签移除
-    private func performRemoveBookmark() {
-        guard let path = bookmarkToRemove else { return }
-        appState.removeBookmark(path: path)
+    /// 渲染子文件夹书签行 + 上下文菜单（顶级和子级共用）
+    @ViewBuilder
+    private func bookmarkRowView(path: String, displayName: String) -> some View {
+        BookmarkRow(displayName: displayName)
+            .tag(SidebarSelection.subfolder(path))
+            .contextMenu {
+                Button("在 Finder 中显示") {
+                    NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+                }
+                Button("取消钉住") {
+                    unpinBookmark(path: path)
+                }
+            }
+    }
 
+    // MARK: - Actions
+
+    /// 直接取消钉住书签（非破坏性操作，无需确认）
+    private func unpinBookmark(path: String) {
+        appState.removeBookmark(path: path)
+        // 如果当前选中的就是这个书签，切回"全部"
         if case .subfolder(let selected) = selection, selected == path {
             selection = .all
         }
-
-        bookmarkToRemove = nil
     }
 
     // MARK: - 分组逻辑
@@ -384,20 +364,27 @@ private struct FolderRow: View {
                 .frame(width: 6, height: 6)
 
             VStack(alignment: .leading, spacing: 2) {
-                // 文件夹名称
+                // 文件夹名称（离线时降低对比度）
                 Text(displayName)
                     .lineLimit(1)
+                    .foregroundStyle(folder.isAvailable ? .primary : .secondary)
 
-                // 索引进度 或 统计文本
-                if let progress = progress {
-                    indexingStatusText(progress)
+                if folder.isAvailable {
+                    // 在线：索引进度或统计
+                    if let progress = progress {
+                        indexingStatusText(progress)
+                    } else {
+                        statsText
+                    }
                 } else {
-                    statsText
-                }
+                    // 离线：显示原因
+                    Text(unavailabilityReason)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
 
-                // 离线时显示 "上次在线" 时间
-                if !folder.isAvailable, let lastSeen = folder.lastSeenAt {
-                    lastSeenText(lastSeen)
+                    if let lastSeen = folder.lastSeenAt {
+                        lastSeenText(lastSeen)
+                    }
                 }
             }
 
@@ -413,6 +400,22 @@ private struct FolderRow: View {
     /// 显示名称：文件夹最后一段路径
     private var displayName: String {
         URL(fileURLWithPath: folder.folderPath).lastPathComponent
+    }
+
+    /// 离线原因描述（区分卷断开 vs 文件夹删除）
+    private var unavailabilityReason: String {
+        let path = folder.folderPath
+        // 外置卷路径: /Volumes/<VolumeName>/...
+        if path.hasPrefix("/Volumes/") {
+            let components = path.split(separator: "/", maxSplits: 3)
+            if components.count >= 2 {
+                let volumeMountPoint = "/\(components[0])/\(components[1])"
+                if !FileManager.default.fileExists(atPath: volumeMountPoint) {
+                    return "卷已断开"
+                }
+            }
+        }
+        return "文件夹不存在"
     }
 
     // MARK: - 统计文本

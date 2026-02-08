@@ -104,6 +104,14 @@ struct ContentView: View {
             await appState.initialize()
             searchState.loadFacets()
         }
+        .task {
+            // 周期性文件夹健康检查（30秒间隔）
+            await appState.startPeriodicHealthCheck()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            // App 从后台切回时立即检查（用户可能在 Finder 中操作了文件夹）
+            appState.checkFolderHealth()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .addFolder)) { _ in
             addFolder()
         }

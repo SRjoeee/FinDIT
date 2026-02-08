@@ -249,6 +249,38 @@ final class AppState {
         }
     }
 
+    // MARK: - 文件夹健康检查
+
+    /// 轻量级文件夹可用性检查
+    ///
+    /// 仅检查 `FileManager.fileExists`（单次 stat() 调用），
+    /// 当检测到状态变化时触发完整 `reloadFolders()`。
+    func checkFolderHealth() {
+        var changed = false
+        for folder in folders {
+            let exists = FileManager.default.fileExists(atPath: folder.folderPath)
+            if exists != folder.isAvailable {
+                changed = true
+                break
+            }
+        }
+        if changed {
+            try? reloadFolders()
+        }
+    }
+
+    /// 启动周期性文件夹健康检查
+    ///
+    /// 每 30 秒验证所有注册文件夹的可达性。
+    /// 仅在检测到变化时才执行完整刷新（避免无谓的数据库查询和 UI 重绘）。
+    /// 在 ContentView 的 `.task` 中调用，Task 取消时自动退出。
+    func startPeriodicHealthCheck() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(30))
+            checkFolderHealth()
+        }
+    }
+
     // MARK: - 书签持久化
 
     private func loadBookmarks() {

@@ -76,7 +76,7 @@ Works with the formats you actually use:
 
 <div align="center">
 
-<video src="https://github.com/SRjoeee/FinDIT/raw/main/assets/demo.mp4" width="720" controls></video>
+https://github.com/SRjoeee/FinDIT/raw/main/assets/demo.mp4
 
 </div>
 

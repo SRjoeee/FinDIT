@@ -84,14 +84,22 @@ public enum SearchEngine {
     /// - 精确短语：`"海滩日落"`
     /// - 排除：`海滩 NOT 雨天`
     /// - 列过滤：`tags:海滩`
-    public static func search(_ db: Database, query: String, folderPaths: Set<String>? = nil, limit: Int = 50) throws -> [SearchResult] {
+    public static func search(
+        _ db: Database,
+        query: String,
+        folderPaths: Set<String>? = nil,
+        pathPrefixFilter: String? = nil,
+        limit: Int = 50
+    ) throws -> [SearchResult] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 
         let filterSQL = folderFilterSQL(folderPaths: folderPaths)
+        let prefixSQL = pathPrefixFilterSQL(pathPrefixFilter)
         var args = StatementArguments()
         args += [trimmed]
         appendFolderArgs(&args, folderPaths: folderPaths)
+        appendPrefixArgs(&args, pathPrefixFilter: pathPrefixFilter)
         args += [limit]
 
         let rows = try Row.fetchAll(db, sql: """
@@ -103,7 +111,7 @@ public enum SearchEngine {
             FROM clips_fts
             JOIN clips c ON c.clip_id = clips_fts.rowid
             LEFT JOIN videos v ON v.video_id = c.video_id
-            WHERE clips_fts MATCH ?\(filterSQL)
+            WHERE clips_fts MATCH ?\(filterSQL)\(prefixSQL)
             ORDER BY clips_fts.rank
             LIMIT ?
             """, arguments: args)
@@ -153,6 +161,7 @@ public enum SearchEngine {
         vectorStoreResults: [(clipId: Int64, similarity: Float)]? = nil,
         mode: SearchMode = .auto,
         folderPaths: Set<String>? = nil,
+        pathPrefixFilter: String? = nil,
         limit: Int = 50
     ) throws -> [SearchResult] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -164,22 +173,22 @@ public enum SearchEngine {
         // 纯向量模式
         if mode == .vector || (mode == .auto && weights.ftsWeight == 0) {
             if let storeResults = vectorStoreResults {
-                return try vectorSearchFromStore(db, storeResults: storeResults, folderPaths: folderPaths, limit: limit)
+                return try vectorSearchFromStore(db, storeResults: storeResults, folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter, limit: limit)
             }
             guard let embedding = queryEmbedding, let model = embeddingModel else {
                 return [] // 无向量时返回空
             }
-            return try vectorSearch(db, queryEmbedding: embedding, embeddingModel: model, folderPaths: folderPaths, limit: limit)
+            return try vectorSearch(db, queryEmbedding: embedding, embeddingModel: model, folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter, limit: limit)
         }
 
         // 纯 FTS 模式或无向量
         if mode == .fts || queryEmbedding == nil {
-            return try search(db, query: trimmed, folderPaths: folderPaths, limit: limit)
+            return try search(db, query: trimmed, folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter, limit: limit)
         }
 
         // 混合模式
         guard let embedding = queryEmbedding, let model = embeddingModel else {
-            return try search(db, query: trimmed, folderPaths: folderPaths, limit: limit)
+            return try search(db, query: trimmed, folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter, limit: limit)
         }
 
         return try fusionSearch(
@@ -190,6 +199,7 @@ public enum SearchEngine {
             vectorStoreResults: vectorStoreResults,
             weights: weights,
             folderPaths: folderPaths,
+            pathPrefixFilter: pathPrefixFilter,
             limit: limit
         )
     }
@@ -204,12 +214,15 @@ public enum SearchEngine {
         queryEmbedding: [Float],
         embeddingModel: String,
         folderPaths: Set<String>? = nil,
+        pathPrefixFilter: String? = nil,
         limit: Int = 50
     ) throws -> [SearchResult] {
         let filterSQL = folderFilterSQL(folderPaths: folderPaths)
+        let prefixSQL = pathPrefixFilterSQL(pathPrefixFilter)
         var args = StatementArguments()
         args += [embeddingModel]
         appendFolderArgs(&args, folderPaths: folderPaths)
+        appendPrefixArgs(&args, pathPrefixFilter: pathPrefixFilter)
 
         let rows = try Row.fetchAll(db, sql: """
             SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
@@ -218,7 +231,7 @@ public enum SearchEngine {
                    c.tags, c.transcript, c.thumbnail_path, c.embedding
             FROM clips c
             LEFT JOIN videos v ON v.video_id = c.video_id
-            WHERE c.embedding IS NOT NULL AND c.embedding_model = ?\(filterSQL)
+            WHERE c.embedding IS NOT NULL AND c.embedding_model = ?\(filterSQL)\(prefixSQL)
             """, arguments: args)
 
         var results: [(SearchResult, Double)] = []
@@ -263,6 +276,7 @@ public enum SearchEngine {
         _ db: Database,
         storeResults: [(clipId: Int64, similarity: Float)],
         folderPaths: Set<String>? = nil,
+        pathPrefixFilter: String? = nil,
         limit: Int = 50
     ) throws -> [SearchResult] {
         guard !storeResults.isEmpty else { return [] }
@@ -274,9 +288,11 @@ public enum SearchEngine {
         // 查询元数据（含文件夹过滤）
         let placeholders = clipIds.map { _ in "?" }.joined(separator: ", ")
         let filterSQL = folderFilterSQL(folderPaths: folderPaths)
+        let prefixSQL = pathPrefixFilterSQL(pathPrefixFilter)
         var args = StatementArguments()
         for id in clipIds { args += [id] }
         appendFolderArgs(&args, folderPaths: folderPaths)
+        appendPrefixArgs(&args, pathPrefixFilter: pathPrefixFilter)
 
         let rows = try Row.fetchAll(db, sql: """
             SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
@@ -285,7 +301,7 @@ public enum SearchEngine {
                    c.tags, c.transcript, c.thumbnail_path
             FROM clips c
             LEFT JOIN videos v ON v.video_id = c.video_id
-            WHERE c.clip_id IN (\(placeholders))\(filterSQL)
+            WHERE c.clip_id IN (\(placeholders))\(filterSQL)\(prefixSQL)
             """, arguments: args)
 
         // 构建结果并按相似度排序
@@ -328,19 +344,20 @@ public enum SearchEngine {
         vectorStoreResults: [(clipId: Int64, similarity: Float)]? = nil,
         weights: SearchWeights,
         folderPaths: Set<String>? = nil,
+        pathPrefixFilter: String? = nil,
         limit: Int
     ) throws -> [SearchResult] {
         // 1. FTS5 搜索
-        let ftsResults = try search(db, query: query, folderPaths: folderPaths, limit: limit * 2)
+        let ftsResults = try search(db, query: query, folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter, limit: limit * 2)
 
         // 2. 向量搜索（VectorStore 加速或逐行扫描回退）
         let vectorResults: [SearchResult]
         if let storeResults = vectorStoreResults {
-            vectorResults = try vectorSearchFromStore(db, storeResults: storeResults, folderPaths: folderPaths, limit: limit * 2)
+            vectorResults = try vectorSearchFromStore(db, storeResults: storeResults, folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter, limit: limit * 2)
         } else {
             vectorResults = try vectorSearch(
                 db, queryEmbedding: queryEmbedding,
-                embeddingModel: embeddingModel, folderPaths: folderPaths, limit: limit * 2
+                embeddingModel: embeddingModel, folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter, limit: limit * 2
             )
         }
 
@@ -495,6 +512,24 @@ public enum SearchEngine {
         for path in paths.sorted() {
             args += [path]
         }
+    }
+
+    // MARK: - 路径前缀过滤辅助
+
+    /// 生成路径前缀过滤的 SQL WHERE 子句片段
+    ///
+    /// 用于子文件夹快捷入口：按 `v.file_path` 路径前缀过滤。
+    /// - `nil`: 不过滤 → 返回空字符串
+    /// - 非空: 返回 ` AND v.file_path LIKE ? || '/%'`
+    private static func pathPrefixFilterSQL(_ prefix: String?) -> String {
+        guard prefix != nil else { return "" }
+        return " AND v.file_path LIKE ? || '/%'"
+    }
+
+    /// 将路径前缀追加到 StatementArguments
+    private static func appendPrefixArgs(_ args: inout StatementArguments, pathPrefixFilter: String?) {
+        guard let prefix = pathPrefixFilter else { return }
+        args += [prefix]
     }
 
     // MARK: - 文件夹统计

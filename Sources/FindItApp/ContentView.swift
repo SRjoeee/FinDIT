@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import FindItCore
 
 struct ContentView: View {
     @State private var appState = AppState()
@@ -72,8 +73,21 @@ struct ContentView: View {
             switch sidebarSelection {
             case .all:
                 searchState.folderFilter = nil
+                searchState.pathPrefixFilter = nil
             case .folder(let path):
-                searchState.folderFilter = [path]
+                // 选择父文件夹时，自动包含所有已注册的子文件夹
+                let allPaths = appState.folders.map(\.folderPath)
+                let children = FolderHierarchy.findChildren(of: path, in: allPaths)
+                var filterSet: Set<String> = [path]
+                for child in children {
+                    filterSet.insert(child)
+                }
+                searchState.folderFilter = filterSet
+                searchState.pathPrefixFilter = nil
+            case .subfolder(let path):
+                // 子文件夹书签：通过路径前缀过滤
+                searchState.folderFilter = nil
+                searchState.pathPrefixFilter = path
             }
         }
         .task {

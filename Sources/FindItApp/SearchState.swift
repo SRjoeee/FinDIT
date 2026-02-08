@@ -41,6 +41,16 @@ final class SearchState {
         }
     }
 
+    /// 路径前缀过滤（用于子文件夹书签的搜索过滤）
+    var pathPrefixFilter: String? = nil {
+        didSet {
+            if pathPrefixFilter != oldValue {
+                performFTSSearch()
+                scheduleVectorSearch()
+            }
+        }
+    }
+
     /// 全局数据库引用（由外部注入）
     weak var appState: AppState?
 
@@ -74,8 +84,9 @@ final class SearchState {
 
         do {
             let filter = self.folderFilter
+            let prefix = self.pathPrefixFilter
             let searchResults = try db.read { dbConn in
-                try SearchEngine.search(dbConn, query: trimmed, folderPaths: filter, limit: 50)
+                try SearchEngine.search(dbConn, query: trimmed, folderPaths: filter, pathPrefixFilter: prefix, limit: 50)
             }
             self.results = searchResults
         } catch {
@@ -138,6 +149,7 @@ final class SearchState {
 
             let mode = self.searchMode
             let filter = self.folderFilter
+            let prefix = self.pathPrefixFilter
             let capturedStoreResults = storeResults
             let hybridResults = try await db.read { dbConn in
                 try SearchEngine.hybridSearch(
@@ -148,6 +160,7 @@ final class SearchState {
                     vectorStoreResults: capturedStoreResults,
                     mode: mode,
                     folderPaths: filter,
+                    pathPrefixFilter: prefix,
                     limit: 50
                 )
             }

@@ -63,6 +63,9 @@ final class IndexingManager {
     /// 待处理文件夹队列
     private var pendingFolders: [String] = []
 
+    /// 各文件夹的排除子目录集合（智能嵌套：添加父文件夹时排除已索引子文件夹）
+    private var folderExclusions: [String: Set<String>] = [:]
+
     /// 当前处理 Task（用于取消）
     private var processingTask: Task<Void, Never>?
 
@@ -86,13 +89,20 @@ final class IndexingManager {
     /// 添加文件夹到索引队列
     ///
     /// 如果队列未在处理，立即启动。如果正在处理，追加到队列末尾。
-    func queueFolder(_ path: String) {
+    ///
+    /// - Parameters:
+    ///   - path: 文件夹路径
+    ///   - excluding: 要排除的子文件夹集合（智能嵌套时使用）
+    func queueFolder(_ path: String, excluding: Set<String> = []) {
         // 避免重复入队
         guard !pendingFolders.contains(path) else { return }
         // 避免正在处理的文件夹重复入队
         guard currentFolder != path else { return }
 
         pendingFolders.append(path)
+        if !excluding.isEmpty {
+            folderExclusions[path] = excluding
+        }
 
         // 如果没有正在运行的 task，启动处理
         if processingTask == nil {
@@ -163,10 +173,11 @@ final class IndexingManager {
     private func processFolder(_ folderPath: String) async {
         currentFolder = folderPath
 
-        // 扫描视频文件
+        // 扫描视频文件（排除已索引的子文件夹）
+        let exclusions = folderExclusions.removeValue(forKey: folderPath) ?? []
         let videoFiles: [String]
         do {
-            videoFiles = try FileScanner.scanVideoFiles(in: folderPath)
+            videoFiles = try FileScanner.scanVideoFiles(in: folderPath, excluding: exclusions)
         } catch {
             print("[IndexingManager] 扫描文件夹失败: \(error)")
             return

@@ -4,12 +4,17 @@ import FindItCore
 
 /// 文件夹操作错误
 enum FolderError: LocalizedError {
-    /// 待添加的文件夹与现有文件夹存在父子重叠
-    case overlap(String)
+    /// 路径已注册
+    case duplicate
+    /// 路径已被父文件夹覆盖（子文件夹书签限制暂不支持）
+    case alreadyCovered(String)
 
     var errorDescription: String? {
         switch self {
-        case .overlap(let message): return message
+        case .duplicate:
+            return "该文件夹已添加"
+        case .alreadyCovered(let message):
+            return message
         }
     }
 }
@@ -27,6 +32,14 @@ final class AppState {
     /// 已注册的文件夹列表
     var folders: [WatchedFolder] = []
 
+    /// 子文件夹书签（父文件夹下被钉住的子路径）
+    ///
+    /// 这些路径不会被独立索引，仅作为侧边栏快捷入口，
+    /// 点击时通过路径前缀过滤搜索结果。
+    var subfolderBookmarks: [String] = [] {
+        didSet { persistBookmarks() }
+    }
+
     /// 数据库是否已初始化
     var isInitialized = false
 
@@ -39,6 +52,9 @@ final class AppState {
     /// 卷信息缓存（避免每次 reloadFolders 都做文件系统调用）
     private var volumeInfoCache: [String: VolumeResolver.VolumeInfo] = [:]
 
+    /// UserDefaults key for subfolder bookmarks
+    private static let bookmarksKey = "FindIt.subfolderBookmarks"
+
     // MARK: - 初始化
 
     /// 初始化全局数据库并加载文件夹列表
@@ -50,6 +66,7 @@ final class AppState {
                 try DatabaseManager.openGlobalDatabase()
             }.value
             self.globalDB = db
+            loadBookmarks()
             try reloadFolders()
             self.isInitialized = true
         } catch {
@@ -61,66 +78,101 @@ final class AppState {
 
     /// 添加监控文件夹
     ///
-    /// 打开文件夹级数据库，同步到全局库，刷新文件夹列表。
-    /// 数据库操作在后台线程执行，避免阻塞主线程。
+    /// 使用 `FolderHierarchy` 智能处理嵌套关系：
+    /// - **无重叠**: 正常添加并索引
+    /// - **添加父级**: 索引时排除已有子文件夹，避免重复
+    /// - **添加子级**: 仅创建侧边栏书签，不重复索引
+    /// - **重复**: 静默忽略
     func addFolder(path: String) async throws {
         guard let globalDB = globalDB else { return }
 
-        // 检查是否已存在
-        let exists = folders.contains { $0.folderPath == path }
-        guard !exists else { return }
+        let existingPaths = folders.map(\.folderPath)
+        let plan = FolderHierarchy.resolveAddition(newPath: path, existingPaths: existingPaths)
 
-        // 检测父子文件夹重叠
-        for existing in folders {
-            let existingName = URL(fileURLWithPath: existing.folderPath).lastPathComponent
-            let newName = URL(fileURLWithPath: path).lastPathComponent
+        switch plan.action {
+        case .duplicate:
+            return // 静默忽略
 
-            if path.hasPrefix(existing.folderPath + "/") {
-                throw FolderError.overlap(
-                    "「\(newName)」已包含在「\(existingName)」中，其视频已被索引"
-                )
-            }
-            if existing.folderPath.hasPrefix(path + "/") {
-                throw FolderError.overlap(
-                    "已有子文件夹「\(existingName)」被单独索引，添加父文件夹会导致重复索引"
-                )
-            }
-        }
+        case .addAsSubfolderBookmark(let parentFolder):
+            // 子文件夹书签：不索引，仅 UI 快捷入口
+            let parentName = URL(fileURLWithPath: parentFolder).lastPathComponent
+            let subName = URL(fileURLWithPath: path).lastPathComponent
 
-        // 解析卷信息并缓存
-        let volumeInfo = VolumeResolver.resolve(path: path)
-        volumeInfoCache[path] = volumeInfo
+            guard !subfolderBookmarks.contains(path) else { return }
+            subfolderBookmarks.append(path)
 
-        // 在后台线程执行数据库操作
-        try await Task.detached(priority: .userInitiated) {
-            let folderDB = try DatabaseManager.openFolderDatabase(at: path)
+            // 不需要数据库操作，仅在侧边栏展示
+            print("[AppState] 添加子文件夹书签: \(subName) (父级: \(parentName))")
 
-            try folderDB.write { db in
-                let existing = try WatchedFolder.fetchOne(db, sql:
-                    "SELECT * FROM watched_folders WHERE folder_path = ?",
-                    arguments: [path])
-                if existing == nil {
-                    var folder = WatchedFolder(
-                        folderPath: path,
-                        volumeName: volumeInfo.name,
-                        volumeUuid: volumeInfo.uuid,
-                        lastSeenAt: Clip.sqliteDatetime()
-                    )
-                    try folder.insert(db)
+        case .addAsParent(let existingChildren):
+            // 添加父级：创建数据库，索引时排除已有子文件夹
+            let volumeInfo = VolumeResolver.resolve(path: path)
+            volumeInfoCache[path] = volumeInfo
+
+            try await Task.detached(priority: .userInitiated) {
+                let folderDB = try DatabaseManager.openFolderDatabase(at: path)
+
+                try folderDB.write { db in
+                    let existing = try WatchedFolder.fetchOne(db, sql:
+                        "SELECT * FROM watched_folders WHERE folder_path = ?",
+                        arguments: [path])
+                    if existing == nil {
+                        var folder = WatchedFolder(
+                            folderPath: path,
+                            volumeName: volumeInfo.name,
+                            volumeUuid: volumeInfo.uuid,
+                            lastSeenAt: Clip.sqliteDatetime()
+                        )
+                        try folder.insert(db)
+                    }
                 }
-            }
 
-            let _ = try SyncEngine.sync(
-                folderPath: path,
-                folderDB: folderDB,
-                globalDB: globalDB
-            )
-        }.value
+                let _ = try SyncEngine.sync(
+                    folderPath: path,
+                    folderDB: folderDB,
+                    globalDB: globalDB
+                )
+            }.value
 
-        try reloadFolders()
+            try reloadFolders()
 
-        // 触发后台索引
-        indexingManager?.queueFolder(path)
+            // 通知 IndexingManager 索引时排除子文件夹
+            indexingManager?.queueFolder(path, excluding: Set(existingChildren))
+
+        case .addNormally:
+            // 正常添加（无重叠）
+            let volumeInfo = VolumeResolver.resolve(path: path)
+            volumeInfoCache[path] = volumeInfo
+
+            try await Task.detached(priority: .userInitiated) {
+                let folderDB = try DatabaseManager.openFolderDatabase(at: path)
+
+                try folderDB.write { db in
+                    let existing = try WatchedFolder.fetchOne(db, sql:
+                        "SELECT * FROM watched_folders WHERE folder_path = ?",
+                        arguments: [path])
+                    if existing == nil {
+                        var folder = WatchedFolder(
+                            folderPath: path,
+                            volumeName: volumeInfo.name,
+                            volumeUuid: volumeInfo.uuid,
+                            lastSeenAt: Clip.sqliteDatetime()
+                        )
+                        try folder.insert(db)
+                    }
+                }
+
+                let _ = try SyncEngine.sync(
+                    folderPath: path,
+                    folderDB: folderDB,
+                    globalDB: globalDB
+                )
+            }.value
+
+            try reloadFolders()
+
+            indexingManager?.queueFolder(path)
+        }
     }
 
     /// 移除文件夹
@@ -128,7 +180,18 @@ final class AppState {
         guard let globalDB = globalDB else { return }
 
         try SyncEngine.removeFolderData(folderPath: path, from: globalDB)
+
+        // 同时移除该文件夹下的所有子文件夹书签
+        subfolderBookmarks.removeAll { bookmark in
+            FolderHierarchy.relationship(path, bookmark) == .parent
+        }
+
         try reloadFolders()
+    }
+
+    /// 移除子文件夹书签
+    func removeBookmark(path: String) {
+        subfolderBookmarks.removeAll { $0 == path }
     }
 
     // MARK: - 文件夹列表
@@ -178,5 +241,21 @@ final class AppState {
                 indexedFiles: stats.clipCount
             )
         }
+
+        // 清理失效的子文件夹书签（父文件夹被移除后）
+        let registeredPaths = Set(self.folders.map(\.folderPath))
+        subfolderBookmarks.removeAll { bookmark in
+            FolderHierarchy.findParent(of: bookmark, in: Array(registeredPaths)) == nil
+        }
+    }
+
+    // MARK: - 书签持久化
+
+    private func loadBookmarks() {
+        subfolderBookmarks = UserDefaults.standard.stringArray(forKey: Self.bookmarksKey) ?? []
+    }
+
+    private func persistBookmarks() {
+        UserDefaults.standard.set(subfolderBookmarks, forKey: Self.bookmarksKey)
     }
 }

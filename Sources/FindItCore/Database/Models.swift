@@ -265,10 +265,12 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
         tags = string
     }
 
-    // MARK: - Private
+    // MARK: - Date Utilities
 
     /// 复用的 UTC 日期格式化器（避免每次调用重新创建）
-    private static let utcFormatter: DateFormatter = {
+    ///
+    /// 包内可见，供 PipelineManager 等模块格式化文件修改时间。
+    static let utcFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         formatter.timeZone = TimeZone(identifier: "UTC")
@@ -278,6 +280,11 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
     /// 生成与 SQLite `datetime('now')` 兼容的 UTC 时间字符串
     public static func sqliteDatetime() -> String {
         utcFormatter.string(from: Date())
+    }
+
+    /// 将指定日期格式化为 SQLite datetime 兼容字符串
+    public static func sqliteDatetime(_ date: Date) -> String {
+        utcFormatter.string(from: date)
     }
 }
 

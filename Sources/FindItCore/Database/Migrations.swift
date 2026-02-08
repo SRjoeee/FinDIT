@@ -104,6 +104,16 @@ public enum Migrations {
             )
         }
 
+        // Stage 5b: file_hash 列已在 v1 schema 中存在，此处仅添加索引
+        migrator.registerMigration("v6_addFileHashIndex") { db in
+            try db.create(
+                index: "idx_videos_file_hash",
+                on: "videos",
+                columns: ["file_hash"],
+                ifNotExists: true
+            )
+        }
+
         return migrator
     }
 
@@ -230,6 +240,13 @@ public enum Migrations {
                 on: "clips",
                 columns: ["video_id"]
             )
+        }
+
+        // Stage 5b: 全局库 videos 表添加 file_hash 列
+        migrator.registerMigration("v5_addFileHashToGlobalVideos") { db in
+            try db.alter(table: "videos") { t in
+                t.add(column: "file_hash", .text)
+            }
         }
 
         return migrator

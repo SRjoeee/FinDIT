@@ -63,18 +63,19 @@ public enum SyncEngine {
                 for video in batch {
                     try db.execute(sql: """
                         INSERT INTO videos
-                            (source_folder, source_video_id, file_path, file_name, duration, file_size, srt_path)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                            (source_folder, source_video_id, file_path, file_name, duration, file_size, file_hash, srt_path)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(source_folder, source_video_id) DO UPDATE SET
                             file_path = excluded.file_path,
                             file_name = excluded.file_name,
                             duration = excluded.duration,
                             file_size = excluded.file_size,
+                            file_hash = excluded.file_hash,
                             srt_path = excluded.srt_path
                         """, arguments: [
                             folderPath, video.videoId,
                             video.filePath, video.fileName,
-                            video.duration, video.fileSize, video.srtPath
+                            video.duration, video.fileSize, video.fileHash, video.srtPath
                         ])
                     if let vid = video.videoId, vid > currentVideoRowId {
                         currentVideoRowId = vid

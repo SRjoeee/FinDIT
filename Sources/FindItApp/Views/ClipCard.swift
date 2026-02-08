@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import GRDB
 import FindItCore
 
 /// 搜索结果卡片
@@ -10,12 +11,14 @@ struct ClipCard: View {
     let result: SearchEngine.SearchResult
     let isSelected: Bool
     var isOffline: Bool = false
+    var globalDB: DatabasePool?
     var onSelect: () -> Void = {}
 
     @State private var isHovering = false
     @State private var showHoverCard = false
     @State private var hoverTask: Task<Void, Never>?
     @State private var lastClickTime: Date?
+    @State private var showTagEditor = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -105,6 +108,13 @@ struct ClipCard: View {
             ClipHoverCard(result: result)
         }
         .contextMenu { contextMenuItems }
+        .sheet(isPresented: $showTagEditor) {
+            TagEditorSheet(
+                sourceFolder: result.sourceFolder,
+                sourceClipId: result.sourceClipId,
+                globalDB: globalDB
+            )
+        }
     }
 
     // MARK: - Context Menu
@@ -128,6 +138,12 @@ struct ClipCard: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(path, forType: .string)
             }
+        }
+
+        Divider()
+
+        Button("管理标签…") {
+            showTagEditor = true
         }
     }
 

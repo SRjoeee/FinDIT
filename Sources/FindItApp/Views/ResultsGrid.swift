@@ -1,4 +1,5 @@
 import SwiftUI
+import GRDB
 import FindItCore
 
 /// 搜索结果网格
@@ -10,6 +11,7 @@ struct ResultsGrid: View {
     let results: [SearchEngine.SearchResult]
     let resultCount: Int
     let offlineFolders: Set<String>
+    var globalDB: DatabasePool?
     @Binding var selectedClipId: Int64?
     @Binding var columnsPerRow: Int
     @Binding var scrollOnSelect: Bool
@@ -27,6 +29,7 @@ struct ResultsGrid: View {
                             result: result,
                             isSelected: result.clipId == selectedClipId,
                             isOffline: offlineFolders.contains(result.sourceFolder),
+                            globalDB: globalDB,
                             onSelect: { selectedClipId = result.clipId }
                         )
                         .id(result.clipId)

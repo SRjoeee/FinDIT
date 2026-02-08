@@ -66,6 +66,8 @@ public enum SearchEngine {
         public let transcript: String?
         /// 缩略图文件路径
         public let thumbnailPath: String?
+        /// 用户自定义标签
+        public let userTags: String?
         /// FTS5 BM25 排名分数（越小越相关，负数）
         public let rank: Double
         /// 向量余弦相似度（0-1，越大越相似）
@@ -106,7 +108,7 @@ public enum SearchEngine {
             SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
                    v.file_path, v.file_name,
                    c.start_time, c.end_time, c.scene, c.description,
-                   c.tags, c.transcript, c.thumbnail_path,
+                   c.tags, c.transcript, c.thumbnail_path, c.user_tags,
                    clips_fts.rank
             FROM clips_fts
             JOIN clips c ON c.clip_id = clips_fts.rowid
@@ -131,6 +133,7 @@ public enum SearchEngine {
                 tags: row["tags"],
                 transcript: row["transcript"],
                 thumbnailPath: row["thumbnail_path"],
+                userTags: row["user_tags"],
                 rank: row["rank"],
                 similarity: nil,
                 finalScore: nil
@@ -228,7 +231,7 @@ public enum SearchEngine {
             SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
                    v.file_path, v.file_name,
                    c.start_time, c.end_time, c.scene, c.description,
-                   c.tags, c.transcript, c.thumbnail_path, c.embedding
+                   c.tags, c.transcript, c.thumbnail_path, c.user_tags, c.embedding
             FROM clips c
             LEFT JOIN videos v ON v.video_id = c.video_id
             WHERE c.embedding IS NOT NULL AND c.embedding_model = ?\(filterSQL)\(prefixSQL)
@@ -255,6 +258,7 @@ public enum SearchEngine {
                 tags: row["tags"],
                 transcript: row["transcript"],
                 thumbnailPath: row["thumbnail_path"],
+                userTags: row["user_tags"],
                 rank: 0.0,
                 similarity: similarity,
                 finalScore: similarity
@@ -298,7 +302,7 @@ public enum SearchEngine {
             SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
                    v.file_path, v.file_name,
                    c.start_time, c.end_time, c.scene, c.description,
-                   c.tags, c.transcript, c.thumbnail_path
+                   c.tags, c.transcript, c.thumbnail_path, c.user_tags
             FROM clips c
             LEFT JOIN videos v ON v.video_id = c.video_id
             WHERE c.clip_id IN (\(placeholders))\(filterSQL)\(prefixSQL)
@@ -323,6 +327,7 @@ public enum SearchEngine {
                 tags: row["tags"],
                 transcript: row["transcript"],
                 thumbnailPath: row["thumbnail_path"],
+                userTags: row["user_tags"],
                 rank: 0.0,
                 similarity: sim,
                 finalScore: sim
@@ -431,6 +436,7 @@ public enum SearchEngine {
                 tags: data.tags,
                 transcript: data.transcript,
                 thumbnailPath: data.thumbnailPath,
+                userTags: data.userTags,
                 rank: ftsScores[clipId] ?? 0.0,
                 similarity: vectorScores[clipId],
                 finalScore: finalScore

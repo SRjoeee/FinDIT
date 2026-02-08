@@ -137,6 +137,7 @@ struct ContentView: View {
                 results: searchState.results,
                 resultCount: searchState.resultCount,
                 offlineFolders: offlineFolderPaths,
+                globalDB: appState.globalDB,
                 selectedClipId: $selectedClipId,
                 columnsPerRow: $columnsPerRow,
                 scrollOnSelect: $scrollOnSelect

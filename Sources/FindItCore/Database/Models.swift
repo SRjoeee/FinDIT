@@ -170,6 +170,7 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
     public var transcript: String?
     public var embedding: Data?
     public var embeddingModel: String?
+    public var userTags: String?
     public var createdAt: String
 
     public static let databaseTableName = "clips"
@@ -193,6 +194,7 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
         case transcript
         case embedding
         case embeddingModel = "embedding_model"
+        case userTags = "user_tags"
         case createdAt = "created_at"
     }
 
@@ -215,6 +217,7 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
         transcript: String? = nil,
         embedding: Data? = nil,
         embeddingModel: String? = nil,
+        userTags: String? = nil,
         createdAt: String? = nil
     ) {
         self.clipId = clipId
@@ -235,6 +238,7 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
         self.transcript = transcript
         self.embedding = embedding
         self.embeddingModel = embeddingModel
+        self.userTags = userTags
         self.createdAt = createdAt ?? Self.sqliteDatetime()
     }
 
@@ -263,6 +267,42 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
             return
         }
         tags = string
+    }
+
+    // MARK: - User Tags JSON 便利方法
+
+    /// 将 user_tags JSON 字符串解析为字符串数组
+    public var userTagsArray: [String] {
+        guard let userTags = userTags,
+              let data = userTags.data(using: .utf8),
+              let array = try? JSONDecoder().decode([String].self, from: data) else {
+            return []
+        }
+        return array
+    }
+
+    /// 从字符串数组生成 user_tags JSON 字符串
+    public mutating func setUserTags(_ array: [String]) {
+        guard !array.isEmpty,
+              let data = try? JSONEncoder().encode(array),
+              let string = String(data: data, encoding: .utf8) else {
+            userTags = nil
+            return
+        }
+        userTags = string
+    }
+
+    /// 合并 auto tags + user tags（去重）
+    public var allTagsArray: [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for tag in tagsArray + userTagsArray {
+            let trimmed = tag.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, !seen.contains(trimmed) else { continue }
+            seen.insert(trimmed)
+            result.append(trimmed)
+        }
+        return result
     }
 
     // MARK: - Date Utilities

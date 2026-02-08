@@ -76,7 +76,7 @@ Works with the formats you actually use:
 
 <div align="center">
 
-https://github.com/SRjoeee/FinDIT/raw/main/assets/demo.mp4
+![FindIt Demo](assets/demo.gif)
 
 </div>
 

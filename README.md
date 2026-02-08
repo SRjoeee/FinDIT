@@ -21,8 +21,6 @@ Find the exact clip you need in seconds, not hours.
 
 If you work with video, you know the pain. You shot 200 clips last week. Now you need "that sunset shot on the beach" for your edit. So you open Finder, scrub through thumbnails, open files one by one, skip around the timeline... 20 minutes later, you're still looking.
 
-Final Cut Pro 12 added Visual Search, which is great, but it only works inside FCP, doesn't understand Chinese, and can't touch your Blackmagic RAW files.
-
 FindIt fixes this.
 
 ## What It Does
@@ -74,23 +72,11 @@ Works with the formats you actually use:
 - MKV, MXF, AVI, WebM, and more
 - Blackmagic RAW support planned
 
-## Screenshots
-
-<!-- TODO: Replace these placeholders with actual screenshots -->
+## Demo
 
 <div align="center">
 
-### Main Interface
-<!-- ![Main Interface](assets/main.png) -->
-*Search results displayed as a visual grid with thumbnails, timecodes, and metadata.*
-
-### Sidebar & Folder Management
-<!-- ![Sidebar](assets/sidebar.png) -->
-*Manage multiple footage libraries. Online/offline status for external drives.*
-
-### Indexing Progress
-<!-- ![Indexing Progress](assets/indexing-detail.png) -->
-*Real-time progress tracking per video with stage indicators.*
+<video src="https://github.com/SRjoeee/FinDIT/raw/main/assets/demo.mp4" width="720" controls></video>
 
 </div>
 

@@ -58,10 +58,19 @@ final class IndexingManager {
     /// AppState 引用（用于触发文件夹列表刷新）
     weak var appState: AppState?
 
+    /// FileWatcherManager 引用（用于索引冲突信号）
+    weak var fileWatcherManager: FileWatcherManager?
+
     // MARK: - 私有状态
 
-    /// 待处理文件夹队列
+    /// 待处理文件夹队列（全量扫描）
     private var pendingFolders: [String] = []
+
+    /// 待处理的增量视频队列（folderPath → videoPaths）
+    ///
+    /// 由 FileWatcherManager 通过 `queueVideos()` 填充，
+    /// 文件夹全量扫描优先于增量视频处理。
+    private var pendingVideos: [String: [String]] = [:]
 
     /// 各文件夹的排除子目录集合（智能嵌套：添加父文件夹时排除已索引子文件夹）
     private var folderExclusions: [String: Set<String>] = [:]
@@ -110,6 +119,24 @@ final class IndexingManager {
         }
     }
 
+    /// 添加指定视频文件到增量索引队列
+    ///
+    /// 与 `queueFolder()` 不同，不触发全量文件夹扫描，
+    /// 直接将指定视频路径加入处理队列。
+    /// 由 FileWatcherManager 在检测到 .added / .modified 事件时调用。
+    ///
+    /// - Parameters:
+    ///   - videoPaths: 视频文件路径列表
+    ///   - folderPath: 所属监控文件夹路径
+    func queueVideos(_ videoPaths: [String], folderPath: String) {
+        guard !videoPaths.isEmpty else { return }
+        pendingVideos[folderPath, default: []].append(contentsOf: videoPaths)
+
+        if processingTask == nil {
+            startProcessing()
+        }
+    }
+
     /// 取消当前索引
     ///
     /// 取消正在处理的视频，清空待处理队列。
@@ -118,6 +145,7 @@ final class IndexingManager {
         processingTask?.cancel()
         processingTask = nil
         pendingFolders.removeAll()
+        pendingVideos.removeAll()
         // 唤醒可能阻塞在信号量上的等待者
         if let scheduler = scheduler {
             Task { await scheduler.releaseWaiters() }
@@ -150,15 +178,22 @@ final class IndexingManager {
         }
     }
 
-    /// 串行处理文件夹队列
+    /// 串行处理文件夹队列（全量扫描优先于增量视频）
     private func processQueue() async {
         isIndexing = true
 
-        while !pendingFolders.isEmpty {
+        while !pendingFolders.isEmpty || !pendingVideos.isEmpty {
             guard !Task.isCancelled else { break }
 
-            let folderPath = pendingFolders.removeFirst()
-            await processFolder(folderPath)
+            if !pendingFolders.isEmpty {
+                let folderPath = pendingFolders.removeFirst()
+                fileWatcherManager?.folderIndexingStarted(folderPath)
+                await processFolder(folderPath)
+                fileWatcherManager?.folderIndexingFinished(folderPath)
+            } else if let (folderPath, videos) = pendingVideos.first {
+                pendingVideos.removeValue(forKey: folderPath)
+                await processSpecificVideos(videos, in: folderPath)
+            }
         }
 
         // 队列清空
@@ -276,6 +311,83 @@ final class IndexingManager {
                 )
             }
         }
+    }
+
+    /// 处理指定视频文件列表（增量索引，跳过全量扫描）
+    ///
+    /// 由 FileWatcherManager 触发的 .added / .modified 事件使用。
+    /// 复用 processFolder 的共享资源和调度器，但不扫描整个文件夹。
+    private func processSpecificVideos(_ videoPaths: [String], in folderPath: String) async {
+        currentFolder = folderPath
+
+        // 过滤不存在的文件（.modified 事件后文件可能已被再次删除）
+        let existingPaths = videoPaths.filter { FileManager.default.fileExists(atPath: $0) }
+        guard !existingPaths.isEmpty else {
+            currentFolder = nil
+            return
+        }
+
+        let folderDB: DatabasePool
+        do {
+            folderDB = try DatabaseManager.openFolderDatabase(at: folderPath)
+        } catch {
+            print("[IndexingManager] 打开文件夹数据库失败（增量）: \(error)")
+            return
+        }
+
+        let options = IndexingOptions.load()
+        initSharedResources(options: options)
+
+        let globalDB = appState?.globalDB
+        let effectiveAPIKey = options.skipVision ? nil : resolvedAPIKey
+        let effectiveEmbeddingProvider = options.skipEmbedding ? nil : embeddingProvider
+
+        let progressKey = folderPath
+        // 累加到现有进度（如果有）或创建新的
+        if folderProgress[progressKey] != nil {
+            folderProgress[progressKey]!.totalVideos += existingPaths.count
+        } else {
+            folderProgress[progressKey] = FolderIndexProgress(totalVideos: existingPaths.count)
+        }
+
+        print("[IndexingManager] 增量索引: \(existingPaths.count) 个视频 in \(folderPath)")
+
+        let currentScheduler = ensureScheduler(mode: options.performanceMode)
+
+        await currentScheduler.processVideos(
+            existingPaths,
+            folderPath: folderPath,
+            folderDB: folderDB,
+            globalDB: globalDB,
+            apiKey: effectiveAPIKey,
+            rateLimiter: rateLimiter,
+            embeddingProvider: effectiveEmbeddingProvider,
+            skipStt: options.skipStt,
+            onProgress: { [weak self] progress in
+                Task { @MainActor [weak self] in
+                    self?.currentVideoName = progress.fileName
+                    self?.currentStage = progress.stage
+                }
+            },
+            onComplete: { [weak self] outcome in
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    if outcome.success {
+                        self.folderProgress[progressKey]?.completedVideos += 1
+                        let name = (outcome.videoPath as NSString).lastPathComponent
+                        print("[IndexingManager] 增量完成: \(name)")
+                    } else if outcome.errorMessage != "cancelled" {
+                        self.folderProgress[progressKey]?.failedVideos += 1
+                        let name = (outcome.videoPath as NSString).lastPathComponent
+                        print("[IndexingManager] 增量失败: \(name) - \(outcome.errorMessage ?? "")")
+                    }
+                }
+            }
+        )
+
+        currentVideoName = nil
+        currentStage = nil
+        try? appState?.reloadFolders()
     }
 
     /// 确保 scheduler 存在，模式变更时重建

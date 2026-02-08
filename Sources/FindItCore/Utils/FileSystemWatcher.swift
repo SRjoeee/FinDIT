@@ -175,7 +175,7 @@ public final class FileSystemWatcher {
     /// FSEvents 合并窗口内可能为同一路径产生多个事件（如创建后立即修改），
     /// 去重后仅保留最后一个事件。由于 `classifyEvent` 基于文件实时存在性判断，
     /// 同一路径的所有事件具有一致的存在性状态。
-    static func deduplicateEvents(_ events: [FileChangeEvent]) -> [FileChangeEvent] {
+    public static func deduplicateEvents(_ events: [FileChangeEvent]) -> [FileChangeEvent] {
         var seen: [String: Int] = [:]
         var result: [FileChangeEvent] = []
         for event in events {

@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var selectedClipId: Int64?
     @State private var qlCoordinator = QuickLookCoordinator()
     @State private var volumeMonitor = VolumeMonitor()
+    @State private var fileWatcherManager = FileWatcherManager()
     @State private var columnsPerRow: Int = 3
     @State private var scrollOnSelect = false
     @State private var sidebarSelection: SidebarSelection = .all
@@ -100,8 +101,14 @@ struct ContentView: View {
             volumeMonitor.appState = appState
             volumeMonitor.indexingManager = indexingManager
             volumeMonitor.startMonitoring()
+            fileWatcherManager.appState = appState
+            fileWatcherManager.indexingManager = indexingManager
+            fileWatcherManager.searchState = searchState
+            indexingManager.fileWatcherManager = fileWatcherManager
+            appState.fileWatcherManager = fileWatcherManager
             NotificationManager.requestPermission()
             await appState.initialize()
+            fileWatcherManager.startWatching()
             searchState.loadFacets()
         }
         .task {

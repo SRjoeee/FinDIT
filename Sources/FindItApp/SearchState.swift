@@ -88,6 +88,14 @@ final class SearchState {
     /// 是否正在加载 VectorStore（避免重复加载）
     private var isLoadingVectorStore = false
 
+    /// 使 VectorStore 缓存失效
+    ///
+    /// 当视频被删除时由 FileWatcherManager 调用，
+    /// 确保下次向量搜索重新从数据库加载最新数据。
+    func invalidateVectorStore() {
+        vectorStore = nil
+    }
+
     // MARK: - FTS5 即时搜索
 
     /// 执行 FTS5 即时搜索

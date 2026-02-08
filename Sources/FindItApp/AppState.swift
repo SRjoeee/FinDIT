@@ -49,6 +49,9 @@ final class AppState {
     /// IndexingManager 引用（由 ContentView 注入）
     weak var indexingManager: IndexingManager?
 
+    /// FileWatcherManager 引用（由 ContentView 注入）
+    weak var fileWatcherManager: FileWatcherManager?
+
     /// 卷信息缓存（避免每次 reloadFolders 都做文件系统调用）
     private var volumeInfoCache: [String: VolumeResolver.VolumeInfo] = [:]
 
@@ -138,6 +141,7 @@ final class AppState {
 
             // 通知 IndexingManager 索引时排除子文件夹
             indexingManager?.queueFolder(path, excluding: Set(existingChildren))
+            fileWatcherManager?.watchFolder(path)
 
         case .addNormally:
             // 正常添加（无重叠）
@@ -172,11 +176,13 @@ final class AppState {
             try reloadFolders()
 
             indexingManager?.queueFolder(path)
+            fileWatcherManager?.watchFolder(path)
         }
     }
 
     /// 移除文件夹
     func removeFolder(path: String) throws {
+        fileWatcherManager?.unwatchFolder(path)
         guard let globalDB = globalDB else { return }
 
         try SyncEngine.removeFolderData(folderPath: path, from: globalDB)

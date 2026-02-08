@@ -170,6 +170,9 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
     public var transcript: String?
     public var embedding: Data?
     public var embeddingModel: String?
+    public var userTags: String?
+    public var rating: Int
+    public var colorLabel: String?
     public var createdAt: String
 
     public static let databaseTableName = "clips"
@@ -193,6 +196,9 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
         case transcript
         case embedding
         case embeddingModel = "embedding_model"
+        case userTags = "user_tags"
+        case rating
+        case colorLabel = "color_label"
         case createdAt = "created_at"
     }
 
@@ -215,6 +221,9 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
         transcript: String? = nil,
         embedding: Data? = nil,
         embeddingModel: String? = nil,
+        userTags: String? = nil,
+        rating: Int = 0,
+        colorLabel: String? = nil,
         createdAt: String? = nil
     ) {
         self.clipId = clipId
@@ -235,6 +244,9 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
         self.transcript = transcript
         self.embedding = embedding
         self.embeddingModel = embeddingModel
+        self.userTags = userTags
+        self.rating = rating
+        self.colorLabel = colorLabel
         self.createdAt = createdAt ?? Self.sqliteDatetime()
     }
 
@@ -265,10 +277,48 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
         tags = string
     }
 
-    // MARK: - Private
+    // MARK: - User Tags JSON 便利方法
+
+    /// 将 user_tags JSON 字符串解析为字符串数组
+    public var userTagsArray: [String] {
+        guard let userTags = userTags,
+              let data = userTags.data(using: .utf8),
+              let array = try? JSONDecoder().decode([String].self, from: data) else {
+            return []
+        }
+        return array
+    }
+
+    /// 从字符串数组生成 user_tags JSON 字符串
+    public mutating func setUserTags(_ array: [String]) {
+        guard !array.isEmpty,
+              let data = try? JSONEncoder().encode(array),
+              let string = String(data: data, encoding: .utf8) else {
+            userTags = nil
+            return
+        }
+        userTags = string
+    }
+
+    /// 合并 auto tags + user tags（去重）
+    public var allTagsArray: [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for tag in tagsArray + userTagsArray {
+            let trimmed = tag.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, !seen.contains(trimmed) else { continue }
+            seen.insert(trimmed)
+            result.append(trimmed)
+        }
+        return result
+    }
+
+    // MARK: - Date Utilities
 
     /// 复用的 UTC 日期格式化器（避免每次调用重新创建）
-    private static let utcFormatter: DateFormatter = {
+    ///
+    /// 包内可见，供 PipelineManager 等模块格式化文件修改时间。
+    static let utcFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         formatter.timeZone = TimeZone(identifier: "UTC")
@@ -278,6 +328,11 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
     /// 生成与 SQLite `datetime('now')` 兼容的 UTC 时间字符串
     public static func sqliteDatetime() -> String {
         utcFormatter.string(from: Date())
+    }
+
+    /// 将指定日期格式化为 SQLite datetime 兼容字符串
+    public static func sqliteDatetime(_ date: Date) -> String {
+        utcFormatter.string(from: date)
     }
 }
 

@@ -104,6 +104,41 @@ public enum Migrations {
             )
         }
 
+        // Stage 5b: file_hash 列已在 v1 schema 中存在，此处仅添加索引
+        migrator.registerMigration("v6_addFileHashIndex") { db in
+            try db.create(
+                index: "idx_videos_file_hash",
+                on: "videos",
+                columns: ["file_hash"],
+                ifNotExists: true
+            )
+        }
+
+        // Stage 5c: 用户自定义标签
+        migrator.registerMigration("v7_addUserTags") { db in
+            try db.alter(table: "clips") { t in
+                t.add(column: "user_tags", .text)
+            }
+        }
+
+        // Stage 5d: 星级评分 & 颜色标签
+        migrator.registerMigration("v8_addRatingColorLabel") { db in
+            try db.alter(table: "clips") { t in
+                t.add(column: "rating", .integer).defaults(to: 0)
+                t.add(column: "color_label", .text)
+            }
+            try db.create(
+                index: "idx_clips_rating",
+                on: "clips",
+                columns: ["rating"]
+            )
+            try db.create(
+                index: "idx_clips_color_label",
+                on: "clips",
+                columns: ["color_label"]
+            )
+        }
+
         return migrator
     }
 
@@ -229,6 +264,92 @@ public enum Migrations {
                 index: "idx_clips_video_id",
                 on: "clips",
                 columns: ["video_id"]
+            )
+        }
+
+        // Stage 5b: 全局库 videos 表添加 file_hash 列
+        migrator.registerMigration("v5_addFileHashToGlobalVideos") { db in
+            try db.alter(table: "videos") { t in
+                t.add(column: "file_hash", .text)
+            }
+        }
+
+        // Stage 5c: 用户标签 + FTS5 重建（加入 user_tags 列）
+        migrator.registerMigration("v6_addUserTagsAndRebuildFTS") { db in
+            // 添加 user_tags 列
+            try db.alter(table: "clips") { t in
+                t.add(column: "user_tags", .text)
+            }
+
+            // 删除旧触发器
+            try db.execute(sql: "DROP TRIGGER IF EXISTS clips_fts_ai")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS clips_fts_bd")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS clips_fts_bu")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS clips_fts_au")
+
+            // 删除旧 FTS5 表
+            try db.execute(sql: "DROP TABLE IF EXISTS clips_fts")
+
+            // 重建 FTS5（加入 user_tags）
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE clips_fts USING fts5(
+                    tags,
+                    description,
+                    transcript,
+                    user_tags,
+                    content='clips',
+                    content_rowid='clip_id'
+                )
+                """)
+
+            // 重建触发器（加入 user_tags）
+            try db.execute(sql: """
+                CREATE TRIGGER clips_fts_ai AFTER INSERT ON clips BEGIN
+                    INSERT INTO clips_fts(rowid, tags, description, transcript, user_tags)
+                    VALUES (new.clip_id, new.tags, new.description, new.transcript, new.user_tags);
+                END
+                """)
+
+            try db.execute(sql: """
+                CREATE TRIGGER clips_fts_bd BEFORE DELETE ON clips BEGIN
+                    INSERT INTO clips_fts(clips_fts, rowid, tags, description, transcript, user_tags)
+                    VALUES ('delete', old.clip_id, old.tags, old.description, old.transcript, old.user_tags);
+                END
+                """)
+
+            try db.execute(sql: """
+                CREATE TRIGGER clips_fts_bu BEFORE UPDATE ON clips BEGIN
+                    INSERT INTO clips_fts(clips_fts, rowid, tags, description, transcript, user_tags)
+                    VALUES ('delete', old.clip_id, old.tags, old.description, old.transcript, old.user_tags);
+                END
+                """)
+
+            try db.execute(sql: """
+                CREATE TRIGGER clips_fts_au AFTER UPDATE ON clips BEGIN
+                    INSERT INTO clips_fts(rowid, tags, description, transcript, user_tags)
+                    VALUES (new.clip_id, new.tags, new.description, new.transcript, new.user_tags);
+                END
+                """)
+
+            // 从现有数据重建 FTS 索引
+            try db.execute(sql: "INSERT INTO clips_fts(clips_fts) VALUES('rebuild')")
+        }
+
+        // Stage 5d: 星级评分 & 颜色标签
+        migrator.registerMigration("v7_addRatingColorLabel") { db in
+            try db.alter(table: "clips") { t in
+                t.add(column: "rating", .integer).defaults(to: 0)
+                t.add(column: "color_label", .text)
+            }
+            try db.create(
+                index: "idx_clips_rating",
+                on: "clips",
+                columns: ["rating"]
+            )
+            try db.create(
+                index: "idx_clips_color_label",
+                on: "clips",
+                columns: ["color_label"]
             )
         }
 

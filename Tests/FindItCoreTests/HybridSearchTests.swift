@@ -332,7 +332,9 @@ final class HybridSearchTests: XCTestCase {
             videoId: nil, filePath: nil, fileName: nil,
             startTime: 0, endTime: 10,
             scene: nil, clipDescription: nil, tags: nil, transcript: nil,
-            thumbnailPath: nil,
+            thumbnailPath: nil, userTags: nil,
+            rating: 0, colorLabel: nil,
+            shotType: nil, mood: nil,
             rank: -5.0, similarity: 0.85, finalScore: 0.72
         )
         XCTAssertEqual(result.similarity, 0.85)

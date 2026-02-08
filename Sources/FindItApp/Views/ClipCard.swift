@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import GRDB
 import FindItCore
 
 /// 搜索结果卡片
@@ -10,12 +11,15 @@ struct ClipCard: View {
     let result: SearchEngine.SearchResult
     let isSelected: Bool
     var isOffline: Bool = false
+    var globalDB: DatabasePool?
     var onSelect: () -> Void = {}
 
     @State private var isHovering = false
     @State private var showHoverCard = false
     @State private var hoverTask: Task<Void, Never>?
     @State private var lastClickTime: Date?
+    @State private var showTagEditor = false
+    @Environment(SearchState.self) private var searchState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -105,6 +109,13 @@ struct ClipCard: View {
             ClipHoverCard(result: result)
         }
         .contextMenu { contextMenuItems }
+        .sheet(isPresented: $showTagEditor) {
+            TagEditorSheet(
+                sourceFolder: result.sourceFolder,
+                sourceClipId: result.sourceClipId,
+                globalDB: globalDB
+            )
+        }
     }
 
     // MARK: - Context Menu
@@ -128,6 +139,109 @@ struct ClipCard: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(path, forType: .string)
             }
+        }
+
+        Divider()
+
+        Button("管理标签…") {
+            showTagEditor = true
+        }
+
+        // 评分子菜单
+        Menu("评分") {
+            ForEach(0...5, id: \.self) { stars in
+                Button {
+                    setRating(stars)
+                } label: {
+                    if stars == 0 {
+                        Text("无评分")
+                    } else {
+                        Text(String(repeating: "★", count: stars) + String(repeating: "☆", count: 5 - stars))
+                    }
+                }
+            }
+        }
+
+        // 颜色标签子菜单
+        Menu("颜色标签") {
+            Button("无") { setColorLabel(nil) }
+            Divider()
+            ForEach(ColorLabel.allCases, id: \.rawValue) { label in
+                Button {
+                    setColorLabel(label)
+                } label: {
+                    HStack {
+                        Circle()
+                            .fill(Color(red: label.rgb.r, green: label.rgb.g, blue: label.rgb.b))
+                            .frame(width: 10, height: 10)
+                        Text(label.displayName)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Rating & Color Actions
+
+    private func setRating(_ rating: Int) {
+        do {
+            // 写入文件夹库（Source of truth）
+            let folderDB = try DatabaseManager.openFolderDatabase(at: result.sourceFolder)
+            try folderDB.write { db in
+                try ClipLabel.updateRating(db, clipId: result.sourceClipId, rating: rating)
+            }
+            // 写入全局库（搜索索引）
+            try globalDB?.write { db in
+                try ClipLabel.updateRating(db, clipId: result.clipId, rating: rating)
+            }
+            // 更新内存结果（触发 UI 刷新）
+            searchState.updateClipRating(clipId: result.clipId, rating: rating)
+        } catch {
+            print("[ClipCard] 设置评分失败: \(error)")
+        }
+    }
+
+    private func setColorLabel(_ label: ColorLabel?) {
+        do {
+            // 写入文件夹库
+            let folderDB = try DatabaseManager.openFolderDatabase(at: result.sourceFolder)
+            try folderDB.write { db in
+                try ClipLabel.updateColorLabel(db, clipId: result.sourceClipId, label: label)
+            }
+            // 写入全局库
+            try globalDB?.write { db in
+                try ClipLabel.updateColorLabel(db, clipId: result.clipId, label: label)
+            }
+            // 更新内存结果
+            searchState.updateClipColorLabel(clipId: result.clipId, colorLabel: label?.rawValue)
+            // 同步 Finder 标签到视频文件
+            syncFinderTag(label: label)
+        } catch {
+            print("[ClipCard] 设置颜色标签失败: \(error)")
+        }
+    }
+
+    /// 同步颜色标签到视频文件的 Finder 标签系统
+    private func syncFinderTag(label: ColorLabel?) {
+        guard let filePath = result.filePath,
+              FileManager.default.fileExists(atPath: filePath) else { return }
+        do {
+            if label != nil {
+                try ClipLabel.syncFinderTag(filePath: filePath, label: label)
+            } else {
+                // 清除时检查同视频其他片段是否仍有颜色
+                let effectiveLabel: ColorLabel?
+                if let videoId = result.videoId, let db = globalDB {
+                    effectiveLabel = try db.read { dbConn in
+                        try ClipLabel.effectiveVideoColor(dbConn, videoId: videoId)
+                    }
+                } else {
+                    effectiveLabel = nil
+                }
+                try ClipLabel.syncFinderTag(filePath: filePath, label: effectiveLabel)
+            }
+        } catch {
+            // Finder 标签同步失败不致命（文件可能在只读卷上）
         }
     }
 

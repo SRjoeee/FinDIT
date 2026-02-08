@@ -175,13 +175,86 @@ public enum PipelineManager {
         )
         let currentStage = Stage(rawValue: video.indexStatus) ?? .pending
 
-        // 已完成的视频跳过
+        // 三层跳过检测（已完成的视频）
         if currentStage == .completed {
-            progress("已完成，跳过")
-            return ProcessingResult(
-                videoId: videoId, clipsCreated: 0, clipsAnalyzed: 0,
-                clipsEmbedded: 0, srtPath: video.srtPath, syncResult: nil
-            )
+            // 层 1: file_size + file_modified 快速比较（零文件 I/O）
+            let attrs = try? FileManager.default.attributesOfItem(atPath: videoPath)
+            let currentSize = attrs?[.size] as? Int64
+            let currentMtime = (attrs?[.modificationDate] as? Date)
+                .map { Clip.utcFormatter.string(from: $0) }
+
+            let sizeMatch = currentSize == video.fileSize
+            let mtimeMatch = currentMtime == video.fileModified
+
+            if sizeMatch && mtimeMatch {
+                progress("已完成且文件未变，跳过")
+                return ProcessingResult(
+                    videoId: videoId, clipsCreated: 0, clipsAnalyzed: 0,
+                    clipsEmbedded: 0, srtPath: video.srtPath, syncResult: nil
+                )
+            }
+
+            // 层 2: size/mtime 变了 → 计算哈希验证内容是否真的变了
+            if let storedHash = video.fileHash {
+                progress("元数据变更，哈希校验中...")
+                let currentHash = try FileHasher.hash128(filePath: videoPath)
+                if currentHash == storedHash {
+                    // 内容未变，仅元数据变更 → 更新 mtime 后跳过
+                    try await folderDB.write { db in
+                        try db.execute(sql: """
+                            UPDATE videos SET file_size = ?, file_modified = ?
+                            WHERE video_id = ?
+                            """, arguments: [currentSize, currentMtime, videoId])
+                    }
+                    progress("内容未变（哈希匹配），跳过")
+                    return ProcessingResult(
+                        videoId: videoId, clipsCreated: 0, clipsAnalyzed: 0,
+                        clipsEmbedded: 0, srtPath: video.srtPath, syncResult: nil
+                    )
+                }
+
+                // 内容已变更 → 重置为 pending 以重新索引
+                progress("文件内容已变更，重新索引")
+                try await folderDB.write { db in
+                    try db.execute(sql: """
+                        UPDATE videos SET index_status = 'pending', index_error = NULL,
+                            file_size = ?, file_modified = ?, file_hash = NULL,
+                            last_processed_clip = NULL
+                        WHERE video_id = ?
+                        """, arguments: [currentSize, currentMtime, videoId])
+                }
+                // 不 return，继续执行管线
+            } else {
+                // storedHash == nil → 旧数据无哈希 → 补充哈希后跳过
+                progress("补充文件哈希...")
+                let hash = try FileHasher.hash128(filePath: videoPath)
+                try await folderDB.write { db in
+                    try db.execute(sql: """
+                        UPDATE videos SET file_hash = ?, file_size = ?, file_modified = ?
+                        WHERE video_id = ?
+                        """, arguments: [hash, currentSize, currentMtime, videoId])
+                }
+                progress("已完成，已补充哈希")
+                return ProcessingResult(
+                    videoId: videoId, clipsCreated: 0, clipsAnalyzed: 0,
+                    clipsEmbedded: 0, srtPath: video.srtPath, syncResult: nil
+                )
+            }
+        }
+
+        // 新视频 → 计算并存储哈希（在场景检测前）
+        if video.fileHash == nil && currentStage == .pending {
+            progress("计算文件哈希...")
+            let hash = try FileHasher.hash128(filePath: videoPath)
+            let attrs = try? FileManager.default.attributesOfItem(atPath: videoPath)
+            let currentMtime = (attrs?[.modificationDate] as? Date)
+                .map { Clip.utcFormatter.string(from: $0) }
+            try await folderDB.write { db in
+                try db.execute(sql: """
+                    UPDATE videos SET file_hash = ?, file_modified = ?
+                    WHERE video_id = ?
+                    """, arguments: [hash, currentMtime, videoId])
+            }
         }
 
         var srtPath: String? = video.srtPath
@@ -655,6 +728,8 @@ public enum PipelineManager {
         let fileName = (videoPath as NSString).lastPathComponent
         let attrs = try? FileManager.default.attributesOfItem(atPath: videoPath)
         let fileSize = attrs?[.size] as? Int64
+        let fileMtime = (attrs?[.modificationDate] as? Date)
+            .map { Clip.utcFormatter.string(from: $0) }
 
         // 插入新记录
         var video = Video(
@@ -662,6 +737,7 @@ public enum PipelineManager {
             filePath: videoPath,
             fileName: fileName,
             fileSize: fileSize,
+            fileModified: fileMtime,
             createdAt: Clip.sqliteDatetime()
         )
         try folderDB.write { db in

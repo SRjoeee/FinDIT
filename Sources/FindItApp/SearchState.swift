@@ -6,6 +6,7 @@ import FindItCore
 ///
 /// 管理搜索查询、结果列表和搜索模式。
 /// 两层搜索：FTS5 即时执行（<5ms）+ 向量搜索 300ms debounce。
+/// 过滤和排序在内存中应用于搜索结果。
 @Observable
 @MainActor
 final class SearchState {
@@ -19,11 +20,19 @@ final class SearchState {
         }
     }
 
-    /// 搜索结果
+    /// 搜索结果（来自 SearchEngine，未经过滤排序）
     var results: [SearchEngine.SearchResult] = []
 
-    /// 结果总数
-    var resultCount: Int { results.count }
+    /// 过滤 + 排序后的展示结果
+    var displayResults: [SearchEngine.SearchResult] {
+        if activeFilter.isEmpty {
+            return results
+        }
+        return FilterEngine.applyFilter(results, filter: activeFilter)
+    }
+
+    /// 展示结果总数
+    var displayResultCount: Int { displayResults.count }
 
     /// 是否正在进行向量搜索
     var isVectorSearching = false
@@ -31,10 +40,30 @@ final class SearchState {
     /// 搜索模式
     var searchMode: SearchEngine.SearchMode = .auto
 
+    /// 活跃过滤条件
+    var activeFilter = FilterEngine.SearchFilter()
+
+    /// 是否有活跃过滤器
+    var hasActiveFilter: Bool { !activeFilter.isEmpty }
+
+    /// 分面统计（用于 FilterBar 菜单选项）
+    var facets: FilterEngine.FacetCounts?
+
     /// 文件夹过滤（nil = 全局搜索，非空 = 仅搜索指定文件夹）
     var folderFilter: Set<String>? = nil {
         didSet {
             if folderFilter != oldValue {
+                performFTSSearch()
+                scheduleVectorSearch()
+                loadFacets()
+            }
+        }
+    }
+
+    /// 路径前缀过滤（用于子文件夹书签的搜索过滤）
+    var pathPrefixFilter: String? = nil {
+        didSet {
+            if pathPrefixFilter != oldValue {
                 performFTSSearch()
                 scheduleVectorSearch()
             }
@@ -74,8 +103,9 @@ final class SearchState {
 
         do {
             let filter = self.folderFilter
+            let prefix = self.pathPrefixFilter
             let searchResults = try db.read { dbConn in
-                try SearchEngine.search(dbConn, query: trimmed, folderPaths: filter, limit: 50)
+                try SearchEngine.search(dbConn, query: trimmed, folderPaths: filter, pathPrefixFilter: prefix, limit: 50)
             }
             self.results = searchResults
         } catch {
@@ -138,6 +168,7 @@ final class SearchState {
 
             let mode = self.searchMode
             let filter = self.folderFilter
+            let prefix = self.pathPrefixFilter
             let capturedStoreResults = storeResults
             let hybridResults = try await db.read { dbConn in
                 try SearchEngine.hybridSearch(
@@ -148,6 +179,7 @@ final class SearchState {
                     vectorStoreResults: capturedStoreResults,
                     mode: mode,
                     folderPaths: filter,
+                    pathPrefixFilter: prefix,
                     limit: 50
                 )
             }
@@ -218,6 +250,37 @@ final class SearchState {
         return nil
     }
 
+    // MARK: - 分面统计
+
+    /// 加载当前文件夹范围的分面统计
+    func loadFacets() {
+        guard let db = appState?.globalDB else { return }
+        let paths = folderFilter
+        do {
+            facets = try db.read { dbConn in
+                try FilterEngine.availableFacets(dbConn, folderPaths: paths)
+            }
+        } catch {
+            facets = nil
+        }
+    }
+
+    // MARK: - 元数据内存同步
+
+    /// 更新片段评分（内存同步，触发 displayResults 重算）
+    func updateClipRating(clipId: Int64, rating: Int) {
+        if let index = results.firstIndex(where: { $0.clipId == clipId }) {
+            results[index].rating = rating
+        }
+    }
+
+    /// 更新片段颜色标签（内存同步，触发 displayResults 重算）
+    func updateClipColorLabel(clipId: Int64, colorLabel: String?) {
+        if let index = results.firstIndex(where: { $0.clipId == clipId }) {
+            results[index].colorLabel = colorLabel
+        }
+    }
+
     // MARK: - 公开方法
 
     /// 记录搜索到历史
@@ -226,7 +289,7 @@ final class SearchState {
         guard !trimmed.isEmpty, let db = appState?.globalDB else { return }
 
         try? db.write { dbConn in
-            try SearchEngine.recordSearch(dbConn, query: trimmed, resultCount: resultCount)
+            try SearchEngine.recordSearch(dbConn, query: trimmed, resultCount: displayResultCount)
         }
     }
 

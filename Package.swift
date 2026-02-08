@@ -31,9 +31,16 @@ let package = Package(
         // .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager.git", from: "1.20.0"),
     ],
     targets: [
+        // xxHash C 库（嵌入官方 v0.8.3 源码，BSD 2-Clause）
+        .target(
+            name: "CxxHash",
+            path: "Sources/CxxHash",
+            publicHeadersPath: "include"
+        ),
         .target(
             name: "FindItCore",
             dependencies: [
+                "CxxHash",
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "MLXVLM", package: "mlx-swift-lm"),

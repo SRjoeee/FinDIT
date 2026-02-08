@@ -63,18 +63,19 @@ public enum SyncEngine {
                 for video in batch {
                     try db.execute(sql: """
                         INSERT INTO videos
-                            (source_folder, source_video_id, file_path, file_name, duration, file_size, srt_path)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                            (source_folder, source_video_id, file_path, file_name, duration, file_size, file_hash, srt_path)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(source_folder, source_video_id) DO UPDATE SET
                             file_path = excluded.file_path,
                             file_name = excluded.file_name,
                             duration = excluded.duration,
                             file_size = excluded.file_size,
+                            file_hash = excluded.file_hash,
                             srt_path = excluded.srt_path
                         """, arguments: [
                             folderPath, video.videoId,
                             video.filePath, video.fileName,
-                            video.duration, video.fileSize, video.srtPath
+                            video.duration, video.fileSize, video.fileHash, video.srtPath
                         ])
                     if let vid = video.videoId, vid > currentVideoRowId {
                         currentVideoRowId = vid
@@ -109,11 +110,13 @@ public enum SyncEngine {
         let allCols = ["source_folder", "source_clip_id", "video_id",
                        "start_time", "end_time", "thumbnail_path"]
             + visionCols
-            + ["tags", "transcript", "embedding", "embedding_model"]
+            + ["tags", "transcript", "embedding", "embedding_model", "user_tags",
+               "rating", "color_label"]
         let placeholders = allCols.map { _ in "?" }.joined(separator: ", ")
         let conflictSet = (["video_id", "start_time", "end_time", "thumbnail_path"]
             + visionCols
-            + ["tags", "transcript", "embedding", "embedding_model"])
+            + ["tags", "transcript", "embedding", "embedding_model", "user_tags",
+               "rating", "color_label"])
             .map { "\($0) = excluded.\($0)" }
             .joined(separator: ",\n                            ")
         let clipSQL = """
@@ -136,6 +139,7 @@ public enum SyncEngine {
                     let globalVideoId = clip.videoId.flatMap { videoIdMap[$0] }
 
                     let tagsForFTS = convertTagsForFTS(clip.tags)
+                    let userTagsForFTS = convertTagsForFTS(clip.userTags)
 
                     var args: [DatabaseValueConvertible?] = []
                     args.append(folderPath)
@@ -151,6 +155,9 @@ public enum SyncEngine {
                     args.append(clip.transcript)
                     args.append(clip.embedding)
                     args.append(clip.embeddingModel)
+                    args.append(userTagsForFTS)
+                    args.append(clip.rating)
+                    args.append(clip.colorLabel)
 
                     try db.execute(sql: clipSQL, arguments: StatementArguments(args))
                     if let cid = clip.clipId, cid > currentClipRowId {

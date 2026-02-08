@@ -72,6 +72,10 @@ public enum SearchEngine {
         public let rating: Int
         /// 颜色标签
         public let colorLabel: String?
+        /// 镜头类型
+        public let shotType: String?
+        /// 情绪/氛围
+        public let mood: String?
         /// FTS5 BM25 排名分数（越小越相关，负数）
         public let rank: Double
         /// 向量余弦相似度（0-1，越大越相似）
@@ -113,7 +117,8 @@ public enum SearchEngine {
                    v.file_path, v.file_name,
                    c.start_time, c.end_time, c.scene, c.description,
                    c.tags, c.transcript, c.thumbnail_path, c.user_tags,
-                   c.rating, c.color_label, clips_fts.rank
+                   c.rating, c.color_label, c.shot_type, c.mood,
+                   clips_fts.rank
             FROM clips_fts
             JOIN clips c ON c.clip_id = clips_fts.rowid
             LEFT JOIN videos v ON v.video_id = c.video_id
@@ -140,6 +145,8 @@ public enum SearchEngine {
                 userTags: row["user_tags"],
                 rating: row["rating"] ?? 0,
                 colorLabel: row["color_label"],
+                shotType: row["shot_type"],
+                mood: row["mood"],
                 rank: row["rank"],
                 similarity: nil,
                 finalScore: nil
@@ -238,7 +245,8 @@ public enum SearchEngine {
                    v.file_path, v.file_name,
                    c.start_time, c.end_time, c.scene, c.description,
                    c.tags, c.transcript, c.thumbnail_path, c.user_tags,
-                   c.rating, c.color_label, c.embedding
+                   c.rating, c.color_label, c.shot_type, c.mood,
+                   c.embedding
             FROM clips c
             LEFT JOIN videos v ON v.video_id = c.video_id
             WHERE c.embedding IS NOT NULL AND c.embedding_model = ?\(filterSQL)\(prefixSQL)
@@ -268,6 +276,8 @@ public enum SearchEngine {
                 userTags: row["user_tags"],
                 rating: row["rating"] ?? 0,
                 colorLabel: row["color_label"],
+                shotType: row["shot_type"],
+                mood: row["mood"],
                 rank: 0.0,
                 similarity: similarity,
                 finalScore: similarity
@@ -312,7 +322,7 @@ public enum SearchEngine {
                    v.file_path, v.file_name,
                    c.start_time, c.end_time, c.scene, c.description,
                    c.tags, c.transcript, c.thumbnail_path, c.user_tags,
-                   c.rating, c.color_label
+                   c.rating, c.color_label, c.shot_type, c.mood
             FROM clips c
             LEFT JOIN videos v ON v.video_id = c.video_id
             WHERE c.clip_id IN (\(placeholders))\(filterSQL)\(prefixSQL)
@@ -340,6 +350,8 @@ public enum SearchEngine {
                 userTags: row["user_tags"],
                 rating: row["rating"] ?? 0,
                 colorLabel: row["color_label"],
+                shotType: row["shot_type"],
+                mood: row["mood"],
                 rank: 0.0,
                 similarity: sim,
                 finalScore: sim
@@ -451,6 +463,8 @@ public enum SearchEngine {
                 userTags: data.userTags,
                 rating: data.rating,
                 colorLabel: data.colorLabel,
+                shotType: data.shotType,
+                mood: data.mood,
                 rank: ftsScores[clipId] ?? 0.0,
                 similarity: vectorScores[clipId],
                 finalScore: finalScore

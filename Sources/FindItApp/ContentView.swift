@@ -64,7 +64,7 @@ struct ContentView: View {
             }
             // QL 面板已打开时，选中变更自动更新预览
             guard let clipId = selectedClipId,
-                  let result = searchState.results.first(where: { $0.clipId == clipId }),
+                  let result = searchState.displayResults.first(where: { $0.clipId == clipId }),
                   let path = result.filePath,
                   FileManager.default.fileExists(atPath: path) else { return }
             qlCoordinator.updateIfVisible(url: URL(fileURLWithPath: path))
@@ -100,6 +100,7 @@ struct ContentView: View {
             volumeMonitor.startMonitoring()
             NotificationManager.requestPermission()
             await appState.initialize()
+            searchState.loadFacets()
         }
         .onReceive(NotificationCenter.default.publisher(for: .addFolder)) { _ in
             addFolder()
@@ -130,18 +131,30 @@ struct ContentView: View {
             ProgressView("正在初始化...")
         } else if searchState.query.isEmpty {
             EmptyStateView()
-        } else if searchState.results.isEmpty {
-            ContentUnavailableView.search(text: searchState.query)
         } else {
-            ResultsGrid(
-                results: searchState.results,
-                resultCount: searchState.resultCount,
-                offlineFolders: offlineFolderPaths,
-                globalDB: appState.globalDB,
-                selectedClipId: $selectedClipId,
-                columnsPerRow: $columnsPerRow,
-                scrollOnSelect: $scrollOnSelect
-            )
+            VStack(spacing: 0) {
+                // 过滤栏：有搜索结果或有活跃过滤器时显示
+                if !searchState.results.isEmpty || searchState.hasActiveFilter {
+                    FilterBar(
+                        filter: $searchState.activeFilter,
+                        facets: searchState.facets
+                    )
+                }
+
+                if searchState.displayResults.isEmpty {
+                    ContentUnavailableView.search(text: searchState.query)
+                } else {
+                    ResultsGrid(
+                        results: searchState.displayResults,
+                        resultCount: searchState.displayResultCount,
+                        offlineFolders: offlineFolderPaths,
+                        globalDB: appState.globalDB,
+                        selectedClipId: $selectedClipId,
+                        columnsPerRow: $columnsPerRow,
+                        scrollOnSelect: $scrollOnSelect
+                    )
+                }
+            }
         }
     }
 
@@ -150,7 +163,7 @@ struct ContentView: View {
     /// 空格键：切换 Quick Look 预览
     private func handleSpaceKey() {
         guard let clipId = selectedClipId,
-              let result = searchState.results.first(where: { $0.clipId == clipId }),
+              let result = searchState.displayResults.first(where: { $0.clipId == clipId }),
               let path = result.filePath,
               FileManager.default.fileExists(atPath: path) else { return }
         qlCoordinator.toggle(url: URL(fileURLWithPath: path))
@@ -161,7 +174,7 @@ struct ContentView: View {
     /// 左/右移动 ±1，上/下按列数跳行。
     /// 无选中时按任意方向键选中第一项。
     private func handleArrowKey(_ direction: String) {
-        let results = searchState.results
+        let results = searchState.displayResults
         guard !results.isEmpty else { return }
 
         // 无选中 → 选第一项
@@ -198,7 +211,7 @@ struct ContentView: View {
     /// 用于控制 toolbar 背景：有结果时系统自动处理 Liquid Glass + 滚动分隔线，
     /// 无结果时隐藏 toolbar 背景（含分隔线），保持界面干净。
     private var hasScrollableContent: Bool {
-        appState.isInitialized && !searchState.query.isEmpty && !searchState.results.isEmpty
+        appState.isInitialized && !searchState.query.isEmpty && !searchState.displayResults.isEmpty
     }
 
     /// 离线文件夹路径集合（用于搜索结果离线蒙层）

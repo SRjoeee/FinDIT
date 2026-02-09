@@ -189,7 +189,8 @@ final class MigrationsTests: XCTestCase {
         }.map { $0["name"] as String }
 
         let expected = ["folder_path", "last_synced_clip_rowid",
-                        "last_synced_video_rowid", "last_synced_at"]
+                        "last_synced_video_rowid", "last_synced_at",
+                        "volume_uuid", "volume_name"]
         for col in expected {
             XCTAssertTrue(columns.contains(col), "sync_meta 应包含列 \(col)")
         }

@@ -44,6 +44,24 @@ final class VolumeResolverTests: XCTestCase {
         XCTAssertFalse(VolumeResolver.isAccessible(path: "/nonexistent/path/xyz"))
     }
 
+    // MARK: - isPath(_:underMountPoint:)
+
+    func testIsPathUnderMountPoint_exactMatch() {
+        XCTAssertTrue(VolumeResolver.isPath("/Volumes/T7", underMountPoint: "/Volumes/T7"))
+    }
+
+    func testIsPathUnderMountPoint_childPathMatch() {
+        XCTAssertTrue(VolumeResolver.isPath("/Volumes/T7/projects/a", underMountPoint: "/Volumes/T7"))
+    }
+
+    func testIsPathUnderMountPoint_rejectsPrefixCollision() {
+        XCTAssertFalse(VolumeResolver.isPath("/Volumes/T70/projects/a", underMountPoint: "/Volumes/T7"))
+    }
+
+    func testIsPathUnderMountPoint_handlesTrailingSlash() {
+        XCTAssertTrue(VolumeResolver.isPath("/Volumes/T7/projects/a/", underMountPoint: "/Volumes/T7/"))
+    }
+
     // MARK: - findMountPoint()
 
     func testFindMountPoint_emptyUUID_returnsNil() {

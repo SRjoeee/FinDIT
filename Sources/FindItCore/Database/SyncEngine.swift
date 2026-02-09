@@ -52,6 +52,41 @@ public enum SyncEngine {
         var totalSyncedVideos = 0
         var totalSyncedClips = 0
 
+        // 优先使用文件夹库中持久化的卷信息（稳定、可测试）；
+        // 缺失时回退到实时文件系统解析。
+        let storedVolumeInfo = try folderDB.read { db in
+            if let row = try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT volume_uuid, volume_name
+                    FROM watched_folders
+                    WHERE folder_path = ?
+                    ORDER BY folder_id
+                    LIMIT 1
+                    """,
+                arguments: [folderPath]
+            ) {
+                return (uuid: row["volume_uuid"] as String?, name: row["volume_name"] as String?)
+            }
+
+            if let row = try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT volume_uuid, volume_name
+                    FROM watched_folders
+                    ORDER BY folder_id
+                    LIMIT 1
+                    """
+            ) {
+                return (uuid: row["volume_uuid"] as String?, name: row["volume_name"] as String?)
+            }
+
+            return (uuid: Optional<String>.none, name: Optional<String>.none)
+        }
+        let resolvedVolumeInfo = VolumeResolver.resolve(path: folderPath)
+        let volumeUUID = storedVolumeInfo.uuid ?? resolvedVolumeInfo.uuid
+        let volumeName = storedVolumeInfo.name ?? resolvedVolumeInfo.name
+
         // 2. 发现已注册的子文件夹（由子文件夹自行同步，父文件夹跳过其记录）
         //    使用 FolderHierarchy 统一层级判断逻辑。
         let childFolderPaths: Set<String> = try globalDB.read { db in
@@ -237,13 +272,18 @@ public enum SyncEngine {
         // 6. 始终更新同步进度（确保空文件夹也有记录，UI 才能显示）
         try globalDB.write { db in
             try db.execute(sql: """
-                INSERT INTO sync_meta (folder_path, last_synced_video_rowid, last_synced_clip_rowid, last_synced_at)
-                VALUES (?, ?, ?, datetime('now'))
+                INSERT INTO sync_meta (
+                    folder_path, volume_uuid, volume_name,
+                    last_synced_video_rowid, last_synced_clip_rowid, last_synced_at
+                )
+                VALUES (?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(folder_path) DO UPDATE SET
+                    volume_uuid = COALESCE(excluded.volume_uuid, sync_meta.volume_uuid),
+                    volume_name = COALESCE(excluded.volume_name, sync_meta.volume_name),
                     last_synced_video_rowid = excluded.last_synced_video_rowid,
                     last_synced_clip_rowid = excluded.last_synced_clip_rowid,
                     last_synced_at = excluded.last_synced_at
-                """, arguments: [folderPath, currentVideoRowId, currentClipRowId])
+                """, arguments: [folderPath, volumeUUID, volumeName, currentVideoRowId, currentClipRowId])
         }
 
         return SyncResult(syncedVideos: totalSyncedVideos, syncedClips: totalSyncedClips)

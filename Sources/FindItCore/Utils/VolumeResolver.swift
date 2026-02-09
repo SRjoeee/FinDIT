@@ -114,6 +114,27 @@ public enum VolumeResolver {
         return FileManager.default.fileExists(atPath: newPath) ? newPath : nil
     }
 
+    /// 判断路径是否位于指定挂载点下（含挂载点自身）
+    ///
+    /// 与 `hasPrefix` 不同，此方法保证目录边界匹配：
+    /// `/Volumes/T7` 不会误匹配 `/Volumes/T70/...`。
+    ///
+    /// - Parameters:
+    ///   - path: 待判断路径
+    ///   - mountPoint: 挂载点路径
+    /// - Returns: 是否属于该挂载点
+    public static func isPath(_ path: String, underMountPoint mountPoint: String) -> Bool {
+        let normalizedPath = normalizePath(path)
+        let normalizedMountPoint = normalizePath(mountPoint)
+
+        if normalizedMountPoint == "/" {
+            return normalizedPath.hasPrefix("/")
+        }
+
+        return normalizedPath == normalizedMountPoint ||
+            normalizedPath.hasPrefix(normalizedMountPoint + "/")
+    }
+
     // MARK: - Private
 
     /// 获取所有已挂载卷的路径
@@ -140,5 +161,14 @@ public enum VolumeResolver {
         }
         // 根卷路径
         return "/"
+    }
+
+    /// 路径规范化：移除尾随斜杠（根路径除外）
+    private static func normalizePath(_ path: String) -> String {
+        var normalized = path
+        while normalized.count > 1 && normalized.hasSuffix("/") {
+            normalized.removeLast()
+        }
+        return normalized
     }
 }

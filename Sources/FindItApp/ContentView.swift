@@ -148,6 +148,10 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .manageFolder)) { _ in
             showFolderSheet = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .runtimeConfigChanged)) { _ in
+            searchState.refreshRuntimeConfig()
+            indexingManager.refreshRuntimeConfig()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .navigateClip)) { notification in
             guard let direction = notification.userInfo?["direction"] as? String else { return }
             handleArrowKey(direction)

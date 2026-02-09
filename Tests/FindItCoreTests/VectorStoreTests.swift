@@ -337,4 +337,54 @@ final class VectorStoreTests: XCTestCase {
         XCTAssertEqual(results[0].sourceFolder, "/B")
         XCTAssertEqual(results[0].clipId, clipB)
     }
+
+    func testVectorSearchFromStoreDoesNotTruncateBeforeFolderFilter() throws {
+        let db = try DatabaseQueue(path: ":memory:")
+        try Migrations.globalMigrator().migrate(db)
+
+        var clipIdsA: [Int64] = []
+        var clipIdsB: [Int64] = []
+
+        try db.write { dbConn in
+            // 先插入大量 /A（高相似度候选），制造“窄范围过滤”压力。
+            for i in 0..<1000 {
+                try dbConn.execute(sql: """
+                    INSERT INTO clips (source_folder, source_clip_id, start_time, end_time, description)
+                    VALUES (?, ?, 0, 5, ?)
+                    """, arguments: ["/A", i + 1, "A-\(i)"])
+                clipIdsA.append(dbConn.lastInsertedRowID)
+            }
+
+            // /B 候选放在后段（旧实现 prefix(900) 会全部丢失）。
+            for i in 0..<5 {
+                try dbConn.execute(sql: """
+                    INSERT INTO clips (source_folder, source_clip_id, start_time, end_time, description)
+                    VALUES (?, ?, 0, 5, ?)
+                    """, arguments: ["/B", i + 1, "B-\(i)"])
+                clipIdsB.append(dbConn.lastInsertedRowID)
+            }
+        }
+
+        var storeResults: [(clipId: Int64, similarity: Float)] = []
+        storeResults.reserveCapacity(clipIdsA.count + clipIdsB.count)
+
+        for (index, clipId) in clipIdsA.enumerated() {
+            storeResults.append((clipId: clipId, similarity: 1.0 - Float(index) * 0.0001))
+        }
+        for (index, clipId) in clipIdsB.enumerated() {
+            storeResults.append((clipId: clipId, similarity: 0.1 - Float(index) * 0.0001))
+        }
+
+        let results = try db.read { dbConn in
+            try SearchEngine.vectorSearchFromStore(
+                dbConn,
+                storeResults: storeResults,
+                folderPaths: Set(["/B"]),
+                limit: 5
+            )
+        }
+
+        XCTAssertEqual(results.count, 5, "应能命中过滤范围内的后段候选")
+        XCTAssertTrue(results.allSatisfy { $0.sourceFolder == "/B" })
+    }
 }

@@ -7,6 +7,8 @@ final class SyncEngineTests: XCTestCase {
     private var folderDB: DatabaseQueue!
     private var globalDB: DatabaseQueue!
     private let folderPath = "/Volumes/素材盘/项目A"
+    private let folderVolumeUUID = "TEST-VOLUME-UUID-A"
+    private let folderVolumeName = "测试素材盘A"
 
     override func setUpWithError() throws {
         folderDB = try DatabaseManager.makeFolderInMemoryDatabase()
@@ -23,7 +25,11 @@ final class SyncEngineTests: XCTestCase {
     /// 在文件夹库中插入测试数据
     private func seedFolderData(videoCount: Int = 1, clipsPerVideo: Int = 2) throws {
         try folderDB.write { db in
-            var folder = WatchedFolder(folderPath: folderPath)
+            var folder = WatchedFolder(
+                folderPath: folderPath,
+                volumeName: folderVolumeName,
+                volumeUuid: folderVolumeUUID
+            )
             try folder.insert(db)
 
             for v in 1...videoCount {
@@ -288,6 +294,8 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertTrue(lastVideoRowId > 0)
         XCTAssertTrue(lastClipRowId > 0)
         XCTAssertNotNil(meta["last_synced_at"] as String?)
+        XCTAssertEqual(meta["volume_uuid"] as String?, folderVolumeUUID)
+        XCTAssertEqual(meta["volume_name"] as String?, folderVolumeName)
     }
 
     // MARK: - 同步后搜索

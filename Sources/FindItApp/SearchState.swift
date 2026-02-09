@@ -229,7 +229,7 @@ final class SearchState {
     ///
     /// 策略：Gemini（768 维，云端） → NLEmbedding（512 维，离线）。
     /// 已初始化时直接返回缓存实例。
-    /// 首次初始化失败后不再反复尝试（API key 配置后需重启 App）。
+    /// 初始化失败后进入冷却，直到收到配置变更通知再重试。
     private func getEmbeddingProvider() -> (any EmbeddingProvider)? {
         if let provider = embeddingProvider {
             return provider
@@ -306,5 +306,22 @@ final class SearchState {
         vectorSearchTask?.cancel()
         query = ""
         results = []
+    }
+
+    /// 运行时配置变更（API Key / ProviderConfig）后刷新缓存
+    ///
+    /// 该方法会清空 provider 与 VectorStore 缓存，并在当前有查询词时
+    /// 自动触发一次新的向量搜索，确保设置变更即时生效。
+    func refreshRuntimeConfig() {
+        vectorSearchTask?.cancel()
+        embeddingProvider = nil
+        hasTriedInitProvider = false
+        vectorStore = nil
+        isLoadingVectorStore = false
+        isVectorSearching = false
+
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        scheduleVectorSearch()
     }
 }

@@ -31,4 +31,5 @@ extension Notification.Name {
     static let addFolder = Notification.Name("FindIt.addFolder")
     static let manageFolder = Notification.Name("FindIt.manageFolder")
     static let focusSearch = Notification.Name("FindIt.focusSearch")
+    static let runtimeConfigChanged = Notification.Name("FindIt.runtimeConfigChanged")
 }

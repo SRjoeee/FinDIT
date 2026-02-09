@@ -353,6 +353,14 @@ public enum Migrations {
             )
         }
 
+        // Stage 6: sync_meta 持久化卷标识（支持跨重启 UUID 恢复）
+        migrator.registerMigration("v8_addSyncMetaVolumeInfo") { db in
+            try db.alter(table: "sync_meta") { t in
+                t.add(column: "volume_uuid", .text)
+                t.add(column: "volume_name", .text)
+            }
+        }
+
         return migrator
     }
 }

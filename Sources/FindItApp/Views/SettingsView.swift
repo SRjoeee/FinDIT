@@ -98,6 +98,7 @@ private struct GeneralTab: View {
         do {
             try APIKeyManager.saveAPIKey(trimmed)
             apiKeyStatus = APIKeyManager.validateAPIKey(trimmed) ? .valid : .invalid
+            NotificationCenter.default.post(name: .runtimeConfigChanged, object: nil)
         } catch {
             apiKeyStatus = .invalid
         }
@@ -125,22 +126,34 @@ private struct GeneralTab: View {
         Section("索引选项") {
             Toggle("语音转录 (STT)", isOn: Binding(
                 get: { !options.skipStt },
-                set: { options.skipStt = !$0; options.save() }
+                set: {
+                    options.skipStt = !$0
+                    saveOptions()
+                }
             ))
 
             Toggle("云端视觉分析 (Gemini)", isOn: Binding(
                 get: { !options.skipVision },
-                set: { options.skipVision = !$0; options.save() }
+                set: {
+                    options.skipVision = !$0
+                    saveOptions()
+                }
             ))
 
             Toggle("向量嵌入", isOn: Binding(
                 get: { !options.skipEmbedding },
-                set: { options.skipEmbedding = !$0; options.save() }
+                set: {
+                    options.skipEmbedding = !$0
+                    saveOptions()
+                }
             ))
 
             Picker("性能模式", selection: Binding(
                 get: { options.performanceMode },
-                set: { options.performanceMode = $0; options.save() }
+                set: {
+                    options.performanceMode = $0
+                    saveOptions()
+                }
             )) {
                 ForEach(PerformanceMode.allCases, id: \.self) { mode in
                     Text(mode.displayName).tag(mode)
@@ -150,12 +163,20 @@ private struct GeneralTab: View {
 
             Stepper("删除保留: \(options.orphanedRetentionDays) 天", value: Binding(
                 get: { options.orphanedRetentionDays },
-                set: { options.orphanedRetentionDays = $0; options.save() }
+                set: {
+                    options.orphanedRetentionDays = $0
+                    saveOptions()
+                }
             ), in: 0...365)
             Text("视频文件删除后索引数据保留的天数，0 为立即清除")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private func saveOptions() {
+        options.save()
+        NotificationCenter.default.post(name: .runtimeConfigChanged, object: nil)
     }
 }
 
@@ -179,19 +200,19 @@ private struct AdvancedTab: View {
         Section("视觉分析模型") {
             TextField("模型名称", text: $config.visionModel)
                 .textFieldStyle(.roundedBorder)
-                .onChange(of: config.visionModel) { config.save() }
+                .onChange(of: config.visionModel) { saveConfig() }
 
             Stepper("每请求最大图片数: \(config.visionMaxImages)",
                     value: $config.visionMaxImages, in: 1...20)
-                .onChange(of: config.visionMaxImages) { config.save() }
+                .onChange(of: config.visionMaxImages) { saveConfig() }
 
             Stepper("请求超时: \(Int(config.visionTimeout))秒",
                     value: $config.visionTimeout, in: 10...300, step: 10)
-                .onChange(of: config.visionTimeout) { config.save() }
+                .onChange(of: config.visionTimeout) { saveConfig() }
 
             Stepper("最大重试次数: \(config.visionMaxRetries)",
                     value: $config.visionMaxRetries, in: 0...10)
-                .onChange(of: config.visionMaxRetries) { config.save() }
+                .onChange(of: config.visionMaxRetries) { saveConfig() }
         }
     }
 
@@ -200,11 +221,11 @@ private struct AdvancedTab: View {
         Section("嵌入模型") {
             TextField("模型名称", text: $config.embeddingModel)
                 .textFieldStyle(.roundedBorder)
-                .onChange(of: config.embeddingModel) { config.save() }
+                .onChange(of: config.embeddingModel) { saveConfig() }
 
             Stepper("向量维度: \(config.embeddingDimensions)",
                     value: $config.embeddingDimensions, in: 128...2048, step: 128)
-                .onChange(of: config.embeddingDimensions) { config.save() }
+                .onChange(of: config.embeddingDimensions) { saveConfig() }
         }
     }
 
@@ -213,7 +234,7 @@ private struct AdvancedTab: View {
         Section {
             Stepper("每分钟请求数: \(config.rateLimitRPM)",
                     value: $config.rateLimitRPM, in: 1...60)
-                .onChange(of: config.rateLimitRPM) { config.save() }
+                .onChange(of: config.rateLimitRPM) { saveConfig() }
         } header: {
             Text("速率限制")
         } footer: {
@@ -229,8 +250,14 @@ private struct AdvancedTab: View {
             Button("恢复默认设置") {
                 ProviderConfig.resetToDefault()
                 config = ProviderConfig.default
+                NotificationCenter.default.post(name: .runtimeConfigChanged, object: nil)
             }
         }
+    }
+
+    private func saveConfig() {
+        config.save()
+        NotificationCenter.default.post(name: .runtimeConfigChanged, object: nil)
     }
 }
 

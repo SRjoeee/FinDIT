@@ -154,7 +154,7 @@ final class VolumeMonitor {
 
         for folder in appState.folders where !folder.isAvailable {
             // 策略 1: 路径直接可达（卷重新挂载到相同路径）
-            if folder.folderPath.hasPrefix(mountPoint),
+            if VolumeResolver.isPath(folder.folderPath, underMountPoint: mountPoint),
                FileManager.default.fileExists(atPath: folder.folderPath) {
                 restoredPaths.append(folder.folderPath)
                 continue
@@ -202,7 +202,7 @@ final class VolumeMonitor {
         var affectedFolders: [String] = []
 
         for folder in appState.folders where folder.isAvailable {
-            if folder.folderPath.hasPrefix(mountPoint) {
+            if VolumeResolver.isPath(folder.folderPath, underMountPoint: mountPoint) {
                 affectedFolders.append(folder.folderPath)
             }
         }

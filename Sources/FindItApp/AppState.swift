@@ -239,21 +239,42 @@ final class AppState {
     func reloadFolders() throws {
         guard let globalDB = globalDB else { return }
 
-        // 从 sync_meta 获取所有已同步的文件夹路径
+        // 从 sync_meta 获取所有已同步的文件夹路径 + 持久化卷信息
         let rows = try globalDB.read { db in
-            try Row.fetchAll(db, sql: "SELECT folder_path FROM sync_meta ORDER BY folder_path")
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT folder_path, volume_uuid, volume_name
+                    FROM sync_meta
+                    ORDER BY folder_path
+                    """
+            )
         }
+
+        var metaBackfills: [(path: String, uuid: String?, name: String?)] = []
 
         self.folders = try rows.map { row in
             let path: String = row["folder_path"]
             let isAvailable = FileManager.default.fileExists(atPath: path)
+            let persistedVolumeUUID: String? = row["volume_uuid"]
+            let persistedVolumeName: String? = row["volume_name"]
+
+            var resolvedVolumeInfo: VolumeResolver.VolumeInfo? = volumeInfoCache[path]
 
             // 缓存卷信息（仅在缓存未命中且路径可达时解析）
-            if volumeInfoCache[path] == nil, isAvailable {
-                volumeInfoCache[path] = VolumeResolver.resolve(path: path)
+            if resolvedVolumeInfo == nil, isAvailable {
+                let resolved = VolumeResolver.resolve(path: path)
+                resolvedVolumeInfo = resolved
+                volumeInfoCache[path] = resolved
+
+                // 兼容旧数据：若 sync_meta 尚未写入卷信息，则在读取路径时补齐。
+                if persistedVolumeUUID == nil || persistedVolumeName == nil {
+                    metaBackfills.append((path: path, uuid: resolved.uuid, name: resolved.name))
+                }
             }
 
-            let volumeInfo = volumeInfoCache[path]
+            let volumeUUID = resolvedVolumeInfo?.uuid ?? persistedVolumeUUID
+            let volumeName = resolvedVolumeInfo?.name ?? persistedVolumeName
 
             // 从全局库查询统计
             let stats = try globalDB.read { db in
@@ -262,13 +283,29 @@ final class AppState {
 
             return WatchedFolder(
                 folderPath: path,
-                volumeName: volumeInfo?.name,
-                volumeUuid: volumeInfo?.uuid,
+                volumeName: volumeName,
+                volumeUuid: volumeUUID,
                 isAvailable: isAvailable,
                 lastSeenAt: isAvailable ? Clip.sqliteDatetime() : nil,
                 totalFiles: stats.videoCount,
                 indexedFiles: stats.clipCount
             )
+        }
+
+        if !metaBackfills.isEmpty {
+            try globalDB.write { db in
+                for item in metaBackfills {
+                    try db.execute(
+                        sql: """
+                            UPDATE sync_meta
+                            SET volume_uuid = COALESCE(volume_uuid, ?),
+                                volume_name = COALESCE(volume_name, ?)
+                            WHERE folder_path = ?
+                            """,
+                        arguments: [item.uuid, item.name, item.path]
+                    )
+                }
+            }
         }
 
         // 清理失效的子文件夹书签（父文件夹被移除后）

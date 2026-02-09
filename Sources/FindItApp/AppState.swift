@@ -115,6 +115,12 @@ final class AppState {
             try await Task.detached(priority: .userInitiated) {
                 let folderDB = try DatabaseManager.openFolderDatabase(at: path)
 
+                // 便携索引：检测并修复路径偏移（跨机器/路径变更）
+                let rebaseResult = try PathRebaser.rebaseIfNeeded(
+                    folderDB: folderDB,
+                    newPath: path
+                )
+
                 try folderDB.write { db in
                     let existing = try WatchedFolder.fetchOne(db, sql:
                         "SELECT * FROM watched_folders WHERE folder_path = ?",
@@ -127,13 +133,22 @@ final class AppState {
                             lastSeenAt: Clip.sqliteDatetime()
                         )
                         try folder.insert(db)
+                    } else {
+                        // 重新添加：更新卷信息（跨机器时 volume 可能变了）
+                        try db.execute(sql: """
+                            UPDATE watched_folders SET volume_name = ?, volume_uuid = ?,
+                                is_available = 1, last_seen_at = ?
+                            WHERE folder_path = ?
+                            """, arguments: [volumeInfo.name, volumeInfo.uuid,
+                                             Clip.sqliteDatetime(), path])
                     }
                 }
 
                 let _ = try SyncEngine.sync(
                     folderPath: path,
                     folderDB: folderDB,
-                    globalDB: globalDB
+                    globalDB: globalDB,
+                    force: rebaseResult.didRebase
                 )
             }.value
 
@@ -151,6 +166,12 @@ final class AppState {
             try await Task.detached(priority: .userInitiated) {
                 let folderDB = try DatabaseManager.openFolderDatabase(at: path)
 
+                // 便携索引：检测并修复路径偏移（跨机器/路径变更）
+                let rebaseResult = try PathRebaser.rebaseIfNeeded(
+                    folderDB: folderDB,
+                    newPath: path
+                )
+
                 try folderDB.write { db in
                     let existing = try WatchedFolder.fetchOne(db, sql:
                         "SELECT * FROM watched_folders WHERE folder_path = ?",
@@ -163,13 +184,22 @@ final class AppState {
                             lastSeenAt: Clip.sqliteDatetime()
                         )
                         try folder.insert(db)
+                    } else {
+                        // 重新添加：更新卷信息（跨机器时 volume 可能变了）
+                        try db.execute(sql: """
+                            UPDATE watched_folders SET volume_name = ?, volume_uuid = ?,
+                                is_available = 1, last_seen_at = ?
+                            WHERE folder_path = ?
+                            """, arguments: [volumeInfo.name, volumeInfo.uuid,
+                                             Clip.sqliteDatetime(), path])
                     }
                 }
 
                 let _ = try SyncEngine.sync(
                     folderPath: path,
                     folderDB: folderDB,
-                    globalDB: globalDB
+                    globalDB: globalDB,
+                    force: rebaseResult.didRebase
                 )
             }.value
 

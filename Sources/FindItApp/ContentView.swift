@@ -115,8 +115,8 @@ struct ContentView: View {
             // 启动后自动恢复可达文件夹的索引任务（含 pending/failed/orphan 恢复路径）。
             indexingManager.indexPendingFolders()
             searchState.loadFacets()
-            // 清理过期 orphaned 记录
-            Task.detached(priority: .utility) {
+            // 清理过期 orphaned 记录（方法内部已通过 runBlockingIO 下沉阻塞 I/O）
+            Task(priority: .utility) {
                 let retention = IndexingOptions.load().orphanedRetentionDays
                 if retention > 0 {
                     await indexingManager.cleanupOrphanedRecords(retentionDays: retention)
@@ -175,13 +175,14 @@ struct ContentView: View {
                     )
                 }
 
-                if searchState.visibleResults.isEmpty {
+                let visible = searchState.visibleResults
+                if visible.isEmpty {
                     ContentUnavailableView.search(text: searchState.query)
                         .frame(maxHeight: .infinity)
                 } else {
                     ResultsGrid(
-                        results: searchState.visibleResults,
-                        resultCount: searchState.visibleResults.count,
+                        results: visible,
+                        resultCount: visible.count,
                         offlineFolders: offlineFolderPaths,
                         globalDB: appState.globalDB,
                         selectedClipId: $selectedClipId,

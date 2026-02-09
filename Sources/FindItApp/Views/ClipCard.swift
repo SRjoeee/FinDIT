@@ -183,82 +183,47 @@ struct ClipCard: View {
 
     // MARK: - Rating & Color Actions
 
-    @State private var saveTask: Task<Void, Never>?
-
-    // MARK: - Rating & Color Actions
-
     private func setRating(_ rating: Int) {
-        let oldRating = result.rating // 捕获旧值用于回滚
-
-        // 1. 同步乐观更新 UI (立即生效，无 MainActor hop)
+        let oldRating = result.rating
+        // 同步更新 UI（已在 @MainActor，无需额外 Task 包装）
         searchState.updateClipRating(clipId: result.clipId, rating: rating)
-        
-        // 2. 取消之前的写入任务，避免竞态
-        saveTask?.cancel()
 
-        // 3. 后台写入 Source of Truth
-        saveTask = Task.detached(priority: .userInitiated) { [clipId = result.clipId, sourceClipId = result.sourceClipId, sourceFolder = result.sourceFolder] in
-            guard !Task.isCancelled else { return }
+        Task.detached(priority: .userInitiated) { [result, globalDB, searchState] in
             do {
-                // 写入文件夹库
-                let folderDB = try DatabaseManager.openFolderDatabase(at: sourceFolder)
+                let folderDB = try DatabaseManager.openFolderDatabase(at: result.sourceFolder)
                 try await folderDB.write { db in
-                    try ClipLabel.updateRating(db, clipId: sourceClipId, rating: rating)
+                    try ClipLabel.updateRating(db, clipId: result.sourceClipId, rating: rating)
                 }
-                
-                guard !Task.isCancelled else { return }
-                
-                // 写入全局库
                 try await globalDB?.write { db in
-                    try ClipLabel.updateRating(db, clipId: clipId, rating: rating)
+                    try ClipLabel.updateRating(db, clipId: result.clipId, rating: rating)
                 }
             } catch {
-                guard !Task.isCancelled else { return }
                 print("[ClipCard] 设置评分失败: \(error)")
-                
-                // 4. 失败回滚 UI
                 await MainActor.run {
-                    searchState.updateClipRating(clipId: clipId, rating: oldRating)
+                    searchState.updateClipRating(clipId: result.clipId, rating: oldRating)
                 }
             }
         }
     }
 
     private func setColorLabel(_ label: ColorLabel?) {
-        let oldLabel = result.colorLabel // 捕获旧值用于回滚
-
-        // 1. 同步乐观更新 UI
+        let oldLabel = result.colorLabel
         searchState.updateClipColorLabel(clipId: result.clipId, colorLabel: label?.rawValue)
-        
-        // 2. 取消之前的写入任务
-        saveTask?.cancel()
 
-        // 3. 后台写入
-        saveTask = Task.detached(priority: .userInitiated) { [clipId = result.clipId, sourceClipId = result.sourceClipId, sourceFolder = result.sourceFolder] in
-            guard !Task.isCancelled else { return }
+        Task.detached(priority: .userInitiated) { [result, globalDB, searchState] in
             do {
-                // 写入文件夹库
-                let folderDB = try DatabaseManager.openFolderDatabase(at: sourceFolder)
+                let folderDB = try DatabaseManager.openFolderDatabase(at: result.sourceFolder)
                 try await folderDB.write { db in
-                    try ClipLabel.updateColorLabel(db, clipId: sourceClipId, label: label)
+                    try ClipLabel.updateColorLabel(db, clipId: result.sourceClipId, label: label)
                 }
-                
-                guard !Task.isCancelled else { return }
-                
-                // 写入全局库
                 try await globalDB?.write { db in
-                    try ClipLabel.updateColorLabel(db, clipId: clipId, label: label)
+                    try ClipLabel.updateColorLabel(db, clipId: result.clipId, label: label)
                 }
-                
-                // 同步 Finder 标签 (best effort)
                 syncFinderTag(label: label)
             } catch {
-                guard !Task.isCancelled else { return }
                 print("[ClipCard] 设置颜色标签失败: \(error)")
-                
-                // 4. 失败回滚 UI
                 await MainActor.run {
-                    searchState.updateClipColorLabel(clipId: clipId, colorLabel: oldLabel)
+                    searchState.updateClipColorLabel(clipId: result.clipId, colorLabel: oldLabel)
                 }
             }
         }
@@ -273,12 +238,18 @@ struct ClipCard: View {
                 try ClipLabel.syncFinderTag(filePath: filePath, label: label)
             } else {
                 // 清除时检查同视频其他片段是否仍有颜色
-                // 注意：这里需要重新获取连接，因为 globalDB 可能被闭包捕获
-                // 为简化，此处暂不实现复杂的清除逻辑，或依赖 label=nil 的清除行为
-                try ClipLabel.syncFinderTag(filePath: filePath, label: nil)
+                let effectiveLabel: ColorLabel?
+                if let videoId = result.videoId, let db = globalDB {
+                    effectiveLabel = try db.read { dbConn in
+                        try ClipLabel.effectiveVideoColor(dbConn, videoId: videoId)
+                    }
+                } else {
+                    effectiveLabel = nil
+                }
+                try ClipLabel.syncFinderTag(filePath: filePath, label: effectiveLabel)
             }
         } catch {
-            // Finder 标签同步失败不致命
+            // Finder 标签同步失败不致命（文件可能在只读卷上）
         }
     }
 

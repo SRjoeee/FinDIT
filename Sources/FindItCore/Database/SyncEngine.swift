@@ -83,6 +83,15 @@ public enum SyncEngine {
                         continue
                     }
 
+                    // 跳过 orphaned 视频（全局库不可见）
+                    if video.indexStatus == "orphaned" {
+                        if let vid = video.videoId { excludedSourceVideoIds.insert(vid) }
+                        if let vid = video.videoId, vid > currentVideoRowId {
+                            currentVideoRowId = vid
+                        }
+                        continue
+                    }
+
                     do {
                         try db.execute(sql: """
                             INSERT INTO videos

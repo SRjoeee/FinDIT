@@ -147,6 +147,14 @@ private struct GeneralTab: View {
                 }
             }
             .pickerStyle(.segmented)
+
+            Stepper("删除保留: \(options.orphanedRetentionDays) 天", value: Binding(
+                get: { options.orphanedRetentionDays },
+                set: { options.orphanedRetentionDays = $0; options.save() }
+            ), in: 0...365)
+            Text("视频文件删除后索引数据保留的天数，0 为立即清除")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }

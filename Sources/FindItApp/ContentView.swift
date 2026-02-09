@@ -110,6 +110,24 @@ struct ContentView: View {
             await appState.initialize()
             fileWatcherManager.startWatching()
             searchState.loadFacets()
+            // 清理过期 orphaned 记录
+            Task.detached(priority: .utility) {
+                let retention = IndexingOptions.load().orphanedRetentionDays
+                guard retention > 0 else { return }
+                let folders = await appState.folders
+                for folder in folders where folder.isAvailable {
+                    if let folderDB = try? DatabaseManager.openFolderDatabase(at: folder.folderPath) {
+                        let result = try? OrphanRecovery.cleanupExpired(
+                            retentionDays: retention,
+                            folderPath: folder.folderPath,
+                            folderDB: folderDB
+                        )
+                        if let r = result, r.removedCount > 0 {
+                            print("[Cleanup] 清理 \(r.removedCount) 个过期 orphaned in \(folder.folderPath)")
+                        }
+                    }
+                }
+            }
         }
         .task {
             // 周期性文件夹健康检查（30秒间隔）

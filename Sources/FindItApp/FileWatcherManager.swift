@@ -177,24 +177,41 @@ final class FileWatcherManager {
         }
     }
 
-    /// 处理文件删除
+    /// 处理文件删除（软删除 / 硬删除）
     private func handleRemovals(
         _ paths: [String],
         folderPath: String,
         folderDB: DatabasePool,
         globalDB: DatabasePool
     ) {
+        let retentionDays = IndexingOptions.load().orphanedRetentionDays
         do {
-            let count = try VideoManager.removeVideos(
-                videoPaths: paths,
-                folderPath: folderPath,
-                folderDB: folderDB,
-                globalDB: globalDB
-            )
-            if count > 0 {
-                try? appState?.reloadFolders()
-                searchState?.invalidateVectorStore()
-                print("[FileWatcherManager] 已删除 \(count) 个视频 from \(folderPath)")
+            if retentionDays > 0 {
+                // 软删除：标记 orphaned，保留索引数据
+                let result = try OrphanRecovery.markOrphanedBatch(
+                    videoPaths: paths,
+                    folderPath: folderPath,
+                    folderDB: folderDB,
+                    globalDB: globalDB
+                )
+                if result.markedCount > 0 {
+                    try? appState?.reloadFolders()
+                    searchState?.invalidateVectorStore()
+                    print("[FileWatcherManager] 软删除 \(result.markedCount) 个视频 from \(folderPath)")
+                }
+            } else {
+                // 硬删除：立即清除所有数据
+                let count = try VideoManager.removeVideos(
+                    videoPaths: paths,
+                    folderPath: folderPath,
+                    folderDB: folderDB,
+                    globalDB: globalDB
+                )
+                if count > 0 {
+                    try? appState?.reloadFolders()
+                    searchState?.invalidateVectorStore()
+                    print("[FileWatcherManager] 硬删除 \(count) 个视频 from \(folderPath)")
+                }
             }
         } catch {
             print("[FileWatcherManager] 删除处理失败: \(error)")

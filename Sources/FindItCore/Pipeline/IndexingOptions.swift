@@ -25,25 +25,44 @@ public struct IndexingOptions: Codable, Sendable, Equatable {
     /// 索引性能模式
     public var performanceMode: PerformanceMode
 
+    // MARK: - Orphaned
+
+    /// Orphaned 视频保留天数（0 = 禁用软删除，立即硬删除）
+    public var orphanedRetentionDays: Int
+
     // MARK: - 默认值
 
     public static let `default` = IndexingOptions(
         skipStt: false,
         skipVision: false,
         skipEmbedding: false,
-        performanceMode: .balanced
+        performanceMode: .balanced,
+        orphanedRetentionDays: 30
     )
 
     public init(
         skipStt: Bool = false,
         skipVision: Bool = false,
         skipEmbedding: Bool = false,
-        performanceMode: PerformanceMode = .balanced
+        performanceMode: PerformanceMode = .balanced,
+        orphanedRetentionDays: Int = 30
     ) {
         self.skipStt = skipStt
         self.skipVision = skipVision
         self.skipEmbedding = skipEmbedding
         self.performanceMode = performanceMode
+        self.orphanedRetentionDays = orphanedRetentionDays
+    }
+
+    // MARK: - Decodable（向后兼容旧版 UserDefaults 数据）
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        skipStt = try c.decodeIfPresent(Bool.self, forKey: .skipStt) ?? false
+        skipVision = try c.decodeIfPresent(Bool.self, forKey: .skipVision) ?? false
+        skipEmbedding = try c.decodeIfPresent(Bool.self, forKey: .skipEmbedding) ?? false
+        performanceMode = try c.decodeIfPresent(PerformanceMode.self, forKey: .performanceMode) ?? .balanced
+        orphanedRetentionDays = try c.decodeIfPresent(Int.self, forKey: .orphanedRetentionDays) ?? 30
     }
 
     // MARK: - 持久化

@@ -28,6 +28,7 @@ public enum PipelineManager {
         case visionRunning = "vision_running"
         case completed = "completed"
         case failed = "failed"
+        case orphaned = "orphaned"
 
         /// 阶段顺序索引（用于比较进度）
         var order: Int {
@@ -38,6 +39,7 @@ public enum PipelineManager {
             case .visionRunning:  return 3
             case .completed:      return 4
             case .failed:         return -1
+            case .orphaned:       return -2
             }
         }
 
@@ -254,6 +256,33 @@ public enum PipelineManager {
                     UPDATE videos SET file_hash = ?, file_modified = ?
                     WHERE video_id = ?
                     """, arguments: [hash, currentMtime, videoId])
+            }
+        }
+
+        // Orphan 恢复: 新 pending 视频计算 hash 后，尝试匹配 orphaned 记录
+        if currentStage == .pending, let hash = try await folderDB.read({ db in
+            try String.fetchOne(db, sql: """
+                SELECT file_hash FROM videos WHERE video_id = ?
+                """, arguments: [videoId])
+        }) {
+            if let recovery = try OrphanRecovery.attemptRecovery(
+                fileHash: hash,
+                newVideoPath: videoPath,
+                pendingVideoId: videoId,
+                folderDB: folderDB
+            ) {
+                progress("恢复 orphaned 记录 (\(recovery.clipCount) clips)")
+                if let globalDB = globalDB, !skipSync {
+                    let _ = try SyncEngine.sync(
+                        folderPath: folderPath, folderDB: folderDB,
+                        globalDB: globalDB, force: true
+                    )
+                }
+                return ProcessingResult(
+                    videoId: recovery.recoveredVideoId,
+                    clipsCreated: recovery.clipCount, clipsAnalyzed: 0,
+                    clipsEmbedded: 0, srtPath: nil, syncResult: nil
+                )
             }
         }
 

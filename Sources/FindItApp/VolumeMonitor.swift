@@ -199,11 +199,21 @@ final class VolumeMonitor {
 
     /// 更新文件夹路径（挂载点变更时）
     ///
-    /// 同步更新全局数据库中的 sync_meta、videos、clips 的路径引用。
+    /// 路径切换时需保持“文件夹库(source of truth)”与全局库一致：
+    /// 1) 先重定向文件夹库中的绝对路径（videos/clips）。
+    /// 2) 再更新全局库中的 source_folder 与相关路径字段。
+    /// 3) 若文件夹库发生实际重定向，执行一次 force 同步，确保全局镜像字段不留旧路径。
     private func updateFolderPath(from oldPath: String, to newPath: String) {
         guard let globalDB = appState?.globalDB else { return }
 
         do {
+            // 先修复文件夹库路径（避免后续索引仍以旧路径参与匹配，导致重复重建）
+            let folderDB = try DatabaseManager.openFolderDatabase(at: newPath)
+            let rebaseResult = try PathRebaser.rebaseIfNeeded(
+                folderDB: folderDB,
+                newPath: newPath
+            )
+
             try globalDB.write { db in
                 // 更新 sync_meta
                 try db.execute(sql: """
@@ -225,9 +235,31 @@ final class VolumeMonitor {
                     UPDATE videos SET file_path = ? || substr(file_path, length(?) + 1)
                     WHERE source_folder = ? AND file_path LIKE ? || '%'
                     """, arguments: [newPath, oldPath, newPath, oldPath])
+
+                // 更新 videos.srt_path（仅路径前缀匹配的记录；App Support fallback 路径不会命中）
+                try db.execute(sql: """
+                    UPDATE videos SET srt_path = ? || substr(srt_path, length(?) + 1)
+                    WHERE source_folder = ? AND srt_path LIKE ? || '%'
+                    """, arguments: [newPath, oldPath, newPath, oldPath])
+
+                // 更新 clips.thumbnail_path（缩略图目录位于素材文件夹下）
+                try db.execute(sql: """
+                    UPDATE clips SET thumbnail_path = ? || substr(thumbnail_path, length(?) + 1)
+                    WHERE source_folder = ? AND thumbnail_path LIKE ? || '%'
+                    """, arguments: [newPath, oldPath, newPath, oldPath])
             }
 
-            print("[VolumeMonitor] 路径更新: \(oldPath) → \(newPath)")
+            // 文件夹库发生重定向时，force 同步可覆盖 rowid 未变化但字段已更新的情况
+            if rebaseResult.didRebase {
+                let _ = try SyncEngine.sync(
+                    folderPath: newPath,
+                    folderDB: folderDB,
+                    globalDB: globalDB,
+                    force: true
+                )
+            }
+
+            print("[VolumeMonitor] 路径更新: \(oldPath) → \(newPath), rebase=\(rebaseResult.didRebase)")
         } catch {
             print("[VolumeMonitor] 路径更新失败: \(error)")
         }

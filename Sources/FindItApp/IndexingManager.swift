@@ -165,7 +165,8 @@ final class IndexingManager {
     func indexPendingFolders() {
         guard let appState = appState else { return }
 
-        for folder in appState.folders {
+        // 仅恢复当前可达的文件夹；离线卷由 VolumeMonitor 恢复后再入队。
+        for folder in appState.folders where folder.isAvailable {
             queueFolder(folder.folderPath)
         }
     }
@@ -211,7 +212,17 @@ final class IndexingManager {
         currentFolder = folderPath
 
         // 扫描视频文件（排除已索引的子文件夹）
-        let exclusions = folderExclusions.removeValue(forKey: folderPath) ?? []
+        // 这里不能只依赖一次性入队参数，否则后续重扫会丢失排除规则。
+        // 每次处理时都根据当前注册文件夹动态计算父子关系，保证一致性。
+        let explicitExclusions = folderExclusions.removeValue(forKey: folderPath) ?? []
+        let dynamicExclusions: Set<String>
+        if let appState = appState {
+            let allPaths = appState.folders.map(\.folderPath)
+            dynamicExclusions = Set(FolderHierarchy.findChildren(of: folderPath, in: allPaths))
+        } else {
+            dynamicExclusions = []
+        }
+        let exclusions = explicitExclusions.union(dynamicExclusions)
         let videoFiles: [String]
         do {
             videoFiles = try FileScanner.scanVideoFiles(in: folderPath, excluding: exclusions)

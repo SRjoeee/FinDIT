@@ -110,6 +110,8 @@ struct ContentView: View {
             NotificationManager.requestPermission()
             await appState.initialize()
             fileWatcherManager.startWatching()
+            // 启动后自动恢复可达文件夹的索引任务（含 pending/failed/orphan 恢复路径）。
+            indexingManager.indexPendingFolders()
             searchState.loadFacets()
             // 清理过期 orphaned 记录
             Task.detached(priority: .utility) {

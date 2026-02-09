@@ -295,4 +295,46 @@ final class VectorStoreTests: XCTestCase {
         }
         XCTAssertTrue(results.isEmpty)
     }
+
+    func testVectorSearchFromStoreFiltersBeforeApplyingLimit() throws {
+        let db = try DatabaseQueue(path: ":memory:")
+        try Migrations.globalMigrator().migrate(db)
+
+        try db.write { dbConn in
+            try dbConn.execute(sql: """
+                INSERT INTO clips (source_folder, source_clip_id, start_time, end_time, description)
+                VALUES ('/A', 1, 0, 5, 'A clip')
+                """)
+            try dbConn.execute(sql: """
+                INSERT INTO clips (source_folder, source_clip_id, start_time, end_time, description)
+                VALUES ('/B', 2, 0, 5, 'B clip')
+                """)
+        }
+
+        let clipA = try db.read { dbConn in
+            try Int64.fetchOne(dbConn, sql: "SELECT clip_id FROM clips WHERE source_folder = '/A'")!
+        }
+        let clipB = try db.read { dbConn in
+            try Int64.fetchOne(dbConn, sql: "SELECT clip_id FROM clips WHERE source_folder = '/B'")!
+        }
+
+        // 相似度最高的是 A，但过滤条件只允许 B
+        let storeResults: [(clipId: Int64, similarity: Float)] = [
+            (clipId: clipA, similarity: 0.99),
+            (clipId: clipB, similarity: 0.80),
+        ]
+
+        let results = try db.read { dbConn in
+            try SearchEngine.vectorSearchFromStore(
+                dbConn,
+                storeResults: storeResults,
+                folderPaths: Set(["/B"]),
+                limit: 1
+            )
+        }
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].sourceFolder, "/B")
+        XCTAssertEqual(results[0].clipId, clipB)
+    }
 }

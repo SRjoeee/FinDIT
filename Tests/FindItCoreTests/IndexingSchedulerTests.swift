@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 @testable import FindItCore
 
 final class IndexingSchedulerTests: XCTestCase {
@@ -48,17 +49,24 @@ final class IndexingSchedulerTests: XCTestCase {
 
     func testProcessEmptyVideoList() async {
         let scheduler = IndexingScheduler(concurrency: 2)
-        var progressCalled = false
-        var completeCalled = false
+        actor Flags {
+            var progressCalled = false
+            var completeCalled = false
+            func markProgress() { progressCalled = true }
+            func markComplete() { completeCalled = true }
+        }
+        let flags = Flags()
 
-        await scheduler.processVideos(
+        _ = await scheduler.processVideos(
             [],
             folderPath: "/tmp/test",
             folderDB: try! DatabaseManager.openFolderDatabase(at: NSTemporaryDirectory()),
-            onProgress: { _ in progressCalled = true },
-            onComplete: { _ in completeCalled = true }
+            onProgress: { _ in Task { await flags.markProgress() } },
+            onComplete: { _ in Task { await flags.markComplete() } }
         )
 
+        let progressCalled = await flags.progressCalled
+        let completeCalled = await flags.completeCalled
         XCTAssertFalse(progressCalled, "空列表不应触发回调")
         XCTAssertFalse(completeCalled, "空列表不应触发回调")
     }
@@ -117,5 +125,77 @@ final class IndexingSchedulerTests: XCTestCase {
         let outcome = IndexingScheduler.VideoOutcome.skipped(videoPath: "/test.mp4")
         XCTAssertFalse(outcome.success)
         XCTAssertEqual(outcome.errorMessage, "cancelled")
+    }
+
+    func testProcessVideos_forceSyncsAfterOrphanRecovery() async throws {
+        let fm = FileManager.default
+        let root = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("findit-scheduler-\(UUID().uuidString)")
+        try fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: root) }
+
+        let newPath = (root as NSString).appendingPathComponent("renamed.mp4")
+        _ = fm.createFile(atPath: newPath, contents: Data("shared-hash-content".utf8))
+        let sharedHash = try FileHasher.hash128(filePath: newPath)
+
+        let oldPath = (root as NSString).appendingPathComponent("old.mp4")
+        let folderDB = try DatabaseManager.makeFolderInMemoryDatabase()
+        let globalDB = try DatabaseManager.makeGlobalInMemoryDatabase()
+
+        try await folderDB.write { db in
+            var folder = WatchedFolder(folderPath: root)
+            try folder.insert(db)
+
+            var video = Video(
+                folderId: folder.folderId,
+                filePath: oldPath,
+                fileName: "old.mp4",
+                fileHash: sharedHash,
+                indexStatus: "completed"
+            )
+            try video.insert(db)
+
+            var clip = Clip(
+                videoId: video.videoId,
+                startTime: 0,
+                endTime: 5,
+                scene: "scene"
+            )
+            try clip.insert(db)
+        }
+
+        // 首次同步推进 sync_meta 游标
+        _ = try SyncEngine.sync(folderPath: root, folderDB: folderDB, globalDB: globalDB)
+
+        // 标记 orphaned 并从全局库删除
+        _ = try OrphanRecovery.markOrphaned(
+            videoPath: oldPath,
+            folderPath: root,
+            folderDB: folderDB,
+            globalDB: globalDB
+        )
+        let globalCountAfterOrphan = try await globalDB.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM videos") ?? 0
+        }
+        XCTAssertEqual(globalCountAfterOrphan, 0)
+
+        let scheduler = IndexingScheduler(concurrency: 1)
+        let syncResult = await scheduler.processVideos(
+            [newPath],
+            folderPath: root,
+            folderDB: folderDB,
+            globalDB: globalDB,
+            skipStt: true
+        )
+
+        XCTAssertNotNil(syncResult)
+        let globalVideoCount = try await globalDB.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM videos") ?? 0
+        }
+        let globalClipCount = try await globalDB.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM clips") ?? 0
+        }
+        XCTAssertEqual(globalVideoCount, 1, "恢复后应重新回填到全局库")
+        XCTAssertEqual(globalClipCount, 1, "恢复后应重新回填 clip")
     }
 }

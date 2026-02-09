@@ -304,9 +304,10 @@ public enum SearchEngine {
     ) throws -> [SearchResult] {
         guard !storeResults.isEmpty else { return [] }
 
-        let topK = Array(storeResults.prefix(limit))
-        let similarities = Dictionary(uniqueKeysWithValues: topK.map { ($0.clipId, Double($0.similarity)) })
-        let clipIds = topK.map { $0.clipId }
+        // SQLite 默认变量上限通常为 999，预留少量参数给其他过滤条件
+        let candidateResults = Array(storeResults.prefix(900))
+        let similarities = Dictionary(uniqueKeysWithValues: candidateResults.map { ($0.clipId, Double($0.similarity)) })
+        let clipIds = candidateResults.map { $0.clipId }
 
         // 查询元数据（含文件夹过滤）
         let placeholders = clipIds.map { _ in "?" }.joined(separator: ", ")
@@ -358,8 +359,11 @@ public enum SearchEngine {
             ))
         }
 
-        results.sort { ($0.similarity ?? 0) > ($1.similarity ?? 0) }
-        return results
+        results.sort {
+            ($0.similarity ?? 0) > ($1.similarity ?? 0) ||
+            (($0.similarity ?? 0) == ($1.similarity ?? 0) && $0.clipId < $1.clipId)
+        }
+        return Array(results.prefix(limit))
     }
 
     // MARK: - 融合搜索

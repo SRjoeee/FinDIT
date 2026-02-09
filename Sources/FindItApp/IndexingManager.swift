@@ -60,6 +60,8 @@ final class IndexingManager {
 
     /// FileWatcherManager 引用（用于索引冲突信号）
     weak var fileWatcherManager: FileWatcherManager?
+    /// SearchState 引用（用于索引后失效 VectorStore）
+    weak var searchState: SearchState?
 
     // MARK: - 私有状态
 
@@ -253,7 +255,7 @@ final class IndexingManager {
         let currentScheduler = ensureScheduler(mode: options.performanceMode)
 
         // 通过调度器并行处理视频
-        await currentScheduler.processVideos(
+        let syncResult = await currentScheduler.processVideos(
             videoFiles,
             folderPath: folderPath,
             folderDB: folderDB,
@@ -287,6 +289,9 @@ final class IndexingManager {
                 }
             }
         )
+        if let syncResult, syncResult.syncedClips > 0 {
+            searchState?.invalidateVectorStore()
+        }
 
         currentVideoName = nil
         currentStage = nil
@@ -354,7 +359,7 @@ final class IndexingManager {
 
         let currentScheduler = ensureScheduler(mode: options.performanceMode)
 
-        await currentScheduler.processVideos(
+        let syncResult = await currentScheduler.processVideos(
             existingPaths,
             folderPath: folderPath,
             folderDB: folderDB,
@@ -384,6 +389,9 @@ final class IndexingManager {
                 }
             }
         )
+        if let syncResult, syncResult.syncedClips > 0 {
+            searchState?.invalidateVectorStore()
+        }
 
         currentVideoName = nil
         currentStage = nil

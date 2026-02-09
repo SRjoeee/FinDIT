@@ -924,7 +924,7 @@ struct IndexCommand: AsyncParsableCommand {
             // 线程安全计数器（使用 actor）
             let counter = VideoCounter()
 
-            await scheduler.processVideos(
+            _ = await scheduler.processVideos(
                 filteredPaths,
                 folderPath: folderPath,
                 folderDB: folderDB,

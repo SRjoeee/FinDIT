@@ -397,4 +397,24 @@ final class SyncEngineTests: XCTestCase {
         }
         XCTAssertEqual(metaCount, 1, "空文件夹 sync 后 sync_meta 应有记录")
     }
+
+    func testSyncCountsOnlyActuallyUpsertedRows() throws {
+        try seedFolderData(videoCount: 2, clipsPerVideo: 1)
+
+        // 将第二个视频标记为 orphaned（其 clips 也应被跳过）
+        try folderDB.write { db in
+            try db.execute(
+                sql: "UPDATE videos SET index_status = 'orphaned' WHERE file_name = 'video2.mp4'"
+            )
+        }
+
+        let result = try SyncEngine.sync(
+            folderPath: folderPath,
+            folderDB: folderDB,
+            globalDB: globalDB
+        )
+
+        XCTAssertEqual(result.syncedVideos, 1, "应仅统计实际写入全局库的 video")
+        XCTAssertEqual(result.syncedClips, 1, "应仅统计实际写入全局库的 clip")
+    }
 }

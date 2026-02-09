@@ -97,6 +97,7 @@ struct ContentView: View {
             qlCoordinator.startMonitoring()
             searchState.appState = appState
             indexingManager.appState = appState
+            indexingManager.searchState = searchState
             appState.indexingManager = indexingManager
             volumeMonitor.appState = appState
             volumeMonitor.indexingManager = indexingManager
@@ -270,6 +271,7 @@ struct ContentView: View {
         Task {
             do {
                 try await appState.addFolder(path: url.path)
+                searchState.invalidateVectorStore()
             } catch let error as FolderError {
                 folderErrorMessage = error.localizedDescription
             } catch {

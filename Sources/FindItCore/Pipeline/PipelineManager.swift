@@ -63,6 +63,26 @@ public enum PipelineManager {
         public let srtPath: String?
         /// 同步结果（如有）
         public let syncResult: SyncEngine.SyncResult?
+        /// 是否需要调用方执行 force 同步（并行模式恢复 orphaned 时使用）
+        public let requiresForceSync: Bool
+
+        public init(
+            videoId: Int64,
+            clipsCreated: Int,
+            clipsAnalyzed: Int,
+            clipsEmbedded: Int,
+            srtPath: String?,
+            syncResult: SyncEngine.SyncResult?,
+            requiresForceSync: Bool = false
+        ) {
+            self.videoId = videoId
+            self.clipsCreated = clipsCreated
+            self.clipsAnalyzed = clipsAnalyzed
+            self.clipsEmbedded = clipsEmbedded
+            self.srtPath = srtPath
+            self.syncResult = syncResult
+            self.requiresForceSync = requiresForceSync
+        }
     }
 
     // MARK: - 纯函数
@@ -175,7 +195,7 @@ public enum PipelineManager {
             folderPath: folderPath,
             folderDB: folderDB
         )
-        let currentStage = Stage(rawValue: video.indexStatus) ?? .pending
+        var currentStage = Stage(rawValue: video.indexStatus) ?? .pending
 
         // 三层跳过检测（已完成的视频）
         if currentStage == .completed {
@@ -225,6 +245,7 @@ public enum PipelineManager {
                         WHERE video_id = ?
                         """, arguments: [currentSize, currentMtime, videoId])
                 }
+                currentStage = .pending
                 // 不 return，继续执行管线
             } else {
                 // storedHash == nil → 旧数据无哈希 → 补充哈希后跳过
@@ -272,16 +293,27 @@ public enum PipelineManager {
                 folderDB: folderDB
             ) {
                 progress("恢复 orphaned 记录 (\(recovery.clipCount) clips)")
-                if let globalDB = globalDB, !skipSync {
-                    let _ = try SyncEngine.sync(
-                        folderPath: folderPath, folderDB: folderDB,
-                        globalDB: globalDB, force: true
-                    )
+                var recoverySyncResult: SyncEngine.SyncResult?
+                var requiresForceSync = false
+                if let globalDB = globalDB {
+                    if skipSync {
+                        // 并行调度模式：交由调度器在最终合并阶段执行 force 同步
+                        requiresForceSync = true
+                    } else {
+                        recoverySyncResult = try SyncEngine.sync(
+                            folderPath: folderPath,
+                            folderDB: folderDB,
+                            globalDB: globalDB,
+                            force: true
+                        )
+                    }
                 }
                 return ProcessingResult(
                     videoId: recovery.recoveredVideoId,
                     clipsCreated: recovery.clipCount, clipsAnalyzed: 0,
-                    clipsEmbedded: 0, srtPath: nil, syncResult: nil
+                    clipsEmbedded: 0, srtPath: nil,
+                    syncResult: recoverySyncResult,
+                    requiresForceSync: requiresForceSync
                 )
             }
         }
@@ -595,6 +627,13 @@ public enum PipelineManager {
                         result: merged,
                         folderDB: folderDB
                     )
+                    // 仅在成功写入视觉结果后推进断点，避免失败 clip 被跳过
+                    try await folderDB.write { db in
+                        try db.execute(
+                            sql: "UPDATE videos SET last_processed_clip = ? WHERE video_id = ?",
+                            arguments: [clipId, videoId]
+                        )
+                    }
                     clipsAnalyzed += 1
                     progress("场景 \(index + 1)/\(clips.count) 分析完成")
 
@@ -606,14 +645,6 @@ public enum PipelineManager {
                     }
                     progress("场景 \(index + 1) 分析失败: \(error.localizedDescription)")
                     // 继续处理下一个 clip
-                }
-
-                // 更新断点
-                try await folderDB.write { db in
-                    try db.execute(
-                        sql: "UPDATE videos SET last_processed_clip = ? WHERE video_id = ?",
-                        arguments: [clipId, videoId]
-                    )
                 }
             }
 

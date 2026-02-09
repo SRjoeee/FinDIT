@@ -135,6 +135,7 @@ public final class IndexingScheduler: @unchecked Sendable {
     ///   - skipStt: 跳过所有语音转录
     ///   - onProgress: 视频进度回调（从并发 Task 调用，非 MainActor）
     ///   - onComplete: 单视频完成回调（从并发 Task 调用，非 MainActor）
+    /// - Returns: 最终同步结果（globalDB 为 nil 时返回 nil）
     public func processVideos(
         _ videos: [String],
         folderPath: String,
@@ -146,18 +147,19 @@ public final class IndexingScheduler: @unchecked Sendable {
         skipStt: Bool = false,
         onProgress: @Sendable @escaping (VideoProgress) -> Void = { _ in },
         onComplete: @Sendable @escaping (VideoOutcome) -> Void = { _ in }
-    ) async {
-        guard !videos.isEmpty else { return }
+    ) async -> SyncEngine.SyncResult? {
+        guard !videos.isEmpty else { return nil }
 
         let sem = videoSemaphore
         let monitor = resourceMonitor
+        var requiresForceSync = false
 
         // 启动资源监控，动态调整信号量
         await monitor.startMonitoring { recommended in
             Task { await sem.setMaxPermits(recommended) }
         }
 
-        await withTaskGroup(of: Void.self) { group in
+        await withTaskGroup(of: Bool.self) { group in
             for videoPath in videos {
                 // 协作式取消检查
                 guard !Task.isCancelled else { break }
@@ -206,10 +208,12 @@ public final class IndexingScheduler: @unchecked Sendable {
                             clipsAnalyzed: result.clipsAnalyzed,
                             clipsEmbedded: result.clipsEmbedded
                         ))
+                        return result.requiresForceSync
 
                     } catch is CancellationError {
                         await sem.release()
                         onComplete(.skipped(videoPath: videoPath))
+                        return false
 
                     } catch {
                         await sem.release()
@@ -217,10 +221,14 @@ public final class IndexingScheduler: @unchecked Sendable {
                             videoPath: videoPath,
                             error: error.localizedDescription
                         ))
+                        return false
                     }
                 }
             }
             // withTaskGroup 自动等待所有 child tasks 完成
+            for await childRequiresForceSync in group {
+                requiresForceSync = requiresForceSync || childRequiresForceSync
+            }
         }
 
         await monitor.stopMonitoring()
@@ -231,7 +239,8 @@ public final class IndexingScheduler: @unchecked Sendable {
                 let sr = try SyncEngine.sync(
                     folderPath: folderPath,
                     folderDB: folderDB,
-                    globalDB: globalDB
+                    globalDB: globalDB,
+                    force: requiresForceSync
                 )
                 if sr.syncedClips > 0 || sr.syncedVideos > 0 {
                     onProgress(VideoProgress(
@@ -240,14 +249,17 @@ public final class IndexingScheduler: @unchecked Sendable {
                         stage: "同步完成: \(sr.syncedVideos) 视频, \(sr.syncedClips) 片段"
                     ))
                 }
+                return sr
             } catch {
                 onProgress(VideoProgress(
                     videoPath: folderPath,
                     fileName: "",
                     stage: "同步失败: \(error.localizedDescription)"
                 ))
+                return nil
             }
         }
+        return nil
     }
 
     // MARK: - 运行时控制

@@ -173,4 +173,99 @@ final class PipelineManagerTests: XCTestCase {
         )
         XCTAssertEqual(deleted, 0)
     }
+
+    // MARK: - 回归测试
+
+    func testProcessVideo_reindexesAfterCompletedFileContentChange() async throws {
+        let fm = FileManager.default
+        let root = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("findit-pipeline-\(UUID().uuidString)")
+        try fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: root) }
+
+        let videoPath = (root as NSString).appendingPathComponent("changed.mp4")
+        _ = fm.createFile(atPath: videoPath, contents: Data("new-content".utf8))
+
+        let folderDB = try DatabaseManager.makeFolderInMemoryDatabase()
+        try await folderDB.write { db in
+            var folder = WatchedFolder(folderPath: root)
+            try folder.insert(db)
+
+            var video = Video(
+                folderId: folder.folderId,
+                filePath: videoPath,
+                fileName: "changed.mp4",
+                fileSize: 1,
+                fileHash: "stale-hash",
+                fileModified: "2000-01-01 00:00:00",
+                indexStatus: "completed"
+            )
+            try video.insert(db)
+        }
+
+        do {
+            _ = try await PipelineManager.processVideo(
+                videoPath: videoPath,
+                folderPath: root,
+                folderDB: folderDB,
+                skipStt: true,
+                ffmpegConfig: FFmpegConfig(ffmpegPath: "/usr/bin/false")
+            )
+            XCTFail("内容变更后应重跑管线并在 FFmpeg 阶段失败")
+        } catch {
+            // 预期：确认确实进入了重建分支
+        }
+    }
+
+    func testProcessVideo_recoveryWithSkipSyncRequestsForceSync() async throws {
+        let fm = FileManager.default
+        let root = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("findit-recovery-\(UUID().uuidString)")
+        try fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: root) }
+
+        let newPath = (root as NSString).appendingPathComponent("renamed.mp4")
+        _ = fm.createFile(atPath: newPath, contents: Data("shared-hash-content".utf8))
+        let sharedHash = try FileHasher.hash128(filePath: newPath)
+
+        let folderDB = try DatabaseManager.makeFolderInMemoryDatabase()
+        let globalDB = try DatabaseManager.makeGlobalInMemoryDatabase()
+
+        try await folderDB.write { db in
+            var folder = WatchedFolder(folderPath: root)
+            try folder.insert(db)
+
+            var orphaned = Video(
+                folderId: folder.folderId,
+                filePath: (root as NSString).appendingPathComponent("old.mp4"),
+                fileName: "old.mp4",
+                fileHash: sharedHash,
+                indexStatus: "orphaned",
+                orphanedAt: Clip.sqliteDatetime()
+            )
+            try orphaned.insert(db)
+
+            var clip = Clip(videoId: orphaned.videoId, startTime: 0, endTime: 5, scene: "scene")
+            try clip.insert(db)
+        }
+        let orphanedVideoId = try await folderDB.read { db in
+            try Int64.fetchOne(
+                db,
+                sql: "SELECT video_id FROM videos WHERE file_name = 'old.mp4' LIMIT 1"
+            ) ?? 0
+        }
+
+        let result = try await PipelineManager.processVideo(
+            videoPath: newPath,
+            folderPath: root,
+            folderDB: folderDB,
+            globalDB: globalDB,
+            skipStt: true,
+            skipSync: true
+        )
+
+        XCTAssertTrue(result.requiresForceSync)
+        XCTAssertEqual(result.videoId, orphanedVideoId)
+        XCTAssertEqual(result.clipsCreated, 1)
+    }
 }

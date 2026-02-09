@@ -70,6 +70,7 @@ public enum SyncEngine {
                 try Video.fetchAfterRowId(db, rowId: currentVideoRowId, limit: batchSize)
             }
             guard !batch.isEmpty else { break }
+            var syncedVideosInBatch = 0
 
             try globalDB.write { db in
                 for video in batch {
@@ -118,12 +119,13 @@ public enum SyncEngine {
                         }
                         continue
                     }
+                    syncedVideosInBatch += 1
                     if let vid = video.videoId, vid > currentVideoRowId {
                         currentVideoRowId = vid
                     }
                 }
             }
-            totalSyncedVideos += batch.count
+            totalSyncedVideos += syncedVideosInBatch
 
             if batch.count < batchSize { break }
         }
@@ -174,6 +176,7 @@ public enum SyncEngine {
                 try Clip.fetchAfterRowId(db, rowId: currentClipRowId, limit: batchSize)
             }
             guard !batch.isEmpty else { break }
+            var syncedClipsInBatch = 0
 
             try globalDB.write { db in
                 for clip in batch {
@@ -217,12 +220,13 @@ public enum SyncEngine {
                         }
                         continue
                     }
+                    syncedClipsInBatch += 1
                     if let cid = clip.clipId, cid > currentClipRowId {
                         currentClipRowId = cid
                     }
                 }
             }
-            totalSyncedClips += batch.count
+            totalSyncedClips += syncedClipsInBatch
 
             if batch.count < batchSize { break }
         }

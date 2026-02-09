@@ -65,6 +65,8 @@ public enum PipelineManager {
         public let syncResult: SyncEngine.SyncResult?
         /// 是否需要调用方执行 force 同步（并行模式恢复 orphaned 时使用）
         public let requiresForceSync: Bool
+        /// 是否因无音轨而跳过 STT（非致命降级）
+        public let sttSkippedNoAudio: Bool
 
         public init(
             videoId: Int64,
@@ -73,7 +75,8 @@ public enum PipelineManager {
             clipsEmbedded: Int,
             srtPath: String?,
             syncResult: SyncEngine.SyncResult?,
-            requiresForceSync: Bool = false
+            requiresForceSync: Bool = false,
+            sttSkippedNoAudio: Bool = false
         ) {
             self.videoId = videoId
             self.clipsCreated = clipsCreated
@@ -82,6 +85,7 @@ public enum PipelineManager {
             self.srtPath = srtPath
             self.syncResult = syncResult
             self.requiresForceSync = requiresForceSync
+            self.sttSkippedNoAudio = sttSkippedNoAudio
         }
     }
 
@@ -862,7 +866,8 @@ public enum PipelineManager {
             clipsAnalyzed: clipsAnalyzed,
             clipsEmbedded: clipsEmbedded,
             srtPath: srtPath,
-            syncResult: syncResult
+            syncResult: syncResult,
+            sttSkippedNoAudio: skipSttBecauseNoAudio
         )
     }
 

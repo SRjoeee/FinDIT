@@ -132,7 +132,12 @@ private struct FolderManagementRow: View {
             if isCurrentFolder {
                 ProgressView()
                     .controlSize(.mini)
-                Text("索引中 \(progress.completedVideos + progress.failedVideos)/\(progress.totalVideos)")
+                let base = "索引中 \(progress.completedVideos + progress.failedVideos)/\(progress.totalVideos)"
+                if progress.sttSkippedNoAudioVideos > 0 {
+                    Text("\(base) · \(progress.sttSkippedNoAudioVideos) 无音轨")
+                } else {
+                    Text(base)
+                }
             } else if progress.isComplete {
                 if progress.failedVideos > 0 {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -141,7 +146,11 @@ private struct FolderManagementRow: View {
                 } else {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
-                    Text("索引完成")
+                    if progress.sttSkippedNoAudioVideos > 0 {
+                        Text("索引完成（\(progress.sttSkippedNoAudioVideos) 无音轨）")
+                    } else {
+                        Text("索引完成")
+                    }
                 }
             }
         }

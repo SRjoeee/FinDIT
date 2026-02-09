@@ -12,6 +12,10 @@ struct FolderIndexProgress {
     var failedVideos: Int = 0
     /// 失败的视频路径 → 错误信息
     var errors: [(path: String, message: String)] = []
+    /// 非致命降级（例如无音轨跳过 STT）
+    var nonFatalIssues: [(path: String, message: String)] = []
+    /// 因无音轨而跳过 STT 的视频数量
+    var sttSkippedNoAudioVideos: Int = 0
 
     /// 进度百分比 (0.0 ~ 1.0)
     var progress: Double {
@@ -318,8 +322,15 @@ final class IndexingManager {
                     guard let self = self else { return }
                     if outcome.success {
                         self.folderProgress[folderPath]?.completedVideos += 1
+                        if outcome.sttSkippedNoAudio {
+                            self.folderProgress[folderPath]?.sttSkippedNoAudioVideos += 1
+                            self.folderProgress[folderPath]?.nonFatalIssues.append(
+                                (path: outcome.videoPath, message: "视频无音轨，已跳过语音转录")
+                            )
+                        }
                         let name = (outcome.videoPath as NSString).lastPathComponent
-                        print("[IndexingManager] 完成: \(name)")
+                        let suffix = outcome.sttSkippedNoAudio ? " [无音轨，已跳过 STT]" : ""
+                        print("[IndexingManager] 完成: \(name)\(suffix)")
                     } else if outcome.errorMessage != "cancelled" {
                         self.folderProgress[folderPath]?.failedVideos += 1
                         self.folderProgress[folderPath]?.errors.append(
@@ -424,8 +435,15 @@ final class IndexingManager {
                     guard let self = self else { return }
                     if outcome.success {
                         self.folderProgress[progressKey]?.completedVideos += 1
+                        if outcome.sttSkippedNoAudio {
+                            self.folderProgress[progressKey]?.sttSkippedNoAudioVideos += 1
+                            self.folderProgress[progressKey]?.nonFatalIssues.append(
+                                (path: outcome.videoPath, message: "视频无音轨，已跳过语音转录")
+                            )
+                        }
                         let name = (outcome.videoPath as NSString).lastPathComponent
-                        print("[IndexingManager] 增量完成: \(name)")
+                        let suffix = outcome.sttSkippedNoAudio ? " [无音轨，已跳过 STT]" : ""
+                        print("[IndexingManager] 增量完成: \(name)\(suffix)")
                     } else if outcome.errorMessage != "cancelled" {
                         self.folderProgress[progressKey]?.failedVideos += 1
                         let name = (outcome.videoPath as NSString).lastPathComponent

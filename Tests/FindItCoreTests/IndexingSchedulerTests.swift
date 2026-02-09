@@ -104,11 +104,13 @@ final class IndexingSchedulerTests: XCTestCase {
             videoPath: "/test.mp4",
             clipsCreated: 5,
             clipsAnalyzed: 3,
-            clipsEmbedded: 5
+            clipsEmbedded: 5,
+            sttSkippedNoAudio: true
         )
         XCTAssertTrue(outcome.success)
         XCTAssertNil(outcome.errorMessage)
         XCTAssertEqual(outcome.clipsCreated, 5)
+        XCTAssertTrue(outcome.sttSkippedNoAudio)
     }
 
     func testVideoOutcomeFailure() {
@@ -119,12 +121,14 @@ final class IndexingSchedulerTests: XCTestCase {
         XCTAssertFalse(outcome.success)
         XCTAssertEqual(outcome.errorMessage, "测试错误")
         XCTAssertEqual(outcome.clipsCreated, 0)
+        XCTAssertFalse(outcome.sttSkippedNoAudio)
     }
 
     func testVideoOutcomeSkipped() {
         let outcome = IndexingScheduler.VideoOutcome.skipped(videoPath: "/test.mp4")
         XCTAssertFalse(outcome.success)
         XCTAssertEqual(outcome.errorMessage, "cancelled")
+        XCTAssertFalse(outcome.sttSkippedNoAudio)
     }
 
     func testProcessVideos_forceSyncsAfterOrphanRecovery() async throws {

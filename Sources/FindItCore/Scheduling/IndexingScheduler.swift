@@ -60,18 +60,22 @@ public final class IndexingScheduler: @unchecked Sendable {
         public let clipsAnalyzed: Int
         /// 完成嵌入的 clip 数量（成功时）
         public let clipsEmbedded: Int
+        /// 是否因无音轨而跳过 STT（非致命降级）
+        public let sttSkippedNoAudio: Bool
 
         /// 成功结果
         public static func success(
             videoPath: String,
             clipsCreated: Int = 0,
             clipsAnalyzed: Int = 0,
-            clipsEmbedded: Int = 0
+            clipsEmbedded: Int = 0,
+            sttSkippedNoAudio: Bool = false
         ) -> VideoOutcome {
             VideoOutcome(
                 videoPath: videoPath, success: true, errorMessage: nil,
                 clipsCreated: clipsCreated, clipsAnalyzed: clipsAnalyzed,
-                clipsEmbedded: clipsEmbedded
+                clipsEmbedded: clipsEmbedded,
+                sttSkippedNoAudio: sttSkippedNoAudio
             )
         }
 
@@ -79,7 +83,8 @@ public final class IndexingScheduler: @unchecked Sendable {
         public static func failure(videoPath: String, error: String) -> VideoOutcome {
             VideoOutcome(
                 videoPath: videoPath, success: false, errorMessage: error,
-                clipsCreated: 0, clipsAnalyzed: 0, clipsEmbedded: 0
+                clipsCreated: 0, clipsAnalyzed: 0, clipsEmbedded: 0,
+                sttSkippedNoAudio: false
             )
         }
 
@@ -87,7 +92,8 @@ public final class IndexingScheduler: @unchecked Sendable {
         public static func skipped(videoPath: String) -> VideoOutcome {
             VideoOutcome(
                 videoPath: videoPath, success: false, errorMessage: "cancelled",
-                clipsCreated: 0, clipsAnalyzed: 0, clipsEmbedded: 0
+                clipsCreated: 0, clipsAnalyzed: 0, clipsEmbedded: 0,
+                sttSkippedNoAudio: false
             )
         }
     }
@@ -206,7 +212,8 @@ public final class IndexingScheduler: @unchecked Sendable {
                             videoPath: videoPath,
                             clipsCreated: result.clipsCreated,
                             clipsAnalyzed: result.clipsAnalyzed,
-                            clipsEmbedded: result.clipsEmbedded
+                            clipsEmbedded: result.clipsEmbedded,
+                            sttSkippedNoAudio: result.sttSkippedNoAudio
                         ))
                         return result.requiresForceSync
 

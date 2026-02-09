@@ -83,6 +83,10 @@ private struct FolderProgressSection: View {
                         Text("\(progress.failedVideos) 失败")
                             .foregroundStyle(.orange)
                     }
+                    if progress.sttSkippedNoAudioVideos > 0 {
+                        Text("\(progress.sttSkippedNoAudioVideos) 无音轨")
+                            .foregroundStyle(.secondary)
+                    }
                     Spacer()
                     Text("\(progress.completedVideos + progress.failedVideos)/\(progress.totalVideos)")
                         .foregroundStyle(.secondary)
@@ -110,6 +114,21 @@ private struct FolderProgressSection: View {
             }
 
             // 错误列表
+            if !progress.nonFatalIssues.isEmpty {
+                DisclosureGroup("已降级 (\(progress.nonFatalIssues.count))") {
+                    ForEach(Array(progress.nonFatalIssues.enumerated()), id: \.offset) { _, issue in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(URL(fileURLWithPath: issue.path).lastPathComponent)
+                                .font(.caption)
+                            Text(issue.message)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .font(.caption)
+            }
+
             if !progress.errors.isEmpty {
                 DisclosureGroup("错误 (\(progress.errors.count))") {
                     ForEach(Array(progress.errors.enumerated()), id: \.offset) { _, error in

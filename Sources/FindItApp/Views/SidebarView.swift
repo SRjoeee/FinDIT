@@ -456,14 +456,25 @@ private struct FolderRow: View {
     @ViewBuilder
     private func indexingStatusText(_ progress: FolderIndexProgress) -> some View {
         if isCurrentFolder {
-            Text("索引中 \(progress.completedVideos + progress.failedVideos)/\(progress.totalVideos)")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            let base = "索引中 \(progress.completedVideos + progress.failedVideos)/\(progress.totalVideos)"
+            if progress.sttSkippedNoAudioVideos > 0 {
+                Text("\(base) · \(progress.sttSkippedNoAudioVideos) 无音轨")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(base)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         } else if progress.isComplete {
             if progress.failedVideos > 0 {
                 Text("\(progress.completedVideos) 完成, \(progress.failedVideos) 失败")
                     .font(.caption2)
                     .foregroundStyle(.orange)
+            } else if progress.sttSkippedNoAudioVideos > 0 {
+                Text("索引完成 · \(progress.sttSkippedNoAudioVideos) 无音轨")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             } else {
                 statsText
             }

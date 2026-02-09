@@ -910,6 +910,7 @@ struct IndexCommand: AsyncParsableCommand {
         var totalAnalyzed = 0
         var processedCount = 0
         var failedCount = 0
+        var sttSkippedNoAudioCount = 0
 
         print()
 
@@ -941,10 +942,12 @@ struct IndexCommand: AsyncParsableCommand {
                         Task { await counter.addSuccess(
                             clips: outcome.clipsCreated,
                             analyzed: outcome.clipsAnalyzed,
-                            embedded: outcome.clipsEmbedded
+                            embedded: outcome.clipsEmbedded,
+                            sttSkippedNoAudio: outcome.sttSkippedNoAudio
                         )}
                         let name = (outcome.videoPath as NSString).lastPathComponent
-                        print("  ✓ \(name): \(outcome.clipsCreated) 片段, \(outcome.clipsAnalyzed) 分析, \(outcome.clipsEmbedded) 嵌入")
+                        let suffix = outcome.sttSkippedNoAudio ? " [无音轨，已跳过 STT]" : ""
+                        print("  ✓ \(name): \(outcome.clipsCreated) 片段, \(outcome.clipsAnalyzed) 分析, \(outcome.clipsEmbedded) 嵌入\(suffix)")
                     } else if outcome.errorMessage == "cancelled" {
                         let name = (outcome.videoPath as NSString).lastPathComponent
                         print("  ⊘ \(name): 已跳过")
@@ -960,6 +963,7 @@ struct IndexCommand: AsyncParsableCommand {
             totalAnalyzed = await counter.analyzed
             processedCount = await counter.successes
             failedCount = await counter.failures
+            sttSkippedNoAudioCount = await counter.sttSkippedNoAudio
 
         } else {
             // 串行模式：原有逻辑
@@ -984,6 +988,9 @@ struct IndexCommand: AsyncParsableCommand {
                     totalClips += result.clipsCreated
                     totalAnalyzed += result.clipsAnalyzed
                     processedCount += 1
+                    if result.sttSkippedNoAudio {
+                        sttSkippedNoAudioCount += 1
+                    }
 
                     if let srt = result.srtPath {
                         print("  ✓ SRT: \(srt)")
@@ -1010,6 +1017,9 @@ struct IndexCommand: AsyncParsableCommand {
         if failedCount > 0 {
             summary += ", \(failedCount) 个失败"
         }
+        if sttSkippedNoAudioCount > 0 {
+            summary += ", \(sttSkippedNoAudioCount) 个无音轨（已跳过 STT）"
+        }
         summary += ", 耗时 \(timeStr)"
         print(summary)
     }
@@ -1022,12 +1032,21 @@ private actor VideoCounter {
     var clips: Int = 0
     var analyzed: Int = 0
     var embedded: Int = 0
+    var sttSkippedNoAudio: Int = 0
 
-    func addSuccess(clips: Int, analyzed: Int, embedded: Int = 0) {
+    func addSuccess(
+        clips: Int,
+        analyzed: Int,
+        embedded: Int = 0,
+        sttSkippedNoAudio: Bool = false
+    ) {
         successes += 1
         self.clips += clips
         self.analyzed += analyzed
         self.embedded += embedded
+        if sttSkippedNoAudio {
+            self.sttSkippedNoAudio += 1
+        }
     }
 
     func addFailure() {

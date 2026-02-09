@@ -103,6 +103,17 @@ struct IndexingProgressRing: View {
                     .monospacedDigit()
             }
             .font(.caption)
+
+            if sttSkippedNoAudioVideos > 0 {
+                HStack(spacing: 5) {
+                    Image(systemName: "waveform.slash")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text("无音轨跳过 STT: \(sttSkippedNoAudioVideos)")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption)
+            }
         }
         .padding(10)
         .frame(width: 200)
@@ -120,6 +131,10 @@ struct IndexingProgressRing: View {
 
     private var doneVideos: Int {
         indexingManager.folderProgress.values.reduce(0) { $0 + $1.completedVideos + $1.failedVideos }
+    }
+
+    private var sttSkippedNoAudioVideos: Int {
+        indexingManager.folderProgress.values.reduce(0) { $0 + $1.sttSkippedNoAudioVideos }
     }
 
     private var progress: CGFloat {

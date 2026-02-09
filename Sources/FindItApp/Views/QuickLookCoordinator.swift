@@ -89,11 +89,11 @@ final class QuickLookCoordinator: NSObject, @preconcurrency QLPreviewPanelDataSo
             }
 
             switch event.keyCode {
-            case 123: Self.postNavigate("left"); return nil   // ←
-            case 124: Self.postNavigate("right"); return nil  // →
-            case 125: Self.postNavigate("down"); return nil   // ↓
-            case 126: Self.postNavigate("up"); return nil     // ↑
-            case 49:  Self.postToggleQL(); return nil         // space
+            case 123: Self.postNavigate(.left); return nil   // ←
+            case 124: Self.postNavigate(.right); return nil  // →
+            case 125: Self.postNavigate(.down); return nil   // ↓
+            case 126: Self.postNavigate(.up); return nil     // ↑
+            case 49:  Self.postToggleQL(); return nil        // space
             default:  return event
             }
         }
@@ -106,7 +106,7 @@ final class QuickLookCoordinator: NSObject, @preconcurrency QLPreviewPanelDataSo
         }
     }
 
-    private static func postNavigate(_ direction: String) {
+    private static func postNavigate(_ direction: NavigationDirection) {
         NotificationCenter.default.post(
             name: .navigateClip,
             object: nil,

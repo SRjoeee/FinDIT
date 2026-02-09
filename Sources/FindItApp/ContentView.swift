@@ -67,7 +67,7 @@ struct ContentView: View {
             }
             // QL 面板已打开时，选中变更自动更新预览
             guard let clipId = selectedClipId,
-                  let result = visibleResults.first(where: { $0.clipId == clipId }),
+                  let result = searchState.visibleResults.first(where: { $0.clipId == clipId }),
                   let path = result.filePath,
                   FileManager.default.fileExists(atPath: path) else { return }
             qlCoordinator.updateIfVisible(url: URL(fileURLWithPath: path))
@@ -118,25 +118,19 @@ struct ContentView: View {
             // 清理过期 orphaned 记录
             Task.detached(priority: .utility) {
                 let retention = IndexingOptions.load().orphanedRetentionDays
-                guard retention > 0 else { return }
-                let folders = await appState.folders
-                for folder in folders where folder.isAvailable {
-                    if let folderDB = try? DatabaseManager.openFolderDatabase(at: folder.folderPath) {
-                        let result = try? OrphanRecovery.cleanupExpired(
-                            retentionDays: retention,
-                            folderPath: folder.folderPath,
-                            folderDB: folderDB
-                        )
-                        if let r = result, r.removedCount > 0 {
-                            print("[Cleanup] 清理 \(r.removedCount) 个过期 orphaned in \(folder.folderPath)")
-                        }
-                    }
+                if retention > 0 {
+                    await indexingManager.cleanupOrphanedRecords(retentionDays: retention)
                 }
             }
         }
         .task {
+            // 同步初始偏好设置
+            searchState.showOfflineFiles = showOfflineFiles
             // 周期性文件夹健康检查（30秒间隔）
             await appState.startPeriodicHealthCheck()
+        }
+        .onChange(of: showOfflineFiles) {
+            searchState.showOfflineFiles = showOfflineFiles
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             // App 从后台切回时立即检查（用户可能在 Finder 中操作了文件夹）
@@ -149,7 +143,7 @@ struct ContentView: View {
             showFolderSheet = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .navigateClip)) { notification in
-            guard let direction = notification.userInfo?["direction"] as? String else { return }
+            guard let direction = notification.userInfo?["direction"] as? NavigationDirection else { return }
             handleArrowKey(direction)
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleQuickLook)) { _ in
@@ -181,13 +175,13 @@ struct ContentView: View {
                     )
                 }
 
-                if visibleResults.isEmpty {
+                if searchState.visibleResults.isEmpty {
                     ContentUnavailableView.search(text: searchState.query)
                         .frame(maxHeight: .infinity)
                 } else {
                     ResultsGrid(
-                        results: visibleResults,
-                        resultCount: visibleResults.count,
+                        results: searchState.visibleResults,
+                        resultCount: searchState.visibleResults.count,
                         offlineFolders: offlineFolderPaths,
                         globalDB: appState.globalDB,
                         selectedClipId: $selectedClipId,
@@ -204,7 +198,7 @@ struct ContentView: View {
     /// 空格键：切换 Quick Look 预览
     private func handleSpaceKey() {
         guard let clipId = selectedClipId,
-              let result = visibleResults.first(where: { $0.clipId == clipId }),
+              let result = searchState.visibleResults.first(where: { $0.clipId == clipId }),
               let path = result.filePath,
               FileManager.default.fileExists(atPath: path) else { return }
         qlCoordinator.toggle(url: URL(fileURLWithPath: path))
@@ -214,8 +208,8 @@ struct ContentView: View {
     ///
     /// 左/右移动 ±1，上/下按列数跳行。
     /// 无选中时按任意方向键选中第一项。
-    private func handleArrowKey(_ direction: String) {
-        let results = visibleResults
+    private func handleArrowKey(_ direction: NavigationDirection) {
+        let results = searchState.visibleResults
         guard !results.isEmpty else { return }
 
         // 无选中 → 选第一项
@@ -228,16 +222,14 @@ struct ContentView: View {
 
         let newIndex: Int
         switch direction {
-        case "left":
+        case .left:
             newIndex = max(0, currentIndex - 1)
-        case "right":
+        case .right:
             newIndex = min(results.count - 1, currentIndex + 1)
-        case "up":
+        case .up:
             newIndex = max(0, currentIndex - columnsPerRow)
-        case "down":
+        case .down:
             newIndex = min(results.count - 1, currentIndex + columnsPerRow)
-        default:
-            return
         }
 
         guard newIndex != currentIndex else { return }
@@ -250,15 +242,6 @@ struct ContentView: View {
     /// 离线文件夹路径集合
     private var offlineFolderPaths: Set<String> {
         Set(appState.folders.filter { !$0.isAvailable }.map(\.folderPath))
-    }
-
-    /// 对用户可见的搜索结果（过滤 + 排序 + 离线过滤）
-    private var visibleResults: [SearchEngine.SearchResult] {
-        let results = searchState.displayResults
-        guard !showOfflineFiles else { return results }
-        let offline = offlineFolderPaths
-        guard !offline.isEmpty else { return results }
-        return results.filter { !offline.contains($0.sourceFolder) }
     }
 
     // MARK: - Actions

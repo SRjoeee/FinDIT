@@ -34,6 +34,27 @@ final class SearchState {
     /// 展示结果总数
     var displayResultCount: Int { displayResults.count }
 
+    /// 是否显示离线文件（由 View 层绑定设置）
+    var showOfflineFiles: Bool = false
+
+    /// 对 UI 可见的最终结果（已应用所有过滤，包括离线状态）
+    ///
+    /// 替代原 ContentView 中的计算属性，利用 @Observation 自动追踪依赖。
+    var visibleResults: [SearchEngine.SearchResult] {
+        // 如果允许显示离线文件，直接返回 displayResults
+        if showOfflineFiles { return displayResults }
+
+        // 否则过滤掉离线文件夹的内容
+        guard let appState = appState else { return displayResults }
+        
+        // 访问 Observable 的 appState.folders 会自动建立依赖
+        let offlinePaths = Set(appState.folders.filter { !$0.isAvailable }.map(\.folderPath))
+        
+        if offlinePaths.isEmpty { return displayResults }
+        
+        return displayResults.filter { !offlinePaths.contains($0.sourceFolder) }
+    }
+
     /// 是否正在进行向量搜索
     var isVectorSearching = false
 

@@ -61,10 +61,12 @@ struct ClipHoverCard: View {
 
     // MARK: - Tags
 
+    private static let decoder = JSONDecoder()
+
     private var tagsList: [String] {
         guard let json = result.tags, !json.isEmpty,
               let data = json.data(using: .utf8),
-              let array = try? JSONDecoder().decode([String].self, from: data) else {
+              let array = try? Self.decoder.decode([String].self, from: data) else {
             return []
         }
         return array

@@ -175,18 +175,6 @@ final class IndexingManager {
         }
     }
 
-    /// 运行时配置变更后刷新共享资源缓存
-    ///
-    /// 生效范围：
-    /// - 后续入队任务会使用新的 API Key / ProviderConfig
-    /// - 正在执行中的视频任务保持原配置（避免中途切换导致行为不一致）
-    func refreshRuntimeConfig() {
-        hasResolvedAPIKey = false
-        resolvedAPIKey = nil
-        rateLimiter = nil
-        embeddingProvider = nil
-    }
-
     // MARK: - 私有方法
 
     /// 在后台队列执行阻塞 I/O，避免占用 MainActor

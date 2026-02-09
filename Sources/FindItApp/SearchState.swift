@@ -384,21 +384,4 @@ final class SearchState {
         results = []
     }
 
-    /// 运行时配置变更（API Key / ProviderConfig）后刷新缓存
-    ///
-    /// 该方法会清空 provider 与 VectorStore 缓存，并在当前有查询词时
-    /// 自动触发一次新的向量搜索，确保设置变更即时生效。
-    func refreshRuntimeConfig() {
-        vectorSearchTask?.cancel()
-        embeddingProvider = nil
-        hasTriedInitProvider = false
-        vectorStore = nil
-        invalidateVectorFilterCache()
-        isLoadingVectorStore = false
-        isVectorSearching = false
-
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        scheduleVectorSearch()
-    }
 }

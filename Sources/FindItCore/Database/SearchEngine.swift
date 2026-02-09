@@ -304,76 +304,59 @@ public enum SearchEngine {
     ) throws -> [SearchResult] {
         guard !storeResults.isEmpty else { return [] }
 
-        var similarities: [Int64: Double] = [:]
-        similarities.reserveCapacity(storeResults.count)
-        for item in storeResults {
-            similarities[item.clipId] = Double(item.similarity)
-        }
+        // SQLite 默认变量上限通常为 999，预留少量参数给其他过滤条件
+        let candidateResults = Array(storeResults.prefix(900))
+        let similarities = Dictionary(uniqueKeysWithValues: candidateResults.map { ($0.clipId, Double($0.similarity)) })
+        let clipIds = candidateResults.map { $0.clipId }
 
+        // 查询元数据（含文件夹过滤）
+        let placeholders = clipIds.map { _ in "?" }.joined(separator: ", ")
         let filterSQL = folderFilterSQL(folderPaths: folderPaths)
         let prefixSQL = pathPrefixFilterSQL(pathPrefixFilter)
+        var args = StatementArguments()
+        for id in clipIds { args += [id] }
+        appendFolderArgs(&args, folderPaths: folderPaths)
+        appendPrefixArgs(&args, pathPrefixFilter: pathPrefixFilter)
 
-        // 分块执行 IN 查询，避免“先截断候选再过滤”导致窄范围检索漏召回。
-        let extraParamCount = (folderPaths?.count ?? 0) + (pathPrefixFilter == nil ? 0 : 1)
-        let maxClipIDsPerBatch = max(1, 900 - extraParamCount)
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
+                   v.file_path, v.file_name,
+                   c.start_time, c.end_time, c.scene, c.description,
+                   c.tags, c.transcript, c.thumbnail_path, c.user_tags,
+                   c.rating, c.color_label, c.shot_type, c.mood
+            FROM clips c
+            LEFT JOIN videos v ON v.video_id = c.video_id
+            WHERE c.clip_id IN (\(placeholders))\(filterSQL)\(prefixSQL)
+            """, arguments: args)
 
+        // 构建结果并按相似度排序
         var results: [SearchResult] = []
-        results.reserveCapacity(min(limit, storeResults.count))
-        var seenClipIDs = Set<Int64>()
-
-        var offset = 0
-        while offset < storeResults.count && results.count < limit {
-            let batchEnd = min(offset + maxClipIDsPerBatch, storeResults.count)
-            let batch = Array(storeResults[offset..<batchEnd])
-            let clipIds = batch.map { $0.clipId }
-            let placeholders = clipIds.map { _ in "?" }.joined(separator: ", ")
-
-            var args = StatementArguments()
-            for id in clipIds { args += [id] }
-            appendFolderArgs(&args, folderPaths: folderPaths)
-            appendPrefixArgs(&args, pathPrefixFilter: pathPrefixFilter)
-
-            let rows = try Row.fetchAll(db, sql: """
-                SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
-                       v.file_path, v.file_name,
-                       c.start_time, c.end_time, c.scene, c.description,
-                       c.tags, c.transcript, c.thumbnail_path, c.user_tags,
-                       c.rating, c.color_label, c.shot_type, c.mood
-                FROM clips c
-                LEFT JOIN videos v ON v.video_id = c.video_id
-                WHERE c.clip_id IN (\(placeholders))\(filterSQL)\(prefixSQL)
-                """, arguments: args)
-
-            for row in rows {
-                let clipId: Int64 = row["clip_id"]
-                guard seenClipIDs.insert(clipId).inserted else { continue }
-                let sim = similarities[clipId] ?? 0.0
-                results.append(SearchResult(
-                    clipId: clipId,
-                    sourceFolder: row["source_folder"],
-                    sourceClipId: row["source_clip_id"],
-                    videoId: row["video_id"],
-                    filePath: row["file_path"],
-                    fileName: row["file_name"],
-                    startTime: row["start_time"],
-                    endTime: row["end_time"],
-                    scene: row["scene"],
-                    clipDescription: row["description"],
-                    tags: row["tags"],
-                    transcript: row["transcript"],
-                    thumbnailPath: row["thumbnail_path"],
-                    userTags: row["user_tags"],
-                    rating: row["rating"] ?? 0,
-                    colorLabel: row["color_label"],
-                    shotType: row["shot_type"],
-                    mood: row["mood"],
-                    rank: 0.0,
-                    similarity: sim,
-                    finalScore: sim
-                ))
-            }
-
-            offset = batchEnd
+        for row in rows {
+            let clipId: Int64 = row["clip_id"]
+            let sim = similarities[clipId] ?? 0.0
+            results.append(SearchResult(
+                clipId: clipId,
+                sourceFolder: row["source_folder"],
+                sourceClipId: row["source_clip_id"],
+                videoId: row["video_id"],
+                filePath: row["file_path"],
+                fileName: row["file_name"],
+                startTime: row["start_time"],
+                endTime: row["end_time"],
+                scene: row["scene"],
+                clipDescription: row["description"],
+                tags: row["tags"],
+                transcript: row["transcript"],
+                thumbnailPath: row["thumbnail_path"],
+                userTags: row["user_tags"],
+                rating: row["rating"] ?? 0,
+                colorLabel: row["color_label"],
+                shotType: row["shot_type"],
+                mood: row["mood"],
+                rank: 0.0,
+                similarity: sim,
+                finalScore: sim
+            ))
         }
 
         results.sort {

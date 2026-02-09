@@ -250,21 +250,44 @@ public enum PipelineManager {
                 currentStage = .pending
                 // 不 return，继续执行管线
             } else {
-                // storedHash == nil → 旧数据无哈希 → 补充哈希后跳过
-                progress("补充文件哈希...")
-                try Task.checkCancellation()
-                let hash = try FileHasher.hash128(filePath: videoPath)
-                try await folderDB.write { db in
-                    try db.execute(sql: """
-                        UPDATE videos SET file_hash = ?, file_size = ?, file_modified = ?
-                        WHERE video_id = ?
-                        """, arguments: [hash, currentSize, currentMtime, videoId])
+                // storedHash == nil → 旧数据无哈希（迁移遗留）
+                //
+                // 平衡“安全”与“性能”：
+                // 1) 文件大小明确变化（高置信内容变化）→ 重新索引，避免静默陈旧数据
+                // 2) 仅 mtime 变化（常见于拷贝/触碰）→ 仅回填 hash，保持快速跳过路径
+                let hasReliableSizeChange =
+                    currentSize != nil &&
+                    video.fileSize != nil &&
+                    !sizeMatch
+
+                if hasReliableSizeChange {
+                    progress("旧索引无哈希且文件大小变更，重新索引")
+                    try await folderDB.write { db in
+                        try db.execute(sql: """
+                            UPDATE videos SET index_status = 'pending', index_error = NULL,
+                                file_size = ?, file_modified = ?, file_hash = NULL,
+                                last_processed_clip = NULL
+                            WHERE video_id = ?
+                            """, arguments: [currentSize, currentMtime, videoId])
+                    }
+                    currentStage = .pending
+                    // 不 return，继续执行管线
+                } else {
+                    progress("补充文件哈希...")
+                    try Task.checkCancellation()
+                    let hash = try FileHasher.hash128(filePath: videoPath)
+                    try await folderDB.write { db in
+                        try db.execute(sql: """
+                            UPDATE videos SET file_hash = ?, file_size = ?, file_modified = ?
+                            WHERE video_id = ?
+                            """, arguments: [hash, currentSize, currentMtime, videoId])
+                    }
+                    progress("已完成，已补充哈希")
+                    return ProcessingResult(
+                        videoId: videoId, clipsCreated: 0, clipsAnalyzed: 0,
+                        clipsEmbedded: 0, srtPath: video.srtPath, syncResult: nil
+                    )
                 }
-                progress("已完成，已补充哈希")
-                return ProcessingResult(
-                    videoId: videoId, clipsCreated: 0, clipsAnalyzed: 0,
-                    clipsEmbedded: 0, srtPath: video.srtPath, syncResult: nil
-                )
             }
         }
 

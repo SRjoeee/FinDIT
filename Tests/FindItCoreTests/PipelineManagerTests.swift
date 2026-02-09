@@ -217,6 +217,103 @@ final class PipelineManagerTests: XCTestCase {
         }
     }
 
+    func testProcessVideo_completedWithoutHashAndSizeChange_reindexes() async throws {
+        let fm = FileManager.default
+        let root = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("findit-completed-nohash-size-\(UUID().uuidString)")
+        try fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: root) }
+
+        let videoPath = (root as NSString).appendingPathComponent("changed-nohash.mp4")
+        _ = fm.createFile(atPath: videoPath, contents: Data("legacy-new-content".utf8))
+
+        let folderDB = try DatabaseManager.makeFolderInMemoryDatabase()
+        try await folderDB.write { db in
+            var folder = WatchedFolder(folderPath: root)
+            try folder.insert(db)
+
+            var video = Video(
+                folderId: folder.folderId,
+                filePath: videoPath,
+                fileName: "changed-nohash.mp4",
+                fileSize: 1,
+                fileHash: nil,
+                fileModified: "2000-01-01 00:00:00",
+                indexStatus: "completed"
+            )
+            try video.insert(db)
+        }
+
+        do {
+            _ = try await PipelineManager.processVideo(
+                videoPath: videoPath,
+                folderPath: root,
+                folderDB: folderDB,
+                skipStt: true,
+                ffmpegConfig: FFmpegConfig(ffmpegPath: "/usr/bin/false")
+            )
+            XCTFail("无 hash 且文件大小变更时应进入重建分支并在 FFmpeg 阶段失败")
+        } catch {
+            // 预期：确认已进入重建分支
+        }
+    }
+
+    func testProcessVideo_completedWithoutHashAndOnlyMtimeChange_backfillsHashAndSkips() async throws {
+        let fm = FileManager.default
+        let root = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("findit-completed-nohash-mtime-\(UUID().uuidString)")
+        try fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: root) }
+
+        let videoPath = (root as NSString).appendingPathComponent("mtime-only.mp4")
+        _ = fm.createFile(atPath: videoPath, contents: Data("legacy-same-content".utf8))
+
+        let attrs = try fm.attributesOfItem(atPath: videoPath)
+        let fileSize = attrs[.size] as? Int64
+
+        let folderDB = try DatabaseManager.makeFolderInMemoryDatabase()
+        try await folderDB.write { db in
+            var folder = WatchedFolder(folderPath: root)
+            try folder.insert(db)
+
+            var video = Video(
+                folderId: folder.folderId,
+                filePath: videoPath,
+                fileName: "mtime-only.mp4",
+                fileSize: fileSize,
+                fileHash: nil,
+                fileModified: "2000-01-01 00:00:00",
+                indexStatus: "completed"
+            )
+            try video.insert(db)
+        }
+
+        let result = try await PipelineManager.processVideo(
+            videoPath: videoPath,
+            folderPath: root,
+            folderDB: folderDB,
+            skipStt: true,
+            ffmpegConfig: FFmpegConfig(ffmpegPath: "/usr/bin/false")
+        )
+
+        XCTAssertEqual(result.clipsCreated, 0)
+        XCTAssertEqual(result.clipsAnalyzed, 0)
+        XCTAssertEqual(result.clipsEmbedded, 0)
+
+        let expectedHash = try FileHasher.hash128(filePath: videoPath)
+        let row = try await folderDB.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT index_status, file_hash FROM videos WHERE file_path = ?",
+                arguments: [videoPath]
+            )
+        }
+        let status: String? = row?["index_status"]
+        let storedHash: String? = row?["file_hash"]
+        XCTAssertEqual(status, "completed")
+        XCTAssertEqual(storedHash, expectedHash)
+    }
+
     func testProcessVideo_recoveryWithSkipSyncRequestsForceSync() async throws {
         let fm = FileManager.default
         let root = (NSTemporaryDirectory() as NSString)

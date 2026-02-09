@@ -416,5 +416,15 @@ final class SyncEngineTests: XCTestCase {
 
         XCTAssertEqual(result.syncedVideos, 1, "应仅统计实际写入全局库的 video")
         XCTAssertEqual(result.syncedClips, 1, "应仅统计实际写入全局库的 clip")
+
+        // 双重校验：同步返回值应与全局库实际行数一致（避免“仅返回值正确”但落库异常）
+        let globalVideoCount = try globalDB.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM videos WHERE source_folder = ?", arguments: [folderPath])
+        }
+        let globalClipCount = try globalDB.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM clips WHERE source_folder = ?", arguments: [folderPath])
+        }
+        XCTAssertEqual(globalVideoCount, 1)
+        XCTAssertEqual(globalClipCount, 1)
     }
 }

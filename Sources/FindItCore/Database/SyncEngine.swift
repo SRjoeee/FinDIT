@@ -70,6 +70,8 @@ public enum SyncEngine {
                 try Video.fetchAfterRowId(db, rowId: currentVideoRowId, limit: batchSize)
             }
             guard !batch.isEmpty else { break }
+            // 注意：这里必须按“实际成功 upsert”的条数累计，而不是 batch.count。
+            // 跳过的 orphaned/子目录冲突/唯一约束冲突记录不应计入用户可见同步数量。
             var syncedVideosInBatch = 0
 
             try globalDB.write { db in
@@ -176,6 +178,7 @@ public enum SyncEngine {
                 try Clip.fetchAfterRowId(db, rowId: currentClipRowId, limit: batchSize)
             }
             guard !batch.isEmpty else { break }
+            // 同上：只统计实际写入成功的 clips，避免 CLI/UI 同步数量被高估。
             var syncedClipsInBatch = 0
 
             try globalDB.write { db in

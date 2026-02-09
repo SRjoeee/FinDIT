@@ -52,6 +52,27 @@ final class FFmpegBridgeTests: XCTestCase {
         XCTAssertNil(duration)
     }
 
+    // MARK: - 无音轨错误识别（纯单元测试）
+
+    func testIsMissingAudioStreamError_OutputFileHasNoStream() {
+        let stderr = """
+        Output #1, wav, to '/tmp/video.wav':
+        [out#1/wav @ 0x600000d0c000] Output file does not contain any stream
+        Error opening output file /tmp/video.wav.
+        """
+        XCTAssertTrue(FFmpegBridge.isMissingAudioStreamError(stderr: stderr))
+    }
+
+    func testIsMissingAudioStreamError_StreamMapNoMatch() {
+        let stderr = "Stream map '0:a:0' matches no streams."
+        XCTAssertTrue(FFmpegBridge.isMissingAudioStreamError(stderr: stderr))
+    }
+
+    func testIsMissingAudioStreamError_OtherFFmpegError() {
+        let stderr = "Invalid data found when processing input"
+        XCTAssertFalse(FFmpegBridge.isMissingAudioStreamError(stderr: stderr))
+    }
+
     // MARK: - validateExecutable（集成测试）
 
     func testValidateExecutableDefault() throws {

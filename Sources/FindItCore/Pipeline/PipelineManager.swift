@@ -432,6 +432,7 @@ public enum PipelineManager {
         var sceneSegments: [SceneSegment] = []
         var frameGroups: [[String]] = []
         var extractedAudioPath: String?
+        var skipSttBecauseNoAudio = false
 
         // 2. FFmpeg 准备阶段（场景检测 + 关键帧 + 本地视觉分析）
         //    对 pending 或 failed 状态的视频需要执行
@@ -459,7 +460,11 @@ public enum PipelineManager {
                 try Task.checkCancellation()
                 let duration = detection.duration
                 sceneSegments = detection.scenes
-                extractedAudioPath = audioOutputPath
+                extractedAudioPath = detection.audioExtracted ? audioOutputPath : nil
+                if needsAudio && !detection.audioExtracted {
+                    skipSttBecauseNoAudio = true
+                    progress("视频无音轨，跳过语音转录")
+                }
 
                 try updateVideoDuration(folderDB: folderDB, videoId: videoId, duration: duration)
                 progress("检测到 \(sceneSegments.count) 个场景 (时长: \(Int(duration))s)")
@@ -556,7 +561,12 @@ public enum PipelineManager {
         //    skipStt=true: 跳过所有 STT（包括 SpeechAnalyzer）
         //    macOS 26+: 优先 SpeechAnalyzer（即使 whisperKit 为 nil）
         //    较旧 macOS: 需要 whisperKit
-        let sttAvailable = skipStt ? false : await isSttAvailable(whisperKit: whisperKit)
+        let sttAvailable: Bool
+        if skipStt || skipSttBecauseNoAudio {
+            sttAvailable = false
+        } else {
+            sttAvailable = await isSttAvailable(whisperKit: whisperKit)
+        }
         if sttAvailable && currentStage.isBefore(.sttDone) {
             do {
                 try Task.checkCancellation()

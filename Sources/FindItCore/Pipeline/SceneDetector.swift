@@ -113,6 +113,14 @@ public enum SceneDetector {
         public let scenes: [SceneSegment]
         /// 视频时长（秒）
         public let duration: Double
+        /// 是否成功提取了音频（请求了音频输出时使用）
+        public let audioExtracted: Bool
+
+        public init(scenes: [SceneSegment], duration: Double, audioExtracted: Bool = false) {
+            self.scenes = scenes
+            self.duration = duration
+            self.audioExtracted = audioExtracted
+        }
     }
 
     /// 优化版场景检测：单次 FFmpeg 调用获取场景 + 时长 + 可选音频
@@ -137,25 +145,53 @@ public enum SceneDetector {
             throw FFmpegError.inputFileNotFound(path: inputPath)
         }
 
-        var args = buildDetectionArguments(inputPath: inputPath, threshold: config.threshold)
-
-        // 如果需要音频提取，追加第二输出
         if let audioPath = audioOutputPath {
-            args += ["-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", "-y", audioPath]
+            let combinedArgs = buildCombinedArguments(
+                inputPath: inputPath,
+                threshold: config.threshold,
+                audioOutputPath: audioPath
+            )
+            do {
+                let result = try FFmpegBridge.run(arguments: combinedArgs, config: ffmpegConfig)
+                return try buildCombinedResult(
+                    ffmpegResult: result,
+                    config: config,
+                    audioOutputPath: audioPath,
+                    audioExtracted: true
+                )
+            } catch let FFmpegError.processExitedWithError(_, stderr)
+                where FFmpegBridge.isMissingAudioStreamError(stderr: stderr) {
+                // 无音轨是可恢复场景：回退为“仅场景检测”，避免整条管线失败。
+                try? FileManager.default.removeItem(atPath: audioPath)
+            }
         }
 
+        let args = buildDetectionArguments(inputPath: inputPath, threshold: config.threshold)
         let result = try FFmpegBridge.run(arguments: args, config: ffmpegConfig)
+        return try buildCombinedResult(
+            ffmpegResult: result,
+            config: config,
+            audioOutputPath: nil,
+            audioExtracted: false
+        )
+    }
 
+    private static func buildCombinedResult(
+        ffmpegResult: FFmpegBridge.ProcessResult,
+        config: Config,
+        audioOutputPath: String?,
+        audioExtracted: Bool
+    ) throws -> CombinedDetectionResult {
         // 从 stderr 解析时长（FFmpeg 总会打印输入文件的 Duration）
-        guard let duration = FFmpegBridge.parseDuration(from: result.stderr) else {
+        guard let duration = FFmpegBridge.parseDuration(from: ffmpegResult.stderr) else {
             throw FFmpegError.outputParsingFailed(detail: "未从场景检测输出中找到 Duration")
         }
         guard duration > 0 else {
-            return CombinedDetectionResult(scenes: [], duration: 0)
+            return CombinedDetectionResult(scenes: [], duration: 0, audioExtracted: audioExtracted)
         }
 
         // 解析场景切点
-        let timestamps = parseTimestamps(from: result.stderr)
+        let timestamps = parseTimestamps(from: ffmpegResult.stderr)
         let filtered = filterByMinGap(timestamps, minGap: config.minSegmentDuration)
         var segments = segmentsFromCutPoints(filtered, videoDuration: duration)
         segments = mergeShortSegments(segments, minDuration: config.minSegmentDuration)
@@ -170,7 +206,11 @@ public enum SceneDetector {
             }
         }
 
-        return CombinedDetectionResult(scenes: segments, duration: duration)
+        return CombinedDetectionResult(
+            scenes: segments,
+            duration: duration,
+            audioExtracted: audioExtracted
+        )
     }
 
     /// 构建合并命令的参数（包含音频提取）

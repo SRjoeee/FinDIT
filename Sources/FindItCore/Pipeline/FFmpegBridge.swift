@@ -235,4 +235,17 @@ public enum FFmpegBridge {
 
         return hours * 3600 + minutes * 60 + seconds
     }
+
+    /// 判断 FFmpeg 错误是否由“输入无音轨”导致
+    ///
+    /// 典型日志：
+    /// - `Output file does not contain any stream`
+    /// - `Stream map '0:a:0' matches no streams`
+    static func isMissingAudioStreamError(stderr: String) -> Bool {
+        let lower = stderr.lowercased()
+        let outputHasNoStream = lower.contains("output file does not contain any stream")
+        let streamMapNoMatch = lower.contains("stream map") && lower.contains("matches no streams")
+        let noAudioStream = lower.contains("does not contain any audio stream")
+        return outputHasNoStream || streamMapNoMatch || noAudioStream
+    }
 }

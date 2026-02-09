@@ -188,6 +188,7 @@ public enum PipelineManager {
         onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws -> ProcessingResult {
         let progress = onProgress ?? { _ in }
+        try Task.checkCancellation()
 
         // 1. 注册视频
         let (video, videoId) = try registerVideo(
@@ -218,6 +219,7 @@ public enum PipelineManager {
 
             // 层 2: size/mtime 变了 → 计算哈希验证内容是否真的变了
             if let storedHash = video.fileHash {
+                try Task.checkCancellation()
                 progress("元数据变更，哈希校验中...")
                 let currentHash = try FileHasher.hash128(filePath: videoPath)
                 if currentHash == storedHash {
@@ -250,6 +252,7 @@ public enum PipelineManager {
             } else {
                 // storedHash == nil → 旧数据无哈希 → 补充哈希后跳过
                 progress("补充文件哈希...")
+                try Task.checkCancellation()
                 let hash = try FileHasher.hash128(filePath: videoPath)
                 try await folderDB.write { db in
                     try db.execute(sql: """
@@ -265,9 +268,90 @@ public enum PipelineManager {
             }
         }
 
+        // orphaned 同路径恢复：必须先校验内容一致性。
+        // - 哈希一致：快速恢复 completed，并要求 force 同步回填全局索引。
+        // - 哈希缺失/不一致：回到 pending 全量重建，避免复用过期片段数据。
+        if currentStage == .orphaned {
+            let attrs = try? FileManager.default.attributesOfItem(atPath: videoPath)
+            let currentSize = attrs?[.size] as? Int64
+            let currentMtime = (attrs?[.modificationDate] as? Date)
+                .map { Clip.utcFormatter.string(from: $0) }
+
+            if let storedHash = video.fileHash {
+                try Task.checkCancellation()
+                progress("检测 orphaned 内容一致性...")
+                let currentHash = try FileHasher.hash128(filePath: videoPath)
+                if currentHash == storedHash {
+                    progress("orphaned 哈希匹配，快速恢复")
+                    try await folderDB.write { db in
+                        try db.execute(sql: """
+                            UPDATE videos
+                            SET index_status = 'completed',
+                                index_error = NULL,
+                                orphaned_at = NULL,
+                                file_size = ?,
+                                file_modified = ?,
+                                file_hash = ?
+                            WHERE video_id = ?
+                            """, arguments: [currentSize, currentMtime, currentHash, videoId])
+                    }
+
+                    let recoveredClipCount = try await folderDB.read { db in
+                        try Int.fetchOne(
+                            db,
+                            sql: "SELECT COUNT(*) FROM clips WHERE video_id = ?",
+                            arguments: [videoId]
+                        ) ?? 0
+                    }
+
+                    var recoverySyncResult: SyncEngine.SyncResult?
+                    var requiresForceSync = false
+                    if let globalDB = globalDB {
+                        if skipSync {
+                            requiresForceSync = true
+                        } else {
+                            recoverySyncResult = try SyncEngine.sync(
+                                folderPath: folderPath,
+                                folderDB: folderDB,
+                                globalDB: globalDB,
+                                force: true
+                            )
+                        }
+                    }
+
+                    return ProcessingResult(
+                        videoId: videoId,
+                        clipsCreated: recoveredClipCount,
+                        clipsAnalyzed: 0,
+                        clipsEmbedded: 0,
+                        srtPath: video.srtPath,
+                        syncResult: recoverySyncResult,
+                        requiresForceSync: requiresForceSync
+                    )
+                }
+            }
+
+            progress("orphaned 内容不匹配，重建索引")
+            try await folderDB.write { db in
+                try db.execute(sql: """
+                    UPDATE videos
+                    SET index_status = 'pending',
+                        index_error = NULL,
+                        orphaned_at = NULL,
+                        file_size = ?,
+                        file_modified = ?,
+                        file_hash = NULL,
+                        last_processed_clip = NULL
+                    WHERE video_id = ?
+                    """, arguments: [currentSize, currentMtime, videoId])
+            }
+            currentStage = .pending
+        }
+
         // 新视频 → 计算并存储哈希（在场景检测前）
         if video.fileHash == nil && currentStage == .pending {
             progress("计算文件哈希...")
+            try Task.checkCancellation()
             let hash = try FileHasher.hash128(filePath: videoPath)
             let attrs = try? FileManager.default.attributesOfItem(atPath: videoPath)
             let currentMtime = (attrs?[.modificationDate] as? Date)
@@ -286,6 +370,7 @@ public enum PipelineManager {
                 SELECT file_hash FROM videos WHERE video_id = ?
                 """, arguments: [videoId])
         }) {
+            try Task.checkCancellation()
             if let recovery = try OrphanRecovery.attemptRecovery(
                 fileHash: hash,
                 newVideoPath: videoPath,
@@ -329,6 +414,7 @@ public enum PipelineManager {
         //    对 pending 或 failed 状态的视频需要执行
         if currentStage == .pending || currentStage == .failed {
             do {
+                try Task.checkCancellation()
                 // 场景检测 + 时长获取 + 可选音频提取（单次 FFmpeg 调用）
                 progress("场景检测中...")
                 let needsAudio = skipStt ? false : await isSttAvailable(whisperKit: whisperKit)
@@ -347,6 +433,7 @@ public enum PipelineManager {
                     audioOutputPath: audioOutputPath,
                     ffmpegConfig: ffmpegConfig
                 )
+                try Task.checkCancellation()
                 let duration = detection.duration
                 sceneSegments = detection.scenes
                 extractedAudioPath = audioOutputPath
@@ -372,6 +459,7 @@ public enum PipelineManager {
                     outputDirectory: thumbDir,
                     ffmpegConfig: ffmpegConfig
                 )
+                try Task.checkCancellation()
                 progress("提取了 \(frames.count) 帧")
                 frameGroups = groupFramesByScene(frames: frames, sceneCount: sceneSegments.count)
 
@@ -407,6 +495,7 @@ public enum PipelineManager {
                 }
                 var localAnalyzed = 0
                 for (index, clip) in freshClips.enumerated() {
+                    try Task.checkCancellation()
                     guard let clipId = clip.clipId else { continue }
                     let paths = index < frameGroups.count ? frameGroups[index] : []
                     guard !paths.isEmpty else { continue }
@@ -420,6 +509,8 @@ public enum PipelineManager {
                 }
                 progress("本地分析完成: \(localAnalyzed)/\(freshClips.count)")
 
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 try? updateVideoStatus(
                     folderDB: folderDB, videoId: videoId,
@@ -445,6 +536,7 @@ public enum PipelineManager {
         let sttAvailable = skipStt ? false : await isSttAvailable(whisperKit: whisperKit)
         if sttAvailable && currentStage.isBefore(.sttDone) {
             do {
+                try Task.checkCancellation()
                 try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .sttRunning)
 
                 // 音频（使用 FFmpeg 阶段预提取的，或现场提取）
@@ -452,6 +544,7 @@ public enum PipelineManager {
                 if let preExtracted = extractedAudioPath {
                     audioPath = preExtracted
                 } else {
+                    try Task.checkCancellation()
                     progress("提取音频中...")
                     let tmpDir = tmpDirectory(folderPath: folderPath)
                     try FileManager.default.createDirectory(
@@ -507,6 +600,7 @@ public enum PipelineManager {
                     engine = "SpeechAnalyzer"
                     progress("转录完成 [\(engine)]: \(segments.count) 条字幕（复用检测结果）")
                 } else {
+                    try Task.checkCancellation()
                     progress("语音转录中...")
                     let result = try await STTProcessor.transcribeWithBestAvailable(
                         audioPath: audioPath,
@@ -549,6 +643,8 @@ public enum PipelineManager {
 
                 try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .sttDone)
 
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 // STT 失败不致命，记录错误继续
                 progress("语音转录失败: \(error.localizedDescription)")
@@ -584,6 +680,7 @@ public enum PipelineManager {
             progress("视觉分析中 [\(engineName)]...")
 
             for (index, clip) in clips.enumerated() {
+                try Task.checkCancellation()
                 guard let clipId = clip.clipId, clipId > lastProcessed else { continue }
 
                 var paths = index < frameGroups.count ? frameGroups[index] : [String]()
@@ -637,6 +734,8 @@ public enum PipelineManager {
                     clipsAnalyzed += 1
                     progress("场景 \(index + 1)/\(clips.count) 分析完成")
 
+                } catch is CancellationError {
+                    throw CancellationError()
                 } catch {
                     if let limiter = rateLimiter,
                        let visionErr = error as? VisionAnalyzerError,
@@ -658,6 +757,7 @@ public enum PipelineManager {
         var clipsEmbedded = 0
         if let provider = embeddingProvider {
             progress("计算向量嵌入中...")
+            try Task.checkCancellation()
             let allClips = try await folderDB.read { db in
                 try Clip.fetchAll(forVideo: videoId, in: db)
             }
@@ -672,8 +772,10 @@ public enum PipelineManager {
 
             if !clipTexts.isEmpty {
                 do {
+                    try Task.checkCancellation()
                     let vectors = try await provider.embedBatch(texts: clipTexts.map(\.text))
                     for (index, vector) in vectors.enumerated() where index < clipTexts.count {
+                        try Task.checkCancellation()
                         let data = EmbeddingUtils.serializeEmbedding(vector)
                         try updateClipEmbedding(
                             clipId: clipTexts[index].clipId, data: data,
@@ -681,10 +783,13 @@ public enum PipelineManager {
                         )
                         clipsEmbedded += 1
                     }
+                } catch is CancellationError {
+                    throw CancellationError()
                 } catch {
                     // 批量失败，降级为逐个嵌入
                     progress("批量嵌入失败，逐个重试...")
                     for (cid, text) in clipTexts {
+                        try Task.checkCancellation()
                         do {
                             let vector = try await provider.embed(text: text)
                             let data = EmbeddingUtils.serializeEmbedding(vector)
@@ -693,6 +798,8 @@ public enum PipelineManager {
                                 model: provider.name, folderDB: folderDB
                             )
                             clipsEmbedded += 1
+                        } catch is CancellationError {
+                            throw CancellationError()
                         } catch {
                             progress("clip \(cid) 嵌入失败: \(error.localizedDescription)")
                         }
@@ -705,6 +812,7 @@ public enum PipelineManager {
         // 6. 同步到全局索引（skipSync 时跳过，由调用方统一同步）
         var syncResult: SyncEngine.SyncResult?
         if let globalDB = globalDB, !skipSync {
+            try Task.checkCancellation()
             progress("同步到全局索引...")
             let sr = try SyncEngine.sync(
                 folderPath: folderPath,

@@ -268,4 +268,120 @@ final class PipelineManagerTests: XCTestCase {
         XCTAssertEqual(result.videoId, orphanedVideoId)
         XCTAssertEqual(result.clipsCreated, 1)
     }
+
+    func testProcessVideo_reindexesAfterOrphanedFileContentChange() async throws {
+        let fm = FileManager.default
+        let root = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("findit-orphaned-mismatch-\(UUID().uuidString)")
+        try fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: root) }
+
+        let videoPath = (root as NSString).appendingPathComponent("restored.mp4")
+        _ = fm.createFile(atPath: videoPath, contents: Data("new-content".utf8))
+
+        let folderDB = try DatabaseManager.makeFolderInMemoryDatabase()
+        try await folderDB.write { db in
+            var folder = WatchedFolder(folderPath: root)
+            try folder.insert(db)
+
+            var orphaned = Video(
+                folderId: folder.folderId,
+                filePath: videoPath,
+                fileName: "restored.mp4",
+                fileSize: 1,
+                fileHash: "stale-hash",
+                fileModified: "2000-01-01 00:00:00",
+                indexStatus: "orphaned",
+                orphanedAt: Clip.sqliteDatetime()
+            )
+            try orphaned.insert(db)
+        }
+
+        do {
+            _ = try await PipelineManager.processVideo(
+                videoPath: videoPath,
+                folderPath: root,
+                folderDB: folderDB,
+                skipStt: true,
+                ffmpegConfig: FFmpegConfig(ffmpegPath: "/usr/bin/false")
+            )
+            XCTFail("orphaned 内容变更后应重跑管线并在 FFmpeg 阶段失败")
+        } catch {
+            // 预期：确认确实进入了重建分支
+        }
+    }
+
+    func testProcessVideo_orphanedSamePathHashMatchFastRecovers() async throws {
+        let fm = FileManager.default
+        let root = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("findit-orphaned-fast-\(UUID().uuidString)")
+        try fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(atPath: root) }
+
+        let videoPath = (root as NSString).appendingPathComponent("restored.mp4")
+        _ = fm.createFile(atPath: videoPath, contents: Data("same-content".utf8))
+        let hash = try FileHasher.hash128(filePath: videoPath)
+
+        let folderDB = try DatabaseManager.makeFolderInMemoryDatabase()
+        let globalDB = try DatabaseManager.makeGlobalInMemoryDatabase()
+
+        try await folderDB.write { db in
+            var folder = WatchedFolder(folderPath: root)
+            try folder.insert(db)
+
+            var orphaned = Video(
+                folderId: folder.folderId,
+                filePath: videoPath,
+                fileName: "restored.mp4",
+                fileHash: hash,
+                indexStatus: "orphaned",
+                orphanedAt: Clip.sqliteDatetime()
+            )
+            try orphaned.insert(db)
+
+            for i in 0..<2 {
+                var clip = Clip(
+                    videoId: orphaned.videoId,
+                    startTime: Double(i * 5),
+                    endTime: Double((i + 1) * 5),
+                    scene: "scene\(i)"
+                )
+                try clip.insert(db)
+            }
+        }
+
+        let videoId = try await folderDB.read { db in
+            try Int64.fetchOne(
+                db,
+                sql: "SELECT video_id FROM videos WHERE file_path = ? LIMIT 1",
+                arguments: [videoPath]
+            ) ?? 0
+        }
+
+        let result = try await PipelineManager.processVideo(
+            videoPath: videoPath,
+            folderPath: root,
+            folderDB: folderDB,
+            globalDB: globalDB,
+            skipStt: true,
+            skipSync: true
+        )
+
+        XCTAssertTrue(result.requiresForceSync)
+        XCTAssertEqual(result.videoId, videoId)
+        XCTAssertEqual(result.clipsCreated, 2)
+        XCTAssertEqual(result.clipsAnalyzed, 0)
+
+        let row = try await folderDB.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT index_status, orphaned_at FROM videos WHERE video_id = ?",
+                arguments: [videoId]
+            )
+        }
+        let status: String? = row?["index_status"]
+        let orphanedAt: String? = row?["orphaned_at"]
+        XCTAssertEqual(status, "completed")
+        XCTAssertNil(orphanedAt)
+    }
 }

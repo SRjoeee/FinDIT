@@ -45,7 +45,9 @@ final class FileWatcherManager {
         guard !isWatching else { return }
 
         let watcher = FileSystemWatcher(latency: 1.5, callbackQueue: .main) { [weak self] events in
-            self?.handleEvents(events)
+            Task { @MainActor [weak self] in
+                await self?.handleEvents(events)
+            }
         }
         self.watcher = watcher
 
@@ -97,14 +99,29 @@ final class FileWatcherManager {
 
         if let deferred = deferredEvents.removeValue(forKey: folderPath), !deferred.isEmpty {
             let deduplicated = FileSystemWatcher.deduplicateEvents(deferred)
-            processEvents(deduplicated, folderPath: folderPath)
+            Task { @MainActor [weak self] in
+                await self?.processEvents(deduplicated, folderPath: folderPath)
+            }
         }
     }
 
     // MARK: - 事件处理
 
+    /// 在后台队列执行阻塞 I/O，避免占用 MainActor
+    private func runBlockingIO<T>(_ operation: @escaping () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    continuation.resume(returning: try operation())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     /// 处理一批文件变更事件（FileSystemWatcher 回调入口）
-    private func handleEvents(_ events: [FileChangeEvent]) {
+    private func handleEvents(_ events: [FileChangeEvent]) async {
         // 按文件夹分组
         var grouped: [String: [FileChangeEvent]] = [:]
         for event in events {
@@ -126,18 +143,20 @@ final class FileWatcherManager {
                 continue
             }
 
-            processEvents(folderEvents, folderPath: folderPath)
+            await processEvents(folderEvents, folderPath: folderPath)
         }
     }
 
     /// 处理单个文件夹的事件列表
-    private func processEvents(_ events: [FileChangeEvent], folderPath: String) {
+    private func processEvents(_ events: [FileChangeEvent], folderPath: String) async {
         guard let appState = appState else { return }
         guard let globalDB = appState.globalDB else { return }
 
         let folderDB: DatabasePool
         do {
-            folderDB = try DatabaseManager.openFolderDatabase(at: folderPath)
+            folderDB = try await runBlockingIO {
+                try DatabaseManager.openFolderDatabase(at: folderPath)
+            }
         } catch {
             print("[FileWatcherManager] 无法打开文件夹数据库: \(error)")
             return
@@ -162,7 +181,7 @@ final class FileWatcherManager {
 
         // 删除处理（同步，立即生效）
         if !removedPaths.isEmpty {
-            handleRemovals(removedPaths, folderPath: folderPath, folderDB: folderDB, globalDB: globalDB)
+            await handleRemovals(removedPaths, folderPath: folderPath, folderDB: folderDB, globalDB: globalDB)
         }
 
         // 添加 + 修改 → 统一加入增量索引队列
@@ -183,17 +202,19 @@ final class FileWatcherManager {
         folderPath: String,
         folderDB: DatabasePool,
         globalDB: DatabasePool
-    ) {
+    ) async {
         let retentionDays = IndexingOptions.load().orphanedRetentionDays
         do {
             if retentionDays > 0 {
                 // 软删除：标记 orphaned，保留索引数据
-                let result = try OrphanRecovery.markOrphanedBatch(
-                    videoPaths: paths,
-                    folderPath: folderPath,
-                    folderDB: folderDB,
-                    globalDB: globalDB
-                )
+                let result = try await runBlockingIO {
+                    try OrphanRecovery.markOrphanedBatch(
+                        videoPaths: paths,
+                        folderPath: folderPath,
+                        folderDB: folderDB,
+                        globalDB: globalDB
+                    )
+                }
                 if result.markedCount > 0 {
                     try? appState?.reloadFolders()
                     searchState?.invalidateVectorStore()
@@ -201,12 +222,14 @@ final class FileWatcherManager {
                 }
             } else {
                 // 硬删除：立即清除所有数据
-                let count = try VideoManager.removeVideos(
-                    videoPaths: paths,
-                    folderPath: folderPath,
-                    folderDB: folderDB,
-                    globalDB: globalDB
-                )
+                let count = try await runBlockingIO {
+                    try VideoManager.removeVideos(
+                        videoPaths: paths,
+                        folderPath: folderPath,
+                        folderDB: folderDB,
+                        globalDB: globalDB
+                    )
+                }
                 if count > 0 {
                     try? appState?.reloadFolders()
                     searchState?.invalidateVectorStore()

@@ -53,6 +53,7 @@ final class SearchState {
     var folderFilter: Set<String>? = nil {
         didSet {
             if folderFilter != oldValue {
+                invalidateVectorFilterCache()
                 performFTSSearch()
                 scheduleVectorSearch()
                 loadFacets()
@@ -64,6 +65,7 @@ final class SearchState {
     var pathPrefixFilter: String? = nil {
         didSet {
             if pathPrefixFilter != oldValue {
+                invalidateVectorFilterCache()
                 performFTSSearch()
                 scheduleVectorSearch()
             }
@@ -88,12 +90,24 @@ final class SearchState {
     /// 是否正在加载 VectorStore（避免重复加载）
     private var isLoadingVectorStore = false
 
+    /// 向量过滤缓存 key（folder/path 过滤变化时失效）
+    private struct VectorFilterCacheKey: Equatable {
+        let folderFilter: Set<String>?
+        let pathPrefixFilter: String?
+
+        var requiresFiltering: Bool { folderFilter != nil || pathPrefixFilter != nil }
+    }
+
+    /// 过滤缓存（避免每次输入都重复查询 clip_id 集合）
+    private var vectorFilterCache: (key: VectorFilterCacheKey, clipIDs: Set<Int64>)?
+
     /// 使 VectorStore 缓存失效
     ///
     /// 当视频被删除时由 FileWatcherManager 调用，
     /// 确保下次向量搜索重新从数据库加载最新数据。
     func invalidateVectorStore() {
         vectorStore = nil
+        invalidateVectorFilterCache()
     }
 
     // MARK: - FTS5 即时搜索
@@ -161,6 +175,8 @@ final class SearchState {
             // 确保 VectorStore 已加载
             await loadVectorStoreIfNeeded(provider: provider, db: db)
 
+            let allowedClipIDs = try await resolveAllowedClipIDs(db: db)
+
             let queryEmbedding = try await provider.embed(text: trimmed)
 
             // 再次检查查询没变
@@ -169,7 +185,11 @@ final class SearchState {
             // VectorStore 批量搜索（~25ms for 100K clips）
             let storeResults: [(clipId: Int64, similarity: Float)]?
             if let store = vectorStore {
-                storeResults = await store.search(query: queryEmbedding, limit: 100)
+                storeResults = await store.search(
+                    query: queryEmbedding,
+                    limit: 100,
+                    allowedClipIDs: allowedClipIDs
+                )
             } else {
                 storeResults = nil
             }
@@ -258,6 +278,62 @@ final class SearchState {
         return nil
     }
 
+    /// 解析向量过滤所需 clip_id 集合（有过滤时）
+    ///
+    /// 返回 nil 表示“无需过滤”（全局搜索）；
+    /// 返回空集表示“过滤后无候选”，向量搜索应直接返回空结果。
+    private func resolveAllowedClipIDs(db: DatabasePool) async throws -> Set<Int64>? {
+        let key = VectorFilterCacheKey(
+            folderFilter: folderFilter,
+            pathPrefixFilter: pathPrefixFilter
+        )
+        guard key.requiresFiltering else { return nil }
+
+        if let cache = vectorFilterCache, cache.key == key {
+            return cache.clipIDs
+        }
+
+        let ids: Set<Int64>
+        if let folders = key.folderFilter, folders.isEmpty {
+            ids = []
+        } else {
+            ids = try await db.read { dbConn in
+                var args = StatementArguments()
+                var whereClauses: [String] = []
+
+                if let folders = key.folderFilter {
+                    let sortedFolders = folders.sorted()
+                    let placeholders = sortedFolders.map { _ in "?" }.joined(separator: ", ")
+                    whereClauses.append("c.source_folder IN (\(placeholders))")
+                    for path in sortedFolders {
+                        args += [path]
+                    }
+                }
+
+                if let prefix = key.pathPrefixFilter {
+                    whereClauses.append("v.file_path LIKE ? || '/%'")
+                    args += [prefix]
+                }
+
+                let whereSQL = whereClauses.isEmpty ? "" : "WHERE " + whereClauses.joined(separator: " AND ")
+                let rows = try Int64.fetchAll(dbConn, sql: """
+                    SELECT c.clip_id
+                    FROM clips c
+                    LEFT JOIN videos v ON v.video_id = c.video_id
+                    \(whereSQL)
+                    """, arguments: args)
+                return Set(rows)
+            }
+        }
+
+        vectorFilterCache = (key: key, clipIDs: ids)
+        return ids
+    }
+
+    private func invalidateVectorFilterCache() {
+        vectorFilterCache = nil
+    }
+
     // MARK: - 分面统计
 
     /// 加载当前文件夹范围的分面统计
@@ -317,6 +393,7 @@ final class SearchState {
         embeddingProvider = nil
         hasTriedInitProvider = false
         vectorStore = nil
+        invalidateVectorFilterCache()
         isLoadingVectorStore = false
         isVectorSearching = false
 

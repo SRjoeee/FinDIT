@@ -185,6 +185,22 @@ final class IndexingManager {
 
     // MARK: - 私有方法
 
+    /// 在后台队列执行阻塞 I/O，避免占用 MainActor
+    ///
+    /// IndexingManager 作为 `@MainActor` 状态对象保留 UI 一致性，
+    /// 但目录扫描/数据库打开属于阻塞操作，应移到后台执行。
+    private func runBlockingIO<T>(_ operation: @escaping () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    continuation.resume(returning: try operation())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     /// 启动队列处理
     private func startProcessing() {
         processingTask = Task { [weak self] in
@@ -237,7 +253,9 @@ final class IndexingManager {
         let exclusions = explicitExclusions.union(dynamicExclusions)
         let videoFiles: [String]
         do {
-            videoFiles = try FileScanner.scanVideoFiles(in: folderPath, excluding: exclusions)
+            videoFiles = try await runBlockingIO {
+                try FileScanner.scanVideoFiles(in: folderPath, excluding: exclusions)
+            }
         } catch {
             print("[IndexingManager] 扫描文件夹失败: \(error)")
             return
@@ -254,7 +272,9 @@ final class IndexingManager {
         // 打开文件夹级数据库
         let folderDB: DatabasePool
         do {
-            folderDB = try DatabaseManager.openFolderDatabase(at: folderPath)
+            folderDB = try await runBlockingIO {
+                try DatabaseManager.openFolderDatabase(at: folderPath)
+            }
         } catch {
             print("[IndexingManager] 打开文件夹数据库失败: \(error)")
             return
@@ -357,7 +377,9 @@ final class IndexingManager {
 
         let folderDB: DatabasePool
         do {
-            folderDB = try DatabaseManager.openFolderDatabase(at: folderPath)
+            folderDB = try await runBlockingIO {
+                try DatabaseManager.openFolderDatabase(at: folderPath)
+            }
         } catch {
             print("[IndexingManager] 打开文件夹数据库失败（增量）: \(error)")
             return

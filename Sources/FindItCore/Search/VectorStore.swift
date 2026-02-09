@@ -110,8 +110,13 @@ public actor VectorStore {
     /// - Parameters:
     ///   - query: 查询向量（维度必须等于 `dimensions`）
     ///   - limit: 返回最多 K 个结果
+    ///   - allowedClipIDs: 可选过滤集合。传入后仅在该集合中排序取 Top-K。
     /// - Returns: 按相似度降序排列的 (clipId, similarity) 对
-    public func search(query: [Float], limit: Int = 50) -> [(clipId: Int64, similarity: Float)] {
+    public func search(
+        query: [Float],
+        limit: Int = 50,
+        allowedClipIDs: Set<Int64>? = nil
+    ) -> [(clipId: Int64, similarity: Float)] {
         let n = clipIds.count
         guard n > 0, query.count == dimensions else { return [] }
 
@@ -141,12 +146,28 @@ public actor VectorStore {
             dotProducts[i] /= (queryNorm * norms[i])
         }
 
-        // 4. Top-K 排序
-        let k = min(limit, n)
-        var indices = Array(0..<n)
+        // 4. Top-K 排序（可选 clip_id 过滤）
+        let candidateIndices: [Int]
+        if let allowedClipIDs {
+            var filtered: [Int] = []
+            filtered.reserveCapacity(min(allowedClipIDs.count, n))
+            for index in 0..<n where allowedClipIDs.contains(clipIds[index]) {
+                filtered.append(index)
+            }
+            candidateIndices = filtered
+        } else {
+            candidateIndices = Array(0..<n)
+        }
+        guard !candidateIndices.isEmpty else { return [] }
+
+        let k = min(limit, candidateIndices.count)
+        var indices = candidateIndices
         // partialSort: 只需要前 K 个最大值
         // 对 100K 数据，full sort ~5ms，可接受
-        indices.sort { dotProducts[$0] > dotProducts[$1] }
+        indices.sort {
+            dotProducts[$0] > dotProducts[$1] ||
+            (dotProducts[$0] == dotProducts[$1] && clipIds[$0] < clipIds[$1])
+        }
 
         return indices.prefix(k).map { i in
             (clipId: clipIds[i], similarity: dotProducts[i])

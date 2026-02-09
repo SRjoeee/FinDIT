@@ -217,6 +217,37 @@ final class VectorStoreTests: XCTestCase {
         }
     }
 
+    func testSearchWithAllowedClipIDsFiltersCandidates() async {
+        let store = VectorStore(dimensions: 4, embeddingModel: "test")
+        await store.load(entries: [
+            (clipId: 1, embeddingData: serialize([1, 0, 0, 0])),
+            (clipId: 2, embeddingData: serialize([0.9, 0.1, 0, 0])),
+            (clipId: 3, embeddingData: serialize([0, 1, 0, 0])),
+        ])
+
+        let results = await store.search(
+            query: [1, 0, 0, 0],
+            limit: 10,
+            allowedClipIDs: Set([3])
+        )
+
+        XCTAssertEqual(results.count, 1)
+        XCTAssertEqual(results[0].clipId, 3)
+    }
+
+    func testSearchWithAllowedClipIDsNoMatchReturnsEmpty() async {
+        let store = VectorStore(dimensions: 4, embeddingModel: "test")
+        await store.append(clipId: 1, embedding: [1, 0, 0, 0])
+
+        let results = await store.search(
+            query: [1, 0, 0, 0],
+            limit: 10,
+            allowedClipIDs: Set([999])
+        )
+
+        XCTAssertTrue(results.isEmpty)
+    }
+
     // MARK: - 集成：搜索与增量操作
 
     func testSearchAfterAppendFindsNewVector() async {

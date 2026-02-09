@@ -2,11 +2,12 @@
 
 ## 背景与修复目标
 
-本次修复针对 3 个真实缺陷，目标是保证以下长期不变量：
+本次修复针对 4 个真实缺陷，目标是保证以下长期不变量：
 
 1. 文件夹恢复后，索引任务一定会自动继续。
 2. 父文件夹重扫时，子文件夹排除规则稳定且与当前注册状态一致。
 3. 卷挂载点变化后，"文件夹库" 与 "全局库" 的路径字段保持一致，不出现静默漏同步。
+4. App 启动时不会把“旧路径不可达”的文件夹误判为可用并继续按旧路径索引。
 
 这些问题不是“暂时现象”或“刻意设计”。它们会导致可观察的错误结果（漏索引、路径不一致、恢复后数据缺失），因此需要修复。
 
@@ -38,6 +39,22 @@
   - 若文件夹库发生重定向，则执行一次 `SyncEngine.sync(..., force: true)` 覆盖 rowid 不变但字段已改的场景。
 - 原因: 仅做增量同步可能看不到“rowid 未变但路径字段已变”的记录，造成全局搜索镜像陈旧。
 
+### 4) 启动阶段的路径可用性误判
+- 文件: `/Users/cheongzhiyan/Developer/Findit_app/Sources/FindItApp/AppState.swift`
+- 位置: `reloadFolders()`
+- 修改: `isAvailable` 仅基于 `FileManager.fileExists(atPath:)` 的真实路径可达性，不再因 “UUID 可解析” 直接置为可用。
+- 原因: 否则会出现“路径实际失效但 UI 标记可用”，后续恢复任务可能按旧路径入队。
+
+- 文件: `/Users/cheongzhiyan/Developer/Findit_app/Sources/FindItApp/VolumeMonitor.swift`
+- 位置: `reconcilePathsAtStartup()`（新增）
+- 修改: 启动后主动对账不可达文件夹的 UUID 重定向，必要时调用 `updateFolderPath(from:to:)` 修复并刷新列表。
+- 原因: 处理“App 启动时卷已挂载但未触发 appeared 事件”的场景，避免路径修复依赖事件时序。
+
+- 文件: `/Users/cheongzhiyan/Developer/Findit_app/Sources/FindItApp/ContentView.swift`
+- 位置: `ContentView.task` 初始化流程
+- 修改: `appState.initialize()` 后调用 `volumeMonitor.reconcilePathsAtStartup()`，再启动 watcher 与恢复索引。
+- 原因: 保证恢复入队前路径已完成对账，避免旧路径任务被入队。
+
 ## Reviewer 快速检查清单
 
 1. 启动路径
@@ -52,7 +69,10 @@
   - 再更新 globalDB 路径字段
   - rebase 发生时再 force sync
 
-4. 回归验证
+4. 启动路径对账
+- 查看 `ContentView.task` 是否先 `initialize`，再 `reconcilePathsAtStartup`，最后 `indexPendingFolders`。
+
+5. 回归验证
 - `swift build --target FindItApp`
 - `swift test --filter IndexingSchedulerTests`
 - `swift test --filter PathRebaserTests`

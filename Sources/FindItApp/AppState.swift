@@ -246,7 +246,7 @@ final class AppState {
 
         self.folders = try rows.map { row in
             let path: String = row["folder_path"]
-            var isAvailable = FileManager.default.fileExists(atPath: path)
+            let isAvailable = FileManager.default.fileExists(atPath: path)
 
             // 缓存卷信息（仅在缓存未命中且路径可达时解析）
             if volumeInfoCache[path] == nil, isAvailable {
@@ -254,13 +254,6 @@ final class AppState {
             }
 
             let volumeInfo = volumeInfoCache[path]
-
-            // 如果路径不可达但有 UUID，尝试通过 UUID 恢复
-            if !isAvailable, let uuid = volumeInfo?.uuid {
-                if VolumeResolver.resolveUpdatedPath(oldPath: path, volumeUUID: uuid) != nil {
-                    isAvailable = true
-                }
-            }
 
             // 从全局库查询统计
             let stats = try globalDB.read { db in

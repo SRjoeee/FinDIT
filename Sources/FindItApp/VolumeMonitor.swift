@@ -81,6 +81,33 @@ final class VolumeMonitor {
         print("[VolumeMonitor] 停止监控卷事件")
     }
 
+    /// 启动后主动对账路径重定向
+    ///
+    /// 解决“App 启动时卷已挂载，但未触发 DiskAppeared 回调”的场景：
+    /// 对不可达路径按 UUID 做一次重定向修复，避免后续索引仍走旧路径。
+    func reconcilePathsAtStartup() {
+        guard let appState = appState else { return }
+
+        var hasPathChange = false
+
+        for folder in appState.folders where !folder.isAvailable {
+            guard let uuid = folder.volumeUuid else { continue }
+            guard let newPath = VolumeResolver.resolveUpdatedPath(
+                oldPath: folder.folderPath,
+                volumeUUID: uuid
+            ) else { continue }
+            guard newPath != folder.folderPath else { continue }
+
+            updateFolderPath(from: folder.folderPath, to: newPath)
+            hasPathChange = true
+        }
+
+        if hasPathChange {
+            try? appState.reloadFolders()
+            print("[VolumeMonitor] 启动对账完成，已修复路径重定向")
+        }
+    }
+
     // MARK: - 事件处理
 
     /// 新卷挂载

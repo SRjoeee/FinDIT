@@ -2,11 +2,12 @@
 
 ## Scope
 
-This round fixes three high-priority issues in pipeline correctness and runtime responsiveness:
+This round fixes four high-priority issues in pipeline correctness and runtime responsiveness:
 
 1. Orphaned same-path restore could silently reuse stale index data.
 2. Cancellation intent was not propagated consistently across long pipeline stages.
 3. File watcher event handling performed blocking DB/file I/O on `@MainActor`.
+4. File watcher callbacks could interleave across suspension points and reorder events.
 
 Changed files:
 
@@ -88,9 +89,7 @@ Opening DB and batch delete/update during event storms can block UI responsivene
 
 In `FileWatcherManager`:
 
-- Converted event handling path to async:
-  - callback -> `Task { @MainActor ... await handleEvents(...) }`
-  - deferred replay -> async `processEvents(...)`
+- Converted event handling path to async (`handleEvents` / `processEvents`).
 - Added `runBlockingIO(...)` helper (utility queue + continuation).
 - Moved blocking operations off main actor:
   - open folder DB
@@ -108,6 +107,34 @@ Main-actor responsibilities remain:
 - `Sources/FindItApp/FileWatcherManager.swift`:
   - callback entry and async flow
   - `runBlockingIO` usage boundaries
+
+---
+
+## 4) FileWatcher event ordering correctness
+
+### Why this was needed
+
+After moving work to async, each callback spawned an independent task.
+At `await` suspension points, later callbacks could run first, causing add/remove batches for the same file to be applied out of order.
+
+### What changed
+
+In `FileWatcherManager`:
+
+- Added a serialized event queue:
+  - `pendingEvents` + `eventDrainTask`
+  - `enqueueEvents(...)` for callback and deferred replay paths
+  - single `drainEventQueue()` to process batches in callback order
+- `stopWatching()` now cancels the drain task and clears queued events.
+- `unwatchFolder()` now drops queued events for that folder.
+- Added `guard isWatching` in `handleEvents` to avoid processing stale callbacks after stop.
+
+### Review focus
+
+- `Sources/FindItApp/FileWatcherManager.swift`:
+  - `enqueueEvents(...)`
+  - `drainEventQueue()`
+  - `stopWatching()` / `unwatchFolder()` queue cleanup
 
 ---
 
@@ -130,4 +157,3 @@ These cover:
 - `swift test --filter PipelineManagerTests` ✅
 - `swift build --target FindItApp` ✅
 - `swift test` (full suite, 714 tests) ✅
-

@@ -38,6 +38,12 @@ final class FileWatcherManager {
     /// 延迟事件缓存（folderPath → events）
     private var deferredEvents: [String: [FileChangeEvent]] = [:]
 
+    /// 待处理事件队列（保持回调顺序）
+    private var pendingEvents: [FileChangeEvent] = []
+
+    /// 串行 drain Task（同一时间仅允许一个）
+    private var eventDrainTask: Task<Void, Never>?
+
     // MARK: - 生命周期
 
     /// 启动监控所有已注册且在线的文件夹
@@ -45,9 +51,7 @@ final class FileWatcherManager {
         guard !isWatching else { return }
 
         let watcher = FileSystemWatcher(latency: 1.5, callbackQueue: .main) { [weak self] events in
-            Task { @MainActor [weak self] in
-                await self?.handleEvents(events)
-            }
+            self?.enqueueEvents(events)
         }
         self.watcher = watcher
 
@@ -70,15 +74,19 @@ final class FileWatcherManager {
         watcher?.unwatch(path)
         deferredEvents.removeValue(forKey: path)
         indexingFolders.remove(path)
+        pendingEvents.removeAll { $0.folderPath == path }
     }
 
     /// 停止所有监控
     func stopWatching() {
+        eventDrainTask?.cancel()
+        eventDrainTask = nil
         watcher?.stopAll()
         watcher = nil
         isWatching = false
         deferredEvents.removeAll()
         indexingFolders.removeAll()
+        pendingEvents.removeAll()
         print("[FileWatcherManager] 停止监控")
     }
 
@@ -99,13 +107,41 @@ final class FileWatcherManager {
 
         if let deferred = deferredEvents.removeValue(forKey: folderPath), !deferred.isEmpty {
             let deduplicated = FileSystemWatcher.deduplicateEvents(deferred)
-            Task { @MainActor [weak self] in
-                await self?.processEvents(deduplicated, folderPath: folderPath)
-            }
+            enqueueEvents(deduplicated)
         }
     }
 
     // MARK: - 事件处理
+
+    /// 入队一批 FSEvents，并确保按回调顺序串行处理。
+    ///
+    /// 之前每个回调都创建独立 Task，遇到 `await` 挂起后可能交错执行，
+    /// 导致删除/新增顺序反转。这里改为单 drain task，保证事件时序稳定。
+    private func enqueueEvents(_ events: [FileChangeEvent]) {
+        guard !events.isEmpty else { return }
+        pendingEvents.append(contentsOf: events)
+
+        guard eventDrainTask == nil else { return }
+
+        eventDrainTask = Task { @MainActor [weak self] in
+            await self?.drainEventQueue()
+        }
+    }
+
+    private func drainEventQueue() async {
+        defer { eventDrainTask = nil }
+
+        while !pendingEvents.isEmpty {
+            guard !Task.isCancelled else {
+                pendingEvents.removeAll()
+                return
+            }
+
+            let batch = FileSystemWatcher.deduplicateEvents(pendingEvents)
+            pendingEvents.removeAll(keepingCapacity: true)
+            await handleEvents(batch)
+        }
+    }
 
     /// 在后台队列执行阻塞 I/O，避免占用 MainActor
     private func runBlockingIO<T>(_ operation: @escaping () throws -> T) async throws -> T {
@@ -122,6 +158,8 @@ final class FileWatcherManager {
 
     /// 处理一批文件变更事件（FileSystemWatcher 回调入口）
     private func handleEvents(_ events: [FileChangeEvent]) async {
+        guard isWatching else { return }
+
         // 按文件夹分组
         var grouped: [String: [FileChangeEvent]] = [:]
         for event in events {

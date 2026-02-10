@@ -84,10 +84,15 @@ enum SearchTool {
             let endTime: Double
             let scene: String?
             let description: String?
+            let subjects: String?
+            let actions: String?
+            let objects: String?
             let tags: String?
             let transcript: String?
             let mood: String?
             let shotType: String?
+            let lighting: String?
+            let colors: String?
             let rating: Int
             let colorLabel: String?
             let score: Double?
@@ -103,10 +108,15 @@ enum SearchTool {
                 endTime: $0.endTime,
                 scene: $0.scene,
                 description: $0.clipDescription,
+                subjects: $0.subjects,
+                actions: $0.actions,
+                objects: $0.objects,
                 tags: $0.tags,
                 transcript: $0.transcript,
                 mood: $0.mood,
                 shotType: $0.shotType,
+                lighting: $0.lighting,
+                colors: $0.colors,
                 rating: $0.rating,
                 colorLabel: $0.colorLabel,
                 score: $0.finalScore

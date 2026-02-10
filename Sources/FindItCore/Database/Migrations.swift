@@ -361,6 +361,86 @@ public enum Migrations {
             }
         }
 
+        // P1-B: FTS5 索引扩展 — 新增 scene, subjects, actions, objects, mood, shot_type
+        //
+        // 将 FTS5 从 4 列（tags, description, transcript, user_tags）扩展到 10 列，
+        // 覆盖所有高价值搜索字段。不含 lighting/colors（搜索价值低，适合 filter/facet）。
+        //
+        // 同时引入 bm25() 列权重排序，替代默认的 rank（默认 rank 对所有列等权）。
+        // 权重设计原则：核心语义字段权重高，补充字段权重低。
+        //
+        // 列顺序与权重:
+        //   tags(10), description(5), transcript(3), user_tags(8),
+        //   scene(4), subjects(3), actions(3), objects(2), mood(2), shot_type(1)
+        migrator.registerMigration("v9_expandFTS5Index") { db in
+            // 删除旧触发器
+            try db.execute(sql: "DROP TRIGGER IF EXISTS clips_fts_ai")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS clips_fts_bd")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS clips_fts_bu")
+            try db.execute(sql: "DROP TRIGGER IF EXISTS clips_fts_au")
+
+            // 删除旧 FTS5 表
+            try db.execute(sql: "DROP TABLE IF EXISTS clips_fts")
+
+            // 重建 FTS5（10 列）
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE clips_fts USING fts5(
+                    tags,
+                    description,
+                    transcript,
+                    user_tags,
+                    scene,
+                    subjects,
+                    actions,
+                    objects,
+                    mood,
+                    shot_type,
+                    content='clips',
+                    content_rowid='clip_id'
+                )
+                """)
+
+            // 重建触发器（10 列）
+            try db.execute(sql: """
+                CREATE TRIGGER clips_fts_ai AFTER INSERT ON clips BEGIN
+                    INSERT INTO clips_fts(rowid, tags, description, transcript, user_tags,
+                                          scene, subjects, actions, objects, mood, shot_type)
+                    VALUES (new.clip_id, new.tags, new.description, new.transcript, new.user_tags,
+                            new.scene, new.subjects, new.actions, new.objects, new.mood, new.shot_type);
+                END
+                """)
+
+            try db.execute(sql: """
+                CREATE TRIGGER clips_fts_bd BEFORE DELETE ON clips BEGIN
+                    INSERT INTO clips_fts(clips_fts, rowid, tags, description, transcript, user_tags,
+                                          scene, subjects, actions, objects, mood, shot_type)
+                    VALUES ('delete', old.clip_id, old.tags, old.description, old.transcript, old.user_tags,
+                            old.scene, old.subjects, old.actions, old.objects, old.mood, old.shot_type);
+                END
+                """)
+
+            try db.execute(sql: """
+                CREATE TRIGGER clips_fts_bu BEFORE UPDATE ON clips BEGIN
+                    INSERT INTO clips_fts(clips_fts, rowid, tags, description, transcript, user_tags,
+                                          scene, subjects, actions, objects, mood, shot_type)
+                    VALUES ('delete', old.clip_id, old.tags, old.description, old.transcript, old.user_tags,
+                            old.scene, old.subjects, old.actions, old.objects, old.mood, old.shot_type);
+                END
+                """)
+
+            try db.execute(sql: """
+                CREATE TRIGGER clips_fts_au AFTER UPDATE ON clips BEGIN
+                    INSERT INTO clips_fts(rowid, tags, description, transcript, user_tags,
+                                          scene, subjects, actions, objects, mood, shot_type)
+                    VALUES (new.clip_id, new.tags, new.description, new.transcript, new.user_tags,
+                            new.scene, new.subjects, new.actions, new.objects, new.mood, new.shot_type);
+                END
+                """)
+
+            // 从现有数据重建 FTS 索引
+            try db.execute(sql: "INSERT INTO clips_fts(clips_fts) VALUES('rebuild')")
+        }
+
         return migrator
     }
 }

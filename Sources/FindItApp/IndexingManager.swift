@@ -175,6 +175,37 @@ final class IndexingManager {
         }
     }
 
+    /// 清理过期 orphaned 记录
+    ///
+    /// 遍历所有可用的文件夹数据库，清理超过保留天数的 orphaned 记录。
+    /// 应在 App 启动或空闲时调用。
+    func cleanupOrphanedRecords(retentionDays: Int) async {
+        guard retentionDays > 0, let appState = appState else { return }
+
+        // 在 MainActor 上获取文件夹列表（避免在后台闭包中使用 await）
+        let folders = appState.folders
+
+        // 切换到后台线程执行数据库清理，避免阻塞 MainActor
+        try? await runBlockingIO {
+            for folder in folders where folder.isAvailable {
+                if let folderDB = try? DatabaseManager.openFolderDatabase(at: folder.folderPath) {
+                    do {
+                        let result = try OrphanRecovery.cleanupExpired(
+                            retentionDays: retentionDays,
+                            folderPath: folder.folderPath,
+                            folderDB: folderDB
+                        )
+                        if result.removedCount > 0 {
+                            print("[IndexingManager] 清理 \(result.removedCount) 个过期 orphaned in \(folder.folderPath)")
+                        }
+                    } catch {
+                        print("[IndexingManager] 清理 orphaned 失败: \(folder.folderPath) - \(error)")
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - 私有方法
 
     /// 在后台队列执行阻塞 I/O，避免占用 MainActor

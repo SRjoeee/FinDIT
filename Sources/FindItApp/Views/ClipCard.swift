@@ -184,45 +184,53 @@ struct ClipCard: View {
     // MARK: - Rating & Color Actions
 
     private func setRating(_ rating: Int) {
-        do {
-            // 写入文件夹库（Source of truth）
-            let folderDB = try DatabaseManager.openFolderDatabase(at: result.sourceFolder)
-            try folderDB.write { db in
-                try ClipLabel.updateRating(db, clipId: result.sourceClipId, rating: rating)
+        let oldRating = result.rating
+        // 同步更新 UI（已在 @MainActor，无需额外 Task 包装）
+        searchState.updateClipRating(clipId: result.clipId, rating: rating)
+
+        Task.detached(priority: .userInitiated) { [result, globalDB, searchState] in
+            do {
+                let folderDB = try DatabaseManager.openFolderDatabase(at: result.sourceFolder)
+                try await folderDB.write { db in
+                    try ClipLabel.updateRating(db, clipId: result.sourceClipId, rating: rating)
+                }
+                try await globalDB?.write { db in
+                    try ClipLabel.updateRating(db, clipId: result.clipId, rating: rating)
+                }
+            } catch {
+                print("[ClipCard] 设置评分失败: \(error)")
+                await MainActor.run {
+                    searchState.updateClipRating(clipId: result.clipId, rating: oldRating)
+                }
             }
-            // 写入全局库（搜索索引）
-            try globalDB?.write { db in
-                try ClipLabel.updateRating(db, clipId: result.clipId, rating: rating)
-            }
-            // 更新内存结果（触发 UI 刷新）
-            searchState.updateClipRating(clipId: result.clipId, rating: rating)
-        } catch {
-            print("[ClipCard] 设置评分失败: \(error)")
         }
     }
 
     private func setColorLabel(_ label: ColorLabel?) {
-        do {
-            // 写入文件夹库
-            let folderDB = try DatabaseManager.openFolderDatabase(at: result.sourceFolder)
-            try folderDB.write { db in
-                try ClipLabel.updateColorLabel(db, clipId: result.sourceClipId, label: label)
+        let oldLabel = result.colorLabel
+        searchState.updateClipColorLabel(clipId: result.clipId, colorLabel: label?.rawValue)
+
+        Task.detached(priority: .userInitiated) { [result, globalDB, searchState] in
+            do {
+                let folderDB = try DatabaseManager.openFolderDatabase(at: result.sourceFolder)
+                try await folderDB.write { db in
+                    try ClipLabel.updateColorLabel(db, clipId: result.sourceClipId, label: label)
+                }
+                try await globalDB?.write { db in
+                    try ClipLabel.updateColorLabel(db, clipId: result.clipId, label: label)
+                }
+                syncFinderTag(label: label)
+            } catch {
+                print("[ClipCard] 设置颜色标签失败: \(error)")
+                await MainActor.run {
+                    searchState.updateClipColorLabel(clipId: result.clipId, colorLabel: oldLabel)
+                }
             }
-            // 写入全局库
-            try globalDB?.write { db in
-                try ClipLabel.updateColorLabel(db, clipId: result.clipId, label: label)
-            }
-            // 更新内存结果
-            searchState.updateClipColorLabel(clipId: result.clipId, colorLabel: label?.rawValue)
-            // 同步 Finder 标签到视频文件
-            syncFinderTag(label: label)
-        } catch {
-            print("[ClipCard] 设置颜色标签失败: \(error)")
         }
     }
 
     /// 同步颜色标签到视频文件的 Finder 标签系统
-    private func syncFinderTag(label: ColorLabel?) {
+    nonisolated private func syncFinderTag(label: ColorLabel?) {
         guard let filePath = result.filePath,
               FileManager.default.fileExists(atPath: filePath) else { return }
         do {

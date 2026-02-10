@@ -27,10 +27,13 @@ final class FilterEngineTests: XCTestCase {
             clipId: clipId, sourceFolder: "/test", sourceClipId: clipId,
             videoId: nil, filePath: nil, fileName: nil,
             startTime: startTime, endTime: endTime,
-            scene: nil, clipDescription: nil, tags: nil, transcript: nil,
+            scene: nil, clipDescription: nil,
+            subjects: nil, actions: nil, objects: nil,
+            tags: nil, transcript: nil,
             thumbnailPath: nil, userTags: nil,
             rating: rating, colorLabel: colorLabel,
             shotType: shotType, mood: mood,
+            lighting: nil, colors: nil,
             rank: -1.0, similarity: nil, finalScore: nil
         )
     }
@@ -370,10 +373,13 @@ final class FilterEngineTests: XCTestCase {
             clipId: 1, sourceFolder: "/test", sourceClipId: 1,
             videoId: nil, filePath: nil, fileName: nil,
             startTime: 0, endTime: 10,
-            scene: nil, clipDescription: nil, tags: nil, transcript: nil,
+            scene: nil, clipDescription: nil,
+            subjects: nil, actions: nil, objects: nil,
+            tags: nil, transcript: nil,
             thumbnailPath: nil, userTags: nil,
             rating: 0, colorLabel: nil,
             shotType: "close-up", mood: "cheerful",
+            lighting: nil, colors: nil,
             rank: -1.0, similarity: nil, finalScore: nil
         )
         XCTAssertEqual(result.shotType, "close-up")

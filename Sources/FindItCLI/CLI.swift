@@ -24,6 +24,20 @@ struct FindItCLI: AsyncParsableCommand {
             AnalyzeCommand.self,
             IndexCommand.self,
             EmbedCommand.self,
+            // Query commands
+            FoldersCommand.self,
+            VideosCommand.self,
+            ClipCommand.self,
+            VideoDetailCommand.self,
+            StatsCommand.self,
+            SearchHistoryCommand.self,
+            // Tag & Label commands
+            TagCommand.self,
+            LabelCommand.self,
+            // Maintenance commands
+            OrphanCommand.self,
+            RemoveVideoCommand.self,
+            RebaseCommand.self,
         ]
     )
 }
@@ -255,7 +269,7 @@ struct SyncCommand: ParsableCommand {
 struct SearchCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "search",
-        abstract: "在全局索引中搜索视频片段（支持 FTS5 + 向量混合搜索）"
+        abstract: "在全局索引中搜索视频片段（支持 FTS5 + 向量混合搜索 + 过滤排序）"
     )
 
     @Argument(help: "搜索关键词")
@@ -269,6 +283,29 @@ struct SearchCommand: AsyncParsableCommand {
 
     @Option(name: .long, help: "Gemini API Key (用于向量搜索的查询嵌入)")
     var apiKey: String?
+
+    // Filter options
+    @Option(name: .long, help: "最低评分过滤 (1-5)")
+    var filterRating: Int?
+
+    @Option(name: .long, help: "颜色标签过滤，逗号分隔 (red,orange,yellow,green,blue,purple,gray)")
+    var filterColor: String?
+
+    @Option(name: .long, help: "镜头类型过滤，逗号分隔")
+    var filterShot: String?
+
+    @Option(name: .long, help: "情绪过滤，逗号分隔")
+    var filterMood: String?
+
+    // Sort options
+    @Option(name: .long, help: "排序字段: relevance, date, duration, rating (默认 relevance)")
+    var sort: String = "relevance"
+
+    @Option(name: .long, help: "排序方向: asc, desc (默认 desc)")
+    var sortOrder: String = "desc"
+
+    @Option(name: .long, help: "输出格式: text, json")
+    var format: OutputFormat = .text
 
     func run() async throws {
         let globalDB = try DatabaseManager.openGlobalDatabase()
@@ -295,7 +332,9 @@ struct SearchCommand: AsyncParsableCommand {
                         queryEmbedding = try await provider.embed(text: query)
                         embeddingModel = provider.name
                     } catch {
-                        print("警告: Gemini 嵌入失败: \(error.localizedDescription)")
+                        if format == .text {
+                            print("警告: Gemini 嵌入失败: \(error.localizedDescription)")
+                        }
                     }
                 }
             }
@@ -316,7 +355,7 @@ struct SearchCommand: AsyncParsableCommand {
 
         let finalQueryEmbedding = queryEmbedding
         let finalEmbeddingModel = embeddingModel
-        let results = try await globalDB.read { db in
+        var results = try await globalDB.read { db in
             try SearchEngine.hybridSearch(
                 db,
                 query: query,
@@ -327,16 +366,148 @@ struct SearchCommand: AsyncParsableCommand {
             )
         }
 
+        // 应用过滤
+        let filter = buildFilter()
+        if !filter.isEmpty || filter.sortBy != .relevance {
+            results = FilterEngine.applyFilter(results, filter: filter)
+        }
+
+        // 输出
+        switch format {
+        case .json:
+            try outputJSON(results, embeddingModel: embeddingModel)
+        case .text:
+            outputText(results, embeddingModel: embeddingModel)
+        }
+
+        // 记录搜索历史
+        let resultCount = results.count
+        try await globalDB.write { db in
+            try SearchEngine.recordSearch(db, query: query, resultCount: resultCount)
+        }
+    }
+
+    /// 构建过滤条件
+    private func buildFilter() -> FilterEngine.SearchFilter {
+        var colorLabels: Set<ColorLabel>?
+        if let colorStr = filterColor {
+            let labels = colorStr.split(separator: ",").compactMap {
+                ColorLabel(rawValue: String($0).trimmingCharacters(in: .whitespaces))
+            }
+            if !labels.isEmpty { colorLabels = Set(labels) }
+        }
+
+        var shotTypes: Set<String>?
+        if let shotStr = filterShot {
+            let types = shotStr.split(separator: ",").map {
+                String($0).trimmingCharacters(in: .whitespaces)
+            }
+            if !types.isEmpty { shotTypes = Set(types) }
+        }
+
+        var moods: Set<String>?
+        if let moodStr = filterMood {
+            let moodList = moodStr.split(separator: ",").map {
+                String($0).trimmingCharacters(in: .whitespaces)
+            }
+            if !moodList.isEmpty { moods = Set(moodList) }
+        }
+
+        let sortField: FilterEngine.SortField
+        switch sort.lowercased() {
+        case "date":     sortField = .date
+        case "duration": sortField = .duration
+        case "rating":   sortField = .rating
+        default:         sortField = .relevance
+        }
+
+        let order: FilterEngine.SortOrder = sortOrder.lowercased() == "asc" ? .ascending : .descending
+
+        return FilterEngine.SearchFilter(
+            minRating: filterRating,
+            colorLabels: colorLabels,
+            shotTypes: shotTypes,
+            moods: moods,
+            sortBy: sortField,
+            sortOrder: order
+        )
+    }
+
+    /// JSON 输出
+    private func outputJSON(_ results: [SearchEngine.SearchResult], embeddingModel: String?) throws {
+        struct SearchResultJSON: Codable {
+            let clipId: Int64
+            let sourceFolder: String
+            let sourceClipId: Int64
+            let videoId: Int64?
+            let filePath: String?
+            let fileName: String?
+            let startTime: Double
+            let endTime: Double
+            let scene: String?
+            let description: String?
+            let tags: String?
+            let transcript: String?
+            let shotType: String?
+            let mood: String?
+            let rating: Int
+            let colorLabel: String?
+            let rank: Double
+            let similarity: Double?
+            let finalScore: Double?
+        }
+
+        struct SearchOutput: Codable {
+            let query: String
+            let mode: String
+            let resultCount: Int
+            let results: [SearchResultJSON]
+        }
+
+        let modeDesc = embeddingModel != nil ? "hybrid(\(embeddingModel!))" : "fts"
+        let jsonResults = results.map { r in
+            SearchResultJSON(
+                clipId: r.clipId,
+                sourceFolder: r.sourceFolder,
+                sourceClipId: r.sourceClipId,
+                videoId: r.videoId,
+                filePath: r.filePath,
+                fileName: r.fileName,
+                startTime: r.startTime,
+                endTime: r.endTime,
+                scene: r.scene,
+                description: r.clipDescription,
+                tags: r.tags,
+                transcript: r.transcript,
+                shotType: r.shotType,
+                mood: r.mood,
+                rating: r.rating,
+                colorLabel: r.colorLabel,
+                rank: r.rank,
+                similarity: r.similarity,
+                finalScore: r.finalScore
+            )
+        }
+        try JSONOutput.print(SearchOutput(
+            query: query,
+            mode: modeDesc,
+            resultCount: results.count,
+            results: jsonResults
+        ))
+    }
+
+    /// Text 输出
+    private func outputText(_ results: [SearchEngine.SearchResult], embeddingModel: String?) {
         if results.isEmpty {
             print("未找到匹配「\(query)」的结果")
             return
         }
 
-        let modeDesc = queryEmbedding != nil ? "混合(\(embeddingModel ?? "?"))" : "FTS5"
+        let modeDesc = embeddingModel != nil ? "混合(\(embeddingModel ?? "?"))" : "FTS5"
         print("找到 \(results.count) 个结果 (模式: \(modeDesc)):\n")
 
         for (i, r) in results.enumerated() {
-            let timeRange = formatTime(r.startTime) + " → " + formatTime(r.endTime)
+            let timeRange = CLIHelpers.formatTime(r.startTime) + " → " + CLIHelpers.formatTime(r.endTime)
             print("[\(i + 1)] \(r.scene ?? "未命名") (\(timeRange))")
             if let file = r.fileName {
                 print("    文件: \(file)")
@@ -350,7 +521,18 @@ struct SearchCommand: AsyncParsableCommand {
             if let transcript = r.transcript {
                 print("    转录: \(transcript)")
             }
-            // 显示分数
+            // 评分/颜色
+            if r.rating > 0 || r.colorLabel != nil {
+                var labels: [String] = []
+                if r.rating > 0 {
+                    labels.append("★\(r.rating)")
+                }
+                if let c = r.colorLabel {
+                    labels.append(c)
+                }
+                print("    标注: \(labels.joined(separator: " | "))")
+            }
+            // 分数
             var scores: [String] = []
             if r.rank != 0 {
                 scores.append("FTS5: \(String(format: "%.4f", r.rank))")
@@ -366,18 +548,6 @@ struct SearchCommand: AsyncParsableCommand {
             }
             print()
         }
-
-        // 记录搜索历史
-        try await globalDB.write { db in
-            try SearchEngine.recordSearch(db, query: query, resultCount: results.count)
-        }
-    }
-
-    /// 秒数格式化为 mm:ss
-    private func formatTime(_ seconds: Double) -> String {
-        let m = Int(seconds) / 60
-        let s = Int(seconds) % 60
-        return String(format: "%d:%02d", m, s)
     }
 }
 

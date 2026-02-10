@@ -34,6 +34,10 @@ struct FindItCLI: AsyncParsableCommand {
             // Tag & Label commands
             TagCommand.self,
             LabelCommand.self,
+            // Maintenance commands
+            OrphanCommand.self,
+            RemoveVideoCommand.self,
+            RebaseCommand.self,
         ]
     )
 }

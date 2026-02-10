@@ -16,11 +16,34 @@ enum SearchTool {
 
         let mode = SearchEngine.SearchMode(rawValue: modeStr) ?? .auto
 
+        // 计算查询向量（embedding 失败时降级为纯 FTS5）
+        var queryEmbedding: [Float]?
+        var embeddingModel: String?
+        var vectorStoreResults: [(clipId: Int64, similarity: Float)]?
+
+        if mode != .fts, let provider = context.getEmbeddingProvider() {
+            queryEmbedding = try? await provider.embed(text: query)
+            embeddingModel = provider.name
+
+            if let embedding = queryEmbedding,
+               let store = try? await context.getVectorStore(provider: provider) {
+                vectorStoreResults = await store.search(query: embedding, limit: limit * 2)
+            }
+        }
+
+        // 绑定为 let 以满足 Swift 6 Sendable 闭包要求
+        let finalEmbedding = queryEmbedding
+        let finalModel = embeddingModel
+        let finalStoreResults = vectorStoreResults
+
         // 搜索
         var results = try await context.globalDB.read { db in
             try SearchEngine.hybridSearch(
                 db,
                 query: query,
+                queryEmbedding: finalEmbedding,
+                embeddingModel: finalModel,
+                vectorStoreResults: finalStoreResults,
                 mode: mode,
                 limit: limit
             )

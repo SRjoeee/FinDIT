@@ -19,12 +19,14 @@ enum BrowseAllClipsTool {
 
     static func execute(params: CallTool.Parameters, context: DatabaseContext) async throws -> CallTool.Result {
         let folder = ParamHelpers.optionalString(params, key: "folder")
-        let offset = ParamHelpers.optionalInt(params, key: "offset") ?? 0
+        let offset = max(ParamHelpers.optionalInt(params, key: "offset") ?? 0, 0)
         let requestedLimit = ParamHelpers.optionalInt(params, key: "limit") ?? 100
         let limit = min(max(requestedLimit, 1), maxLimit)
         let sortBy = ParamHelpers.optionalString(params, key: "sort_by") ?? "clip_id"
         let minRating = ParamHelpers.optionalInt(params, key: "min_rating")
         let colorLabels = ParamHelpers.optionalStringArray(params, key: "color_labels")
+        let shotTypes = ParamHelpers.optionalStringArray(params, key: "shot_types")
+        let moods = ParamHelpers.optionalStringArray(params, key: "moods")
 
         // 构建 WHERE 子句
         var conditions: [String] = []
@@ -44,6 +46,18 @@ enum BrowseAllClipsTool {
             let placeholders = colorLabels.map { _ in "?" }.joined(separator: ", ")
             conditions.append("c.color_label IN (\(placeholders))")
             arguments.append(contentsOf: colorLabels)
+        }
+
+        if let shotTypes, !shotTypes.isEmpty {
+            let placeholders = shotTypes.map { _ in "?" }.joined(separator: ", ")
+            conditions.append("c.shot_type IN (\(placeholders))")
+            arguments.append(contentsOf: shotTypes)
+        }
+
+        if let moods, !moods.isEmpty {
+            let placeholders = moods.map { _ in "?" }.joined(separator: ", ")
+            conditions.append("c.mood IN (\(placeholders))")
+            arguments.append(contentsOf: moods)
         }
 
         let whereClause = conditions.isEmpty ? "" : "WHERE " + conditions.joined(separator: " AND ")
@@ -69,7 +83,7 @@ enum BrowseAllClipsTool {
 
             let dataSQL = """
                 SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
-                       v.file_name,
+                       v.file_name, v.file_path,
                        c.start_time, c.end_time,
                        c.scene, c.description, c.subjects, c.actions, c.objects,
                        c.mood, c.shot_type, c.lighting, c.colors,
@@ -96,6 +110,7 @@ enum BrowseAllClipsTool {
                 clipId: row["clip_id"] as Int64? ?? 0,
                 sourceFolder: row["source_folder"] as String? ?? "",
                 fileName: row["file_name"] as String?,
+                filePath: row["file_path"] as String?,
                 startTime: row["start_time"] as Double? ?? 0,
                 endTime: row["end_time"] as Double? ?? 0,
                 scene: row["scene"] as String?,
@@ -107,8 +122,8 @@ enum BrowseAllClipsTool {
                 shotType: row["shot_type"] as String?,
                 lighting: row["lighting"] as String?,
                 colors: row["colors"] as String?,
-                tags: parseJSONArray(row["tags"] as String?),
-                userTags: parseJSONArray(row["user_tags"] as String?),
+                tags: TagParsingHelpers.parseTagsFromGlobalDB(row["tags"] as String?),
+                userTags: TagParsingHelpers.parseTagsFromGlobalDB(row["user_tags"] as String?),
                 transcript: row["transcript"] as String?,
                 rating: row["rating"] as Int? ?? 0,
                 colorLabel: row["color_label"] as String?
@@ -127,17 +142,6 @@ enum BrowseAllClipsTool {
         return CallTool.Result(content: [.text(json)])
     }
 
-    // MARK: - Private
-
-    /// 解析 JSON 数组字符串为 [String]
-    private static func parseJSONArray(_ jsonString: String?) -> [String] {
-        guard let str = jsonString,
-              let data = str.data(using: .utf8),
-              let arr = try? JSONSerialization.jsonObject(with: data) as? [String] else {
-            return []
-        }
-        return arr
-    }
 }
 
 // MARK: - Output Types
@@ -154,6 +158,7 @@ private struct ClipItem: Codable {
     let clipId: Int64
     let sourceFolder: String
     let fileName: String?
+    let filePath: String?
     let startTime: Double
     let endTime: Double
     let scene: String?

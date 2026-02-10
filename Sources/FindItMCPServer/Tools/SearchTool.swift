@@ -13,8 +13,12 @@ enum SearchTool {
         let query = try ParamHelpers.requireString(params, key: "query")
         let modeStr = ParamHelpers.optionalString(params, key: "mode") ?? "auto"
         let limit = ParamHelpers.optionalInt(params, key: "limit") ?? 20
+        let offset = max(ParamHelpers.optionalInt(params, key: "offset") ?? 0, 0)
+        let folder = ParamHelpers.optionalString(params, key: "folder")
+        let folderPaths: Set<String>? = folder.map { Set([$0]) }
 
         let mode = SearchEngine.SearchMode(rawValue: modeStr) ?? .auto
+        let searchLimit = offset + limit
 
         // 计算查询向量（embedding 失败时降级为纯 FTS5）
         var queryEmbedding: [Float]?
@@ -27,7 +31,7 @@ enum SearchTool {
 
             if let embedding = queryEmbedding,
                let store = try? await context.getVectorStore(provider: provider) {
-                vectorStoreResults = await store.search(query: embedding, limit: limit * 2)
+                vectorStoreResults = await store.search(query: embedding, limit: searchLimit * 2)  // 2x 为融合排名提供充足候选
             }
         }
 
@@ -35,6 +39,7 @@ enum SearchTool {
         let finalEmbedding = queryEmbedding
         let finalModel = embeddingModel
         let finalStoreResults = vectorStoreResults
+        let finalFolderPaths = folderPaths
 
         // 搜索
         var results = try await context.globalDB.read { db in
@@ -45,7 +50,8 @@ enum SearchTool {
                 embeddingModel: finalModel,
                 vectorStoreResults: finalStoreResults,
                 mode: mode,
-                limit: limit
+                folderPaths: finalFolderPaths,
+                limit: searchLimit
             )
         }
 
@@ -74,6 +80,12 @@ enum SearchTool {
             results = FilterEngine.applyFilter(results, filter: filter)
         }
 
+        // 分页偏移
+        if offset > 0 {
+            results = Array(results.dropFirst(offset))
+        }
+        results = Array(results.prefix(limit))
+
         // 构造输出
         struct ResultItem: Codable {
             let clipId: Int64
@@ -87,7 +99,8 @@ enum SearchTool {
             let subjects: String?
             let actions: String?
             let objects: String?
-            let tags: String?
+            let tags: [String]
+            let userTags: [String]
             let transcript: String?
             let mood: String?
             let shotType: String?
@@ -111,7 +124,8 @@ enum SearchTool {
                 subjects: $0.subjects,
                 actions: $0.actions,
                 objects: $0.objects,
-                tags: $0.tags,
+                tags: TagParsingHelpers.parseTagsFromGlobalDB($0.tags),
+                userTags: TagParsingHelpers.parseTagsFromGlobalDB($0.userTags),
                 transcript: $0.transcript,
                 mood: $0.mood,
                 shotType: $0.shotType,

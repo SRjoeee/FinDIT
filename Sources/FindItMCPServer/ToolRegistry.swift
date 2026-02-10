@@ -44,6 +44,14 @@ enum ToolRegistry {
                             "type": .string("integer"),
                             "description": .string("最大结果数 (默认: 20)"),
                         ]),
+                        "offset": .object([
+                            "type": .string("integer"),
+                            "description": .string("分页偏移量 (默认: 0)"),
+                        ]),
+                        "folder": .object([
+                            "type": .string("string"),
+                            "description": .string("素材文件夹路径（可选，不传则搜索所有文件夹）"),
+                        ]),
                         "min_rating": .object([
                             "type": .string("integer"),
                             "description": .string("最低评分过滤 (1-5)"),
@@ -269,7 +277,25 @@ enum ToolRegistry {
                             "items": .object(["type": .string("string")]),
                             "description": .string("颜色标签过滤: red, orange, yellow, green, blue, purple, gray"),
                         ]),
+                        "shot_types": .object([
+                            "type": .string("array"),
+                            "items": .object(["type": .string("string")]),
+                            "description": .string("镜头类型过滤"),
+                        ]),
+                        "moods": .object([
+                            "type": .string("array"),
+                            "items": .object(["type": .string("string")]),
+                            "description": .string("氛围过滤"),
+                        ]),
                     ]),
+                ])
+            ),
+            Tool(
+                name: "get_library_summary",
+                description: "获取素材库综合概览（文件夹分布、镜头类型/情绪/评分分布、覆盖率统计）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([:]),
                 ])
             ),
         ]
@@ -304,6 +330,8 @@ enum ToolRegistry {
             return try SetColorLabelTool.execute(params: params, context: context)
         case "browse_all_clips":
             return try await BrowseAllClipsTool.execute(params: params, context: context)
+        case "get_library_summary":
+            return try await GetLibrarySummaryTool.execute(params: params, context: context)
         default:
             throw MCPError.invalidRequest("Unknown tool: \(params.name)")
         }

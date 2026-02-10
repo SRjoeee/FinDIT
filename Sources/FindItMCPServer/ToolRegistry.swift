@@ -237,6 +237,41 @@ enum ToolRegistry {
                     "required": .array([.string("clip_id"), .string("folder"), .string("color")]),
                 ])
             ),
+            Tool(
+                name: "browse_all_clips",
+                description: "浏览素材库中的所有片段元数据（支持分页、过滤、排序），返回全部视觉分析字段",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "folder": .object([
+                            "type": .string("string"),
+                            "description": .string("素材文件夹路径（可选，不传则返回所有文件夹的片段）"),
+                        ]),
+                        "offset": .object([
+                            "type": .string("integer"),
+                            "description": .string("分页偏移量 (默认: 0)"),
+                        ]),
+                        "limit": .object([
+                            "type": .string("integer"),
+                            "description": .string("每页数量 (默认: 100, 上限: 500)"),
+                        ]),
+                        "sort_by": .object([
+                            "type": .string("string"),
+                            "enum": .array([.string("clip_id"), .string("start_time"), .string("rating")]),
+                            "description": .string("排序方式 (默认: clip_id)"),
+                        ]),
+                        "min_rating": .object([
+                            "type": .string("integer"),
+                            "description": .string("最低评分过滤 (1-5)"),
+                        ]),
+                        "color_labels": .object([
+                            "type": .string("array"),
+                            "items": .object(["type": .string("string")]),
+                            "description": .string("颜色标签过滤: red, orange, yellow, green, blue, purple, gray"),
+                        ]),
+                    ]),
+                ])
+            ),
         ]
     }
 
@@ -267,6 +302,8 @@ enum ToolRegistry {
             return try SetRatingTool.execute(params: params, context: context)
         case "set_color_label":
             return try SetColorLabelTool.execute(params: params, context: context)
+        case "browse_all_clips":
+            return try await BrowseAllClipsTool.execute(params: params, context: context)
         default:
             throw MCPError.invalidRequest("Unknown tool: \(params.name)")
         }

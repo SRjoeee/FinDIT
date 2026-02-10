@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.1
 import PackageDescription
 
 let package = Package(
@@ -15,12 +15,18 @@ let package = Package(
             name: "findit-cli",
             targets: ["FindItCLI"]
         ),
+        .executable(
+            name: "findit-mcp-server",
+            targets: ["FindItMCPServer"]
+        ),
     ],
     dependencies: [
         // SQLite ORM + FTS5 全文搜索
         .package(url: "https://github.com/groue/GRDB.swift.git", .upToNextMajor(from: "6.29.0")),
         // CLI 参数解析
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
+        // MCP (Model Context Protocol) Server SDK
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.10.0"),
 
         // --- 以下依赖在后续阶段启用 ---
         // Stage 2: WhisperKit STT (v0.15.x, pre-1.0 可能有破坏性变更)
@@ -53,6 +59,14 @@ let package = Package(
                 "FindItCore",
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
+        ),
+        .executableTarget(
+            name: "FindItMCPServer",
+            dependencies: [
+                "FindItCore",
+                .product(name: "GRDB", package: "GRDB.swift"),
+                .product(name: "MCP", package: "swift-sdk"),
             ]
         ),
         .executableTarget(

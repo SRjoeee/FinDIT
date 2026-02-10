@@ -1,0 +1,96 @@
+import Foundation
+import MCP
+import GRDB
+import FindItCore
+
+/// 搜索视频片段
+///
+/// 使用 FTS5 全文搜索 + 向量语义搜索的混合引擎，
+/// 支持过滤、排序等后处理操作。
+enum SearchTool {
+
+    static func execute(params: CallTool.Parameters, context: DatabaseContext) async throws -> CallTool.Result {
+        let query = try ParamHelpers.requireString(params, key: "query")
+        let modeStr = ParamHelpers.optionalString(params, key: "mode") ?? "auto"
+        let limit = ParamHelpers.optionalInt(params, key: "limit") ?? 20
+
+        let mode = SearchEngine.SearchMode(rawValue: modeStr) ?? .auto
+
+        // 搜索
+        var results = try await context.globalDB.read { db in
+            try SearchEngine.hybridSearch(
+                db,
+                query: query,
+                mode: mode,
+                limit: limit
+            )
+        }
+
+        // 记录搜索历史
+        let resultCount = results.count
+        try? await context.globalDB.write { db in
+            try SearchEngine.recordSearch(db, query: query, resultCount: resultCount)
+        }
+
+        // 过滤
+        let minRating = ParamHelpers.optionalInt(params, key: "min_rating")
+        let colorLabels = ParamHelpers.optionalStringArray(params, key: "color_labels")
+        let shotTypes = ParamHelpers.optionalStringArray(params, key: "shot_types")
+        let moods = ParamHelpers.optionalStringArray(params, key: "moods")
+        let sortByStr = ParamHelpers.optionalString(params, key: "sort_by")
+
+        let filter = FilterEngine.SearchFilter(
+            minRating: minRating,
+            colorLabels: colorLabels.map { Set($0.compactMap { ColorLabel(rawValue: $0) }) },
+            shotTypes: shotTypes.map { Set($0) },
+            moods: moods.map { Set($0) },
+            sortBy: FilterEngine.SortField(rawValue: sortByStr ?? "relevance") ?? .relevance
+        )
+
+        if !filter.isEmpty {
+            results = FilterEngine.applyFilter(results, filter: filter)
+        }
+
+        // 构造输出
+        struct ResultItem: Codable {
+            let clipId: Int64
+            let sourceFolder: String
+            let filePath: String?
+            let fileName: String?
+            let startTime: Double
+            let endTime: Double
+            let scene: String?
+            let description: String?
+            let tags: String?
+            let transcript: String?
+            let mood: String?
+            let shotType: String?
+            let rating: Int
+            let colorLabel: String?
+            let score: Double?
+        }
+
+        let items = results.map {
+            ResultItem(
+                clipId: $0.clipId,
+                sourceFolder: $0.sourceFolder,
+                filePath: $0.filePath,
+                fileName: $0.fileName,
+                startTime: $0.startTime,
+                endTime: $0.endTime,
+                scene: $0.scene,
+                description: $0.clipDescription,
+                tags: $0.tags,
+                transcript: $0.transcript,
+                mood: $0.mood,
+                shotType: $0.shotType,
+                rating: $0.rating,
+                colorLabel: $0.colorLabel,
+                score: $0.finalScore
+            )
+        }
+
+        let json = try ParamHelpers.toJSON(items)
+        return CallTool.Result(content: [.text("Found \(items.count) results for '\(query)':\n\(json)")])
+    }
+}

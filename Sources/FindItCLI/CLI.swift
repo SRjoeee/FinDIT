@@ -24,6 +24,12 @@ struct FindItCLI: AsyncParsableCommand {
             AnalyzeCommand.self,
             IndexCommand.self,
             EmbedCommand.self,
+            // Query commands
+            FoldersCommand.self,
+            VideosCommand.self,
+            ClipCommand.self,
+            VideoDetailCommand.self,
+            StatsCommand.self,
         ]
     )
 }

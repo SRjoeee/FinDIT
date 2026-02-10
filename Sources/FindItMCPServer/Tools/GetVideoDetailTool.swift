@@ -42,9 +42,19 @@ enum GetVideoDetailTool {
             let startTime: Double
             let endTime: Double
             let scene: String?
-            let transcript: String?
+            let description: String?
+            let subjects: String?
+            let actions: String?
+            let objects: String?
+            let mood: String?
+            let shotType: String?
+            let lighting: String?
+            let colors: String?
             let tags: [String]
+            let userTags: [String]
+            let transcript: String?
             let rating: Int
+            let colorLabel: String?
         }
 
         guard let video: Video = try folderDB.read({ db in
@@ -78,9 +88,19 @@ enum GetVideoDetailTool {
                     startTime: $0.startTime,
                     endTime: $0.endTime,
                     scene: $0.scene,
-                    transcript: $0.transcript,
+                    description: $0.clipDescription,
+                    subjects: $0.subjects,
+                    actions: $0.actions,
+                    objects: $0.objects,
+                    mood: $0.mood,
+                    shotType: $0.shotType,
+                    lighting: $0.lighting,
+                    colors: $0.colors,
                     tags: $0.tagsArray,
-                    rating: $0.rating
+                    userTags: $0.userTagsArray,
+                    transcript: $0.transcript,
+                    rating: $0.rating,
+                    colorLabel: $0.colorLabel
                 )
             }
         )

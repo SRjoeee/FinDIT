@@ -122,6 +122,12 @@ public enum SearchEngine {
         appendPrefixArgs(&args, pathPrefixFilter: pathPrefixFilter)
         args += [limit]
 
+        // bm25() 列权重（对应 FTS5 列顺序）:
+        //   tags(10), description(5), transcript(3), user_tags(8),
+        //   scene(4), subjects(3), actions(3), objects(2), mood(2), shot_type(1)
+        //
+        // 设计原则: 用户标注(tags/user_tags)权重最高，
+        // 自然语言描述次之，结构化字段最低。
         let rows = try Row.fetchAll(db, sql: """
             SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
                    v.file_path, v.file_name,
@@ -130,12 +136,12 @@ public enum SearchEngine {
                    c.tags, c.transcript, c.thumbnail_path, c.user_tags,
                    c.rating, c.color_label, c.shot_type, c.mood,
                    c.lighting, c.colors,
-                   clips_fts.rank
+                   bm25(clips_fts, 10, 5, 3, 8, 4, 3, 3, 2, 2, 1) AS rank
             FROM clips_fts
             JOIN clips c ON c.clip_id = clips_fts.rowid
             LEFT JOIN videos v ON v.video_id = c.video_id
             WHERE clips_fts MATCH ?\(filterSQL)\(prefixSQL)
-            ORDER BY clips_fts.rank
+            ORDER BY bm25(clips_fts, 10, 5, 3, 8, 4, 3, 3, 2, 2, 1)
             LIMIT ?
             """, arguments: args)
 

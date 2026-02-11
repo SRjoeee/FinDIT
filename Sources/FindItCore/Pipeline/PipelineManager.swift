@@ -189,6 +189,7 @@ public enum PipelineManager {
         skipStt: Bool = false,
         skipSync: Bool = false,
         ffmpegConfig: FFmpegConfig = .default,
+        mediaService: (any MediaService)? = nil,
         onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws -> ProcessingResult {
         let progress = onProgress ?? { _ in }
@@ -456,11 +457,20 @@ public enum PipelineManager {
                         .appendingPathComponent("video_\(videoId).wav")
                 }
 
-                let detection = try await SceneDetector.detectScenesOptimizedAsync(
-                    inputPath: videoPath,
-                    audioOutputPath: audioOutputPath,
-                    ffmpegConfig: ffmpegConfig
-                )
+                let detection: SceneDetector.CombinedDetectionResult
+                if let sceneDetector = mediaService as? SceneDetectable {
+                    detection = try await sceneDetector.detectScenesOptimized(
+                        filePath: videoPath,
+                        audioOutputPath: audioOutputPath,
+                        config: .default
+                    )
+                } else {
+                    detection = try await SceneDetector.detectScenesOptimizedAsync(
+                        inputPath: videoPath,
+                        audioOutputPath: audioOutputPath,
+                        ffmpegConfig: ffmpegConfig
+                    )
+                }
                 try Task.checkCancellation()
                 let duration = detection.duration
                 sceneSegments = detection.scenes
@@ -485,15 +495,47 @@ public enum PipelineManager {
                 // 关键帧提取
                 progress("提取关键帧中...")
                 let thumbDir = thumbnailDirectory(folderPath: folderPath, videoId: videoId)
-                let frames = try await KeyframeExtractor.extractKeyframesAsync(
-                    inputPath: videoPath,
-                    segments: sceneSegments,
-                    outputDirectory: thumbDir,
-                    ffmpegConfig: ffmpegConfig
-                )
-                try Task.checkCancellation()
-                progress("提取了 \(frames.count) 帧")
-                frameGroups = groupFramesByScene(frames: frames, sceneCount: sceneSegments.count)
+                if let ms = mediaService {
+                    // 通过 MediaService 提取关键帧
+                    // 为每个场景计算采样时间点
+                    var allFramePaths: [String] = []
+                    var msFrameGroups: [[String]] = Array(repeating: [], count: sceneSegments.count)
+                    for (sceneIdx, segment) in sceneSegments.enumerated() {
+                        let frameCount = max(1, min(3, Int(segment.duration / 5.0)))
+                        var times: [Double] = []
+                        if frameCount == 1 {
+                            times.append(segment.startTime + segment.duration / 2.0)
+                        } else {
+                            let step = segment.duration / Double(frameCount + 1)
+                            for i in 1...frameCount {
+                                times.append(segment.startTime + step * Double(i))
+                            }
+                        }
+                        let sceneDir = (thumbDir as NSString).appendingPathComponent("scene_\(sceneIdx)")
+                        let paths = try await ms.extractKeyframes(
+                            filePath: videoPath,
+                            times: times,
+                            outputDir: sceneDir,
+                            maxDimension: 512
+                        )
+                        msFrameGroups[sceneIdx] = paths
+                        allFramePaths.append(contentsOf: paths)
+                    }
+                    try Task.checkCancellation()
+                    progress("提取了 \(allFramePaths.count) 帧")
+                    frameGroups = msFrameGroups
+                } else {
+                    // 原有 KeyframeExtractor 路径
+                    let frames = try await KeyframeExtractor.extractKeyframesAsync(
+                        inputPath: videoPath,
+                        segments: sceneSegments,
+                        outputDirectory: thumbDir,
+                        ffmpegConfig: ffmpegConfig
+                    )
+                    try Task.checkCancellation()
+                    progress("提取了 \(frames.count) 帧")
+                    frameGroups = groupFramesByScene(frames: frames, sceneCount: sceneSegments.count)
+                }
 
                 // 删除旧 clips（重索引场景）
                 // 先清理全局库中该视频的旧 clips，防止孤儿记录

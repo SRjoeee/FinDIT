@@ -101,6 +101,9 @@ final class IndexingManager {
     /// 共享嵌入 provider
     private var embeddingProvider: (any EmbeddingProvider)?
 
+    /// 共享媒体服务（CompositeMediaService: AVFoundation + FFmpeg 路由）
+    private var mediaService: (any MediaService)?
+
     /// 已解析的 API Key（nil = 尝试过但没找到）
     private var resolvedAPIKey: String?
 
@@ -346,6 +349,7 @@ final class IndexingManager {
             rateLimiter: rateLimiter,
             embeddingProvider: effectiveEmbeddingProvider,
             skipStt: options.skipStt,
+            mediaService: mediaService,
             onProgress: { [weak self] progress in
                 Task { @MainActor [weak self] in
                     guard let self = self else { return }
@@ -559,6 +563,11 @@ final class IndexingManager {
                     print("[IndexingManager] 无 Gemini API Key 且 EmbeddingGemma 模型未安装，跳过文本嵌入（CLIP 离线索引不受影响）")
                 }
             }
+        }
+
+        // MediaService: AVFoundation (P:80) + FFmpeg (P:50) 路由
+        if mediaService == nil {
+            mediaService = CompositeMediaService.makeDefault()
         }
     }
 }

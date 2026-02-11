@@ -151,6 +151,7 @@ public final class IndexingScheduler: @unchecked Sendable {
         rateLimiter: GeminiRateLimiter? = nil,
         embeddingProvider: (any EmbeddingProvider)? = nil,
         skipStt: Bool = false,
+        mediaService: (any MediaService)? = nil,
         onProgress: @Sendable @escaping (VideoProgress) -> Void = { _ in },
         onComplete: @Sendable @escaping (VideoOutcome) -> Void = { _ in }
     ) async -> SyncEngine.SyncResult? {
@@ -197,6 +198,7 @@ public final class IndexingScheduler: @unchecked Sendable {
                             embeddingProvider: embeddingProvider,
                             skipStt: skipStt,
                             skipSync: true,
+                            mediaService: mediaService,
                             onProgress: { stage in
                                 onProgress(VideoProgress(
                                     videoPath: videoPath,

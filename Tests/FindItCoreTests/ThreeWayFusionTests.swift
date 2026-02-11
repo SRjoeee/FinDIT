@@ -400,6 +400,30 @@ final class ThreeWayWeightsTests: XCTestCase {
         XCTAssertEqual(w, .semantic)
     }
 
+    func testCJKKeywordQueryNotLong() {
+        // 3 个 CJK token（"日落", "金色", "海滩"）→ 关键词查询，应为 default 权重
+        let w = SearchEngine.resolveThreeWayWeights(
+            query: "日落 金色 海滩", hasCLIP: true, hasTextEmb: true
+        )
+        XCTAssertEqual(w, .default, "3-token CJK 查询不应被判为 long")
+    }
+
+    func testEnglishKeywordQueryNotLong() {
+        // 4 个英文词 → 关键词查询（阈值 5+），应为 default 权重
+        let w = SearchEngine.resolveThreeWayWeights(
+            query: "beach sunset golden hour", hasCLIP: true, hasTextEmb: true
+        )
+        XCTAssertEqual(w, .default, "4-word 英文查询不应被判为 long")
+    }
+
+    func testEnglishLongQueryIsSemantic() {
+        // 8 个英文词 → 描述性长查询，应为 semantic 权重
+        let w = SearchEngine.resolveThreeWayWeights(
+            query: "a girl watching a sunset on the beach", hasCLIP: true, hasTextEmb: true
+        )
+        XCTAssertEqual(w, .semantic, "8-word 英文查询应被判为 long")
+    }
+
     // MARK: - Two-way fallbacks
 
     func testTwoWayNoClipDefault() {

@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import FindItCore
+import os
 
 /// 搜索状态管理
 ///
@@ -10,6 +11,7 @@ import FindItCore
 @Observable
 @MainActor
 final class SearchState {
+    nonisolated private static let logger = Logger(subsystem: "com.findit.app", category: "Search")
     /// 当前搜索文本
     var query: String = "" {
         didSet {
@@ -204,7 +206,7 @@ final class SearchState {
             }
             self.results = searchResults
         } catch {
-            // FTS5 语法错误等，静默忽略（不打断输入流）
+            Self.logger.error("FTS search failed: \(error.localizedDescription)")
             self.results = []
         }
     }
@@ -250,9 +252,11 @@ final class SearchState {
             pathPrefixFilter: prefix, mode: mode
         )
         if let cached = searchCache.get(cacheKey) {
+            Self.logger.debug("cache hit: \(trimmed)")
             self.results = cached
             return
         }
+        let searchStart = ContinuousClock.now
 
         isVectorSearching = true
         defer { isVectorSearching = false }
@@ -314,6 +318,7 @@ final class SearchState {
             }) {
                 guard trimmed == self.query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
                 self.results = intermediateResults
+                Self.logger.info("Phase 2 (CLIP+FTS): \(searchStart.duration(to: .now)), \(intermediateResults.count) results")
             }
         }
 
@@ -338,6 +343,7 @@ final class SearchState {
         }) {
             self.results = searchResults
             searchCache.put(cacheKey, value: searchResults)
+            Self.logger.info("Phase 3 (full fusion): \(searchStart.duration(to: .now)), \(searchResults.count) results")
         }
     }
 
@@ -377,25 +383,10 @@ final class SearchState {
         guard geminiProvider != nil || gemmaProvider != nil else { return nil }
         guard let store = vectorStore else { return nil }
 
-        // Fix 4: Gemini (2s 硬超时) 竞速 EmbeddingGemma，取先到者
+        // Gemini (2s 硬超时) 竞速 EmbeddingGemma，取先到者
         let embedding: [Float]? = await withTaskGroup(of: [Float]?.self) { group in
             if let gemini = geminiProvider {
-                group.addTask {
-                    do {
-                        return try await withThrowingTaskGroup(of: [Float].self) { inner in
-                            inner.addTask { try await gemini.embed(text: query) }
-                            inner.addTask {
-                                try await Task.sleep(for: .seconds(2))
-                                throw CancellationError()
-                            }
-                            let result = try await inner.next()!
-                            inner.cancelAll()
-                            return result
-                        }
-                    } catch {
-                        return nil
-                    }
-                }
+                group.addTask { await embedWithTimeout(provider: gemini, query: query) }
             }
             if let gemma = gemmaProvider {
                 group.addTask { try? await gemma.embed(text: query) }
@@ -416,6 +407,28 @@ final class SearchState {
         guard !storeResults.isEmpty else { return nil }
         return storeResults.map {
             VectorSearchResult(clipId: $0.clipId, similarity: $0.similarity)
+        }
+    }
+
+    /// Gemini 嵌入 + 硬超时
+    ///
+    /// 在 Gemini embed 和超时之间竞速，先到者获胜。
+    /// 超时或失败返回 nil，调用方回退到 EmbeddingGemma。
+    nonisolated private static func embedWithTimeout(
+        provider: GeminiEmbeddingProvider,
+        query: String,
+        timeout: Duration = .seconds(2)
+    ) async -> [Float]? {
+        do {
+            return try await withThrowingTaskGroup(of: [Float].self) { group in
+                group.addTask { try await provider.embed(text: query) }
+                group.addTask { try await Task.sleep(for: timeout); throw CancellationError() }
+                guard let result = try await group.next() else { return nil }
+                group.cancelAll()
+                return result
+            }
+        } catch {
+            return nil
         }
     }
 
@@ -661,7 +674,7 @@ final class SearchState {
                 }
             }
 
-            print("[SearchState] prewarm 完成")
+            Self.logger.info("prewarm completed")
         }
     }
 }

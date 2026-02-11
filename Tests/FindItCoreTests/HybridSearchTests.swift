@@ -156,18 +156,18 @@ final class HybridSearchTests: XCTestCase {
     // MARK: - resolveWeights CJK 阈值
 
     func testResolveWeightsCJKMediumQuery() {
-        // "艺术工作室绘画" = 7 字符, CJK 阈值 5, 7 > 5 → semantic
+        // "艺术工作室绘画" NLTokenizer 分词 → ~3 tokens < 4 → default（关键词查询）
         let w = SearchEngine.resolveWeights(query: "艺术工作室绘画", mode: .auto, hasEmbedding: true)
-        XCTAssertEqual(w.clipWeight, 0.6, accuracy: 0.01)
-        XCTAssertEqual(w.ftsWeight, 0.1, accuracy: 0.01)
+        XCTAssertEqual(w.clipWeight, 0.5, accuracy: 0.01)
+        XCTAssertEqual(w.ftsWeight, 0.2, accuracy: 0.01)
         XCTAssertEqual(w.textEmbWeight, 0.3, accuracy: 0.01)
     }
 
     func testResolveWeightsEnglishMediumQuery() {
-        // "beach scene" = 11 字符, 非 CJK 阈值 10, 11 > 10 → semantic
+        // "beach scene" = 2 words < 5 → default（关键词查询）
         let w = SearchEngine.resolveWeights(query: "beach scene", mode: .auto, hasEmbedding: true)
-        XCTAssertEqual(w.clipWeight, 0.6, accuracy: 0.01)
-        XCTAssertEqual(w.ftsWeight, 0.1, accuracy: 0.01)
+        XCTAssertEqual(w.clipWeight, 0.5, accuracy: 0.01)
+        XCTAssertEqual(w.ftsWeight, 0.2, accuracy: 0.01)
     }
 
     func testResolveWeightsEnglishShortQuery() {

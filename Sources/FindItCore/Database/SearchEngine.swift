@@ -235,8 +235,8 @@ public enum SearchEngine {
         args += [limit]
 
         // bm25() 列权重（对应 FTS5 列顺序）:
-        //   tags(10), description(5), transcript(3), user_tags(8),
-        //   scene(4), subjects(3), actions(3), objects(2), mood(2), shot_type(1)
+        //   tags(10), description(5), transcript(6), user_tags(8),
+        //   scene(4), subjects(3), actions(3), objects(2), mood(3), shot_type(2)
         let rows = try Row.fetchAll(db, sql: """
             SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
                    v.file_path, v.file_name,
@@ -245,12 +245,12 @@ public enum SearchEngine {
                    c.tags, c.transcript, c.thumbnail_path, c.user_tags,
                    c.rating, c.color_label, c.shot_type, c.mood,
                    c.lighting, c.colors,
-                   bm25(clips_fts, 10, 5, 3, 8, 4, 3, 3, 2, 2, 1) AS rank
+                   bm25(clips_fts, 10, 5, 6, 8, 4, 3, 3, 2, 3, 2) AS rank
             FROM clips_fts
             JOIN clips c ON c.clip_id = clips_fts.rowid
             LEFT JOIN videos v ON v.video_id = c.video_id
             WHERE clips_fts MATCH ?\(filterSQL)\(prefixSQL)
-            ORDER BY bm25(clips_fts, 10, 5, 3, 8, 4, 3, 3, 2, 2, 1)
+            ORDER BY bm25(clips_fts, 10, 5, 6, 8, 4, 3, 3, 2, 3, 2)
             LIMIT ?
             """, arguments: args)
 
@@ -807,8 +807,13 @@ public enum SearchEngine {
         // 查询特征分析
         let isQuoted = query.contains("\"")
         let isLong: Bool = {
-            let threshold = containsCJK(query) ? 5 : 10
-            return query.count > threshold
+            if containsCJK(query) {
+                // CJK: NLTokenizer 分词，4+ token 视为描述性长查询
+                return QueryPipeline.segmentCJK(query).count >= 4
+            } else {
+                // 英文: 5+ 词视为描述性长查询
+                return query.split(separator: " ").count >= 5
+            }
         }()
 
         // 三路都可用

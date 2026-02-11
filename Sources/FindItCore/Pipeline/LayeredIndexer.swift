@@ -436,7 +436,7 @@ public enum LayeredIndexer {
                                     (clip_id, model_name, dimensions, vector)
                                     VALUES (?, ?, ?, ?)
                                     """, arguments: [
-                                        clipId, "siglip2-clip",
+                                        clipId, CLIPEmbeddingProvider.modelName,
                                         vector.count, data
                                     ])
                             }

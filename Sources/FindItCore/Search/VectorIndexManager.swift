@@ -45,16 +45,17 @@ public actor VectorIndexManager {
         }
 
         // 尝试重建
+        let clipModelName = CLIPEmbeddingProvider.modelName
         let dbCount = try await globalDB.read { db in
             try Int.fetchOne(db, sql: """
                 SELECT COUNT(*) FROM clip_vectors WHERE model_name = ?
-                """, arguments: ["siglip2-base"]) ?? 0
+                """, arguments: [clipModelName]) ?? 0
         }
         guard dbCount > 0 else { return nil }
 
         let result = try VectorIndexRebuilder.rebuild(
             from: globalDB,
-            modelName: "siglip2-base",
+            modelName: clipModelName,
             config: config,
             savePath: path
         )

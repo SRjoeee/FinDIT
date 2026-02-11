@@ -11,6 +11,11 @@ import Foundation
 /// 支持分别按需加载以控制内存峰值。
 public actor CLIPEmbeddingProvider {
 
+    /// CLIP 模型写入 clip_vectors 的统一标识名
+    ///
+    /// LayeredIndexer 写入、VectorIndexManager 查询都应引用此常量。
+    public static let modelName = "siglip2-clip"
+
     /// Provider 标识名
     public let name = "siglip2-clip"
 

@@ -9,7 +9,7 @@ public enum FileScanner {
     /// 支持的视频文件扩展名（小写）
     public static let supportedExtensions: Set<String> = [
         "mp4", "mov", "mkv", "avi", "mxf", "webm", "m4v", "ts", "mts",
-        "braw"
+        "braw", "r3d"
     ]
 
     /// 支持的照片扩展名（预埋，R5 启用）

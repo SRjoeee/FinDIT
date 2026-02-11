@@ -26,6 +26,29 @@ public final class CompositeMediaService: MediaService, SceneDetectable, @unchec
 
     public init() {}
 
+    // MARK: - Lock-Protected State Access (同步方法，避免 async 上下文中直接调用 NSLock)
+
+    /// 读取缓存的解码器
+    private func getCachedDecoder(for ext: String) -> (any MediaDecoder)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return decoderCache[ext]
+    }
+
+    /// 获取所有解码器的快照
+    private func getDecoders() -> [any MediaDecoder] {
+        lock.lock()
+        defer { lock.unlock() }
+        return decoders
+    }
+
+    /// 缓存解码器
+    private func cacheDecoder(_ decoder: any MediaDecoder, for ext: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        decoderCache[ext] = decoder
+    }
+
     // MARK: - 注册
 
     /// 注册解码器
@@ -152,14 +175,11 @@ public final class CompositeMediaService: MediaService, SceneDetectable, @unchec
     func bestDecoder(for filePath: String) async throws -> any MediaDecoder {
         let ext = fileExtension(from: filePath)
 
-        // 查缓存
-        lock.lock()
-        if let cached = decoderCache[ext] {
-            lock.unlock()
+        // 查缓存（同步方法，不触发 async NSLock 警告）
+        if let cached = getCachedDecoder(for: ext) {
             return cached
         }
-        let allDecoders = decoders
-        lock.unlock()
+        let allDecoders = getDecoders()
 
         guard !allDecoders.isEmpty else {
             throw MediaError.noDecoderAvailable(path: filePath)
@@ -198,10 +218,8 @@ public final class CompositeMediaService: MediaService, SceneDetectable, @unchec
             throw MediaError.noDecoderAvailable(path: filePath)
         }
 
-        // 缓存结果
-        lock.lock()
-        decoderCache[ext] = selected
-        lock.unlock()
+        // 缓存结果（同步方法）
+        cacheDecoder(selected, for: ext)
 
         return selected
     }
@@ -215,10 +233,7 @@ public final class CompositeMediaService: MediaService, SceneDetectable, @unchec
         sampleRate: Int
     ) async throws -> any MediaDecoder {
         let ext = fileExtension(from: filePath)
-
-        lock.lock()
-        let allDecoders = decoders
-        lock.unlock()
+        let allDecoders = getDecoders()
 
         let candidates = allDecoders.filter { $0.capability.fileExtensions.contains(ext) }
         let effectiveCandidates = candidates.isEmpty ? allDecoders : candidates
@@ -249,10 +264,7 @@ public final class CompositeMediaService: MediaService, SceneDetectable, @unchec
     /// 找到一个支持 SceneDetectable 的解码器
     private func findSceneDetectableDecoder(for filePath: String) -> SceneDetectable? {
         let ext = fileExtension(from: filePath)
-
-        lock.lock()
-        let allDecoders = decoders
-        lock.unlock()
+        let allDecoders = getDecoders()
 
         let candidates = allDecoders.filter { $0.capability.fileExtensions.contains(ext) }
         let effectiveCandidates = candidates.isEmpty ? allDecoders : candidates
@@ -262,9 +274,7 @@ public final class CompositeMediaService: MediaService, SceneDetectable, @unchec
 
     /// 获取指定扩展名的候选解码器
     private func candidateDecoders(for ext: String) -> [any MediaDecoder] {
-        lock.lock()
-        let allDecoders = decoders
-        lock.unlock()
+        let allDecoders = getDecoders()
 
         let candidates = allDecoders.filter { $0.capability.fileExtensions.contains(ext) }
         return candidates.isEmpty ? allDecoders : candidates

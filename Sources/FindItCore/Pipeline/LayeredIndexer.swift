@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
-import WhisperKit
-import MLXLMCommon
+@preconcurrency import WhisperKit
+@preconcurrency import MLXLMCommon
 
 /// 分层索引引擎
 ///

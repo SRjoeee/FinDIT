@@ -112,17 +112,18 @@ public enum FFmpegBridge {
 
         // 在后台线程读取管道，防止大输出时管道缓冲区满导致死锁
         let group = DispatchGroup()
-        var stderrResult = Data()
+        let stderrBox = OSAllocatedUnfairLock(initialState: Data())
         group.enter()
         DispatchQueue.global().async {
-            stderrResult = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            stderrBox.withLock { $0 = data }
             group.leave()
         }
 
         process.waitUntilExit()
         group.wait()
 
-        let stderr = String(data: stderrResult, encoding: .utf8) ?? ""
+        let stderr = stderrBox.withLock { String(data: $0, encoding: .utf8) ?? "" }
 
         guard let duration = parseDuration(from: stderr) else {
             throw FFmpegError.outputParsingFailed(detail: "未找到 Duration 信息")
@@ -173,17 +174,19 @@ public enum FFmpegBridge {
         // 进程阻塞在写管道、而主线程阻塞在 waitUntilExit 导致死锁。
         // 场景检测对长视频的 stderr 可达数 MB。
         let group = DispatchGroup()
-        var stdoutResult = Data()
-        var stderrResult = Data()
+        let stdoutBox = OSAllocatedUnfairLock(initialState: Data())
+        let stderrBox = OSAllocatedUnfairLock(initialState: Data())
 
         group.enter()
         DispatchQueue.global().async {
-            stdoutResult = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            stdoutBox.withLock { $0 = data }
             group.leave()
         }
         group.enter()
         DispatchQueue.global().async {
-            stderrResult = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            stderrBox.withLock { $0 = data }
             group.leave()
         }
 
@@ -191,8 +194,8 @@ public enum FFmpegBridge {
         timeoutItem.cancel()
         group.wait()
 
-        let stdout = String(data: stdoutResult, encoding: .utf8) ?? ""
-        let stderr = String(data: stderrResult, encoding: .utf8) ?? ""
+        let stdout = stdoutBox.withLock { String(data: $0, encoding: .utf8) ?? "" }
+        let stderr = stderrBox.withLock { String(data: $0, encoding: .utf8) ?? "" }
 
         // 检查是否因超时被终止
         if process.terminationReason == .uncaughtSignal {
@@ -284,17 +287,19 @@ public enum FFmpegBridge {
 
             // 在后台线程并发读取 stdout/stderr，防止管道缓冲区死锁
             let group = DispatchGroup()
-            var stdoutResult = Data()
-            var stderrResult = Data()
+            let stdoutBox = OSAllocatedUnfairLock(initialState: Data())
+            let stderrBox = OSAllocatedUnfairLock(initialState: Data())
 
             group.enter()
             DispatchQueue.global().async {
-                stdoutResult = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                stdoutBox.withLock { $0 = data }
                 group.leave()
             }
             group.enter()
             DispatchQueue.global().async {
-                stderrResult = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                stderrBox.withLock { $0 = data }
                 group.leave()
             }
 
@@ -308,8 +313,8 @@ public enum FFmpegBridge {
                 }
                 guard !alreadyResumed else { return }
 
-                let stdout = String(data: stdoutResult, encoding: .utf8) ?? ""
-                let stderr = String(data: stderrResult, encoding: .utf8) ?? ""
+                let stdout = stdoutBox.withLock { String(data: $0, encoding: .utf8) ?? "" }
+                let stderr = stderrBox.withLock { String(data: $0, encoding: .utf8) ?? "" }
 
                 if terminatedProcess.terminationReason == .uncaughtSignal {
                     continuation.resume(throwing: FFmpegError.timeout(seconds: effectiveTimeout))

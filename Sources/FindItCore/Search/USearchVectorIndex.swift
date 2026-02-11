@@ -1,6 +1,9 @@
 import Foundation
 import USearch
 
+// USearchScalar 是纯值枚举 (f16/f32/f64/i8)，无可变状态，Sendable 安全
+extension USearchScalar: @retroactive @unchecked Sendable {}
+
 /// USearch HNSW 向量索引
 ///
 /// 基于 USearch 库的近似最近邻索引，支持:

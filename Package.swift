@@ -33,8 +33,10 @@ let package = Package(
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", .upToNextMinor(from: "0.15.0")),
         // Stage 3.5: MLX Swift for 本地 VLM 推理
         .package(url: "https://github.com/ml-explore/mlx-swift-lm/", .upToNextMinor(from: "2.30.3")),
-        // Stage 3: ONNX Runtime for BGE-M3 向量嵌入
-        // .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager.git", from: "1.20.0"),
+        // Stage R2a: ONNX Runtime for SigLIP2 CLIP 视觉嵌入
+        .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager.git", from: "1.20.0"),
+        // Stage R2a: SentencePiece tokenizer for SigLIP2 text encoder
+        .package(url: "https://github.com/jkrukowski/swift-sentencepiece.git", from: "0.0.3"),
     ],
     targets: [
         // xxHash C 库（嵌入官方 v0.8.3 源码，BSD 2-Clause）
@@ -51,6 +53,8 @@ let package = Package(
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "MLXVLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager"),
+                .product(name: "SentencepieceTokenizer", package: "swift-sentencepiece"),
             ],
         ),
         .executableTarget(

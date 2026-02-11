@@ -38,6 +38,8 @@ struct FindItCLI: AsyncParsableCommand {
             OrphanCommand.self,
             RemoveVideoCommand.self,
             RebaseCommand.self,
+            // CLIP commands
+            CLIPCommand.self,
         ]
     )
 }

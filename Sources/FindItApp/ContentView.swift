@@ -109,7 +109,11 @@ struct ContentView: View {
             appState.fileWatcherManager = fileWatcherManager
             NotificationManager.requestPermission()
             await appState.initialize()
-            // 启动时主动对账卷路径重定向（处理“卷已挂载但无出现事件”的场景）。
+            // 初始化向量索引管理器（需要 globalDB 已就绪）
+            if let db = appState.globalDB {
+                searchState.vectorIndexManager = VectorIndexManager(globalDB: db)
+            }
+            // 启动时主动对账卷路径重定向（处理"卷已挂载但无出现事件"的场景）。
             volumeMonitor.reconcilePathsAtStartup()
             fileWatcherManager.startWatching()
             // 启动后自动恢复可达文件夹的索引任务（含 pending/failed/orphan 恢复路径）。

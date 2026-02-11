@@ -99,7 +99,7 @@ final class SearchState {
     /// 向量搜索 debounce Task
     private var vectorSearchTask: Task<Void, Never>?
 
-    /// Embedding provider（懒初始化，Gemini 优先，NLEmbedding 回退）
+    /// Embedding provider（懒初始化，Gemini 优先，EmbeddingGemma 回退）
     private var embeddingProvider: (any EmbeddingProvider)?
 
     /// 是否已尝试初始化 provider（避免反复尝试）
@@ -110,6 +110,15 @@ final class SearchState {
 
     /// 是否正在加载 VectorStore（避免重复加载）
     private var isLoadingVectorStore = false
+
+    /// CLIP 嵌入服务（文本 → CLIP 向量，用于跨模态搜索）
+    private var clipProvider: CLIPEmbeddingProvider?
+
+    /// 是否已尝试初始化 CLIP provider
+    private var hasTriedInitClipProvider = false
+
+    /// USearch 双索引管理器（外部注入）
+    var vectorIndexManager: VectorIndexManager?
 
     /// 向量过滤缓存 key（folder/path 过滤变化时失效）
     private struct VectorFilterCacheKey: Equatable {
@@ -122,13 +131,16 @@ final class SearchState {
     /// 过滤缓存（避免每次输入都重复查询 clip_id 集合）
     private var vectorFilterCache: (key: VectorFilterCacheKey, clipIDs: Set<Int64>)?
 
-    /// 使 VectorStore 缓存失效
+    /// 使 VectorStore 和 USearch 缓存失效
     ///
-    /// 当视频被删除时由 FileWatcherManager 调用，
+    /// 当视频被删除或新索引完成时调用，
     /// 确保下次向量搜索重新从数据库加载最新数据。
     func invalidateVectorStore() {
         vectorStore = nil
         invalidateVectorFilterCache()
+        Task {
+            await vectorIndexManager?.invalidateAll()
+        }
     }
 
     // MARK: - FTS5 即时搜索
@@ -178,6 +190,8 @@ final class SearchState {
     }
 
     /// 执行向量搜索（在 debounce 后调用）
+    ///
+    /// 三路搜索: CLIP (USearch) + 文本嵌入 (VectorStore) + FTS5
     private func performVectorSearch(query: String) async {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -186,53 +200,91 @@ final class SearchState {
         guard let db = appState?.globalDB else { return }
 
         // 懒初始化 embedding provider
-        let provider = getEmbeddingProvider()
-        guard let provider = provider else { return }
+        let textProvider = getEmbeddingProvider()
 
         isVectorSearching = true
         defer { isVectorSearching = false }
 
         do {
-            // 确保 VectorStore 已加载
-            await loadVectorStoreIfNeeded(provider: provider, db: db)
+            // 并行准备 CLIP 和文本嵌入搜索
+            let clipProvider = await ensureClipProvider()
 
-            let allowedClipIDs = try await resolveAllowedClipIDs(db: db)
+            // === 1. CLIP 搜索路径 (USearch HNSW) ===
+            var clipResults: [VectorSearchResult]?
+            if let clipProvider = clipProvider, let manager = vectorIndexManager {
+                do {
+                    let clipQuery = try await clipProvider.encodeText(trimmed)
+                    if let clipIndex = try await manager.getClipIndex() {
+                        let allowedClipIDs = try await resolveAllowedClipIDs(db: db)
+                        if let allowed = allowedClipIDs {
+                            clipResults = try clipIndex.searchSimilarity(
+                                query: clipQuery, count: 100, allowedClipIDs: allowed
+                            )
+                        } else {
+                            clipResults = try clipIndex.searchSimilarity(
+                                query: clipQuery, count: 100
+                            )
+                        }
+                    }
+                } catch {
+                    // CLIP 搜索失败非致命，回退到文本嵌入 + FTS5
+                }
+            }
 
-            let queryEmbedding = try await provider.embed(text: trimmed)
+            // === 2. 文本嵌入搜索路径 (VectorStore brute-force) ===
+            var textEmbResults: [VectorSearchResult]?
+            if let textProvider = textProvider {
+                await loadVectorStoreIfNeeded(provider: textProvider, db: db)
+
+                let queryEmbedding = try await textProvider.embed(text: trimmed)
+
+                // 再次检查查询没变
+                guard trimmed == self.query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+
+                let allowedClipIDs = try await resolveAllowedClipIDs(db: db)
+
+                if let store = vectorStore {
+                    let storeResults = await store.search(
+                        query: queryEmbedding,
+                        limit: 100,
+                        allowedClipIDs: allowedClipIDs
+                    )
+                    if !storeResults.isEmpty {
+                        textEmbResults = storeResults.map {
+                            VectorSearchResult(clipId: $0.clipId, similarity: $0.similarity)
+                        }
+                    }
+                }
+            }
 
             // 再次检查查询没变
             guard trimmed == self.query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
 
-            // VectorStore 批量搜索（~25ms for 100K clips）
-            let storeResults: [(clipId: Int64, similarity: Float)]?
-            if let store = vectorStore {
-                storeResults = await store.search(
-                    query: queryEmbedding,
-                    limit: 100,
-                    allowedClipIDs: allowedClipIDs
-                )
-            } else {
-                storeResults = nil
-            }
-
+            // === 3. 三路融合搜索 ===
             let mode = self.searchMode
             let filter = self.folderFilter
             let prefix = self.pathPrefixFilter
-            let capturedStoreResults = storeResults
-            let hybridResults = try await db.read { dbConn in
-                try SearchEngine.hybridSearch(
+            let parsed = QueryParser.parse(trimmed)
+            let weights = SearchEngine.resolveWeights(
+                query: trimmed, mode: mode,
+                hasEmbedding: textEmbResults != nil || clipResults != nil
+            )
+
+            let capturedClipResults = clipResults
+            let capturedTextEmbResults = textEmbResults
+            let searchResults = try await db.read { dbConn in
+                try SearchEngine.threeWaySearch(
                     dbConn,
-                    query: trimmed,
-                    queryEmbedding: queryEmbedding,
-                    embeddingModel: provider.name,
-                    vectorStoreResults: capturedStoreResults,
-                    mode: mode,
+                    query: parsed,
+                    clipResults: capturedClipResults,
+                    textEmbResults: capturedTextEmbResults,
+                    weights: weights,
                     folderPaths: filter,
                     pathPrefixFilter: prefix,
                     limit: 50
                 )
             }
-            self.results = hybridResults
+            self.results = searchResults
         } catch {
             // 向量搜索失败不影响已有 FTS5 结果
         }
@@ -413,4 +465,24 @@ final class SearchState {
         results = []
     }
 
+    // MARK: - CLIP Provider
+
+    /// 懒初始化 CLIP 嵌入服务
+    ///
+    /// 检查 SigLIP2 文本编码器模型文件是否存在。
+    /// 初始化失败后不再重试（直到下次启动）。
+    private func ensureClipProvider() async -> CLIPEmbeddingProvider? {
+        if let existing = clipProvider {
+            return existing
+        }
+        guard !hasTriedInitClipProvider else { return nil }
+        hasTriedInitClipProvider = true
+
+        let provider = CLIPEmbeddingProvider()
+        let available = await provider.isTextEncoderAvailable
+        guard available else { return nil }
+
+        clipProvider = provider
+        return provider
+    }
 }

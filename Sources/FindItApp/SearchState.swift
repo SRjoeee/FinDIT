@@ -117,6 +117,11 @@ final class SearchState {
     /// 是否已尝试初始化 CLIP provider
     private var hasTriedInitClipProvider = false
 
+    /// 翻译服务（懒初始化，Apple Translation 优先 → 词典回退）
+    private var translator: (any TranslationService)?
+    /// 是否已尝试初始化翻译服务
+    private var hasTriedInitTranslator = false
+
     /// USearch 双索引管理器（外部注入）
     var vectorIndexManager: VectorIndexManager?
 
@@ -145,7 +150,7 @@ final class SearchState {
 
     // MARK: - FTS5 即时搜索
 
-    /// 执行 FTS5 即时搜索
+    /// 执行 FTS5 即时搜索（含跨语言词典扩展）
     private func performFTSSearch() {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -159,8 +164,36 @@ final class SearchState {
         do {
             let filter = self.folderFilter
             let prefix = self.pathPrefixFilter
-            let searchResults = try db.read { dbConn in
-                try SearchEngine.search(dbConn, query: trimmed, folderPaths: filter, pathPrefixFilter: prefix, limit: 50)
+
+            // 同步词典扩展（<1ms）
+            let parsed = QueryParser.parse(trimmed)
+            let expanded = QueryPipeline.expandSync(
+                trimmed, parsed: parsed, dictionary: TranslationDictionary.shared
+            )
+
+            let searchResults = try db.read { dbConn -> [SearchEngine.SearchResult] in
+                // 原始语言搜索
+                var results = try SearchEngine.search(
+                    dbConn, query: trimmed,
+                    folderPaths: filter, pathPrefixFilter: prefix, limit: 50
+                )
+
+                // 跨语言扩展搜索
+                if let translatedFTS = expanded.translatedFTSQuery {
+                    let existingIds = Set(results.map(\.clipId))
+                    let translatedResults = try SearchEngine.search(
+                        dbConn, query: translatedFTS,
+                        folderPaths: filter, pathPrefixFilter: prefix, limit: 50
+                    )
+                    // 去重合并（翻译结果追加到尾部）
+                    for result in translatedResults {
+                        if !existingIds.contains(result.clipId) {
+                            results.append(result)
+                        }
+                    }
+                }
+
+                return Array(results.prefix(50))
             }
             self.results = searchResults
         } catch {
@@ -260,7 +293,7 @@ final class SearchState {
             // 再次检查查询没变
             guard trimmed == self.query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
 
-            // === 3. 三路融合搜索 ===
+            // === 3. 三路融合搜索（含跨语言扩展）===
             let mode = self.searchMode
             let filter = self.folderFilter
             let prefix = self.pathPrefixFilter
@@ -270,12 +303,19 @@ final class SearchState {
                 hasEmbedding: textEmbResults != nil || clipResults != nil
             )
 
+            // 异步翻译扩展（Apple Translation 优先 → 词典回退）
+            let translator = ensureTranslator()
+            let expanded = await QueryPipeline.expand(
+                trimmed, parsed: parsed, translator: translator
+            )
+
             let capturedClipResults = clipResults
             let capturedTextEmbResults = textEmbResults
             let searchResults = try await db.read { dbConn in
                 try SearchEngine.threeWaySearch(
                     dbConn,
                     query: parsed,
+                    expandedQuery: expanded,
                     clipResults: capturedClipResults,
                     textEmbResults: capturedTextEmbResults,
                     weights: weights,
@@ -463,6 +503,18 @@ final class SearchState {
         vectorSearchTask?.cancel()
         query = ""
         results = []
+    }
+
+    // MARK: - Translation
+
+    /// 懒初始化翻译服务
+    private func ensureTranslator() -> any TranslationService {
+        if let t = translator { return t }
+        if !hasTriedInitTranslator {
+            hasTriedInitTranslator = true
+            translator = QueryPipeline.bestAvailableTranslator()
+        }
+        return translator ?? TranslationDictionary.shared
     }
 
     // MARK: - CLIP Provider

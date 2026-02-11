@@ -315,6 +315,7 @@ public enum SearchEngine {
     public static func threeWaySearch(
         _ db: Database,
         query: ParsedQuery,
+        expandedQuery: QueryPipeline.ExpandedQuery? = nil,
         clipResults: [VectorSearchResult]? = nil,
         textEmbResults: [VectorSearchResult]? = nil,
         weights: SearchWeights,
@@ -350,6 +351,7 @@ public enum SearchEngine {
 
         // 2. FTS5 关键词搜索
         if weights.ftsWeight > 0 && !query.positiveText.isEmpty {
+            // 2a. 原始语言搜索
             let ftsResults = try search(
                 db, query: query.ftsQuery,
                 folderPaths: folderPaths,
@@ -360,6 +362,24 @@ public enum SearchEngine {
                 ftsScores[result.clipId] = result.rank
                 if resultData[result.clipId] == nil {
                     resultData[result.clipId] = result
+                }
+            }
+            // 2b. 跨语言翻译扩展搜索
+            if let translatedFTS = expandedQuery?.translatedFTSQuery {
+                let translatedResults = try search(
+                    db, query: translatedFTS,
+                    folderPaths: folderPaths,
+                    pathPrefixFilter: pathPrefixFilter,
+                    limit: limit * 2
+                )
+                for result in translatedResults {
+                    if ftsScores[result.clipId] == nil {
+                        // 翻译命中的权重略低于原始命中 (0.8x)
+                        ftsScores[result.clipId] = result.rank * 0.8
+                        if resultData[result.clipId] == nil {
+                            resultData[result.clipId] = result
+                        }
+                    }
                 }
             }
         }

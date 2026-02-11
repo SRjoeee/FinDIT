@@ -287,8 +287,12 @@ public enum SearchEngine {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 
-        // 根据模式决定权重
-        let weights = resolveWeights(query: trimmed, mode: mode, hasEmbedding: queryEmbedding != nil)
+        // 根据模式决定权重（hybridSearch 无 CLIP，hasCLIP 始终为 false）
+        let weights = resolveThreeWayWeights(
+            query: trimmed, mode: mode,
+            hasCLIP: false,
+            hasTextEmb: queryEmbedding != nil
+        )
 
         // 纯向量模式
         if mode == .vector || (mode == .auto && weights.ftsWeight == 0) {

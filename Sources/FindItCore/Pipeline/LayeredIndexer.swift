@@ -1031,4 +1031,129 @@ public enum LayeredIndexer {
         }
         return nil
     }
+
+    // MARK: - CLIP 向量补填
+
+    /// CLIP 向量补填结果
+    public struct BackfillResult: Sendable {
+        public let totalClips: Int
+        public let encoded: Int
+        public let skipped: Int
+        public let failed: Int
+    }
+
+    /// 为已有 clips 补充 CLIP 向量（不重建场景/clips）
+    ///
+    /// 安全地遍历文件夹库中所有缺少 CLIP 向量的 clips，
+    /// 使用 thumbnail_path 进行 SigLIP2 编码并写入 clip_vectors。
+    /// 不删除、不修改任何已有数据。
+    ///
+    /// - Parameters:
+    ///   - folderPath: 素材文件夹路径
+    ///   - folderDB: 文件夹级数据库
+    ///   - globalDB: 全局搜索索引（nil = 不同步）
+    ///   - clipProvider: CLIP 嵌入服务
+    ///   - onProgress: 进度回调 (已处理数, 总数, 当前视频名)
+    /// - Returns: 补填结果
+    public static func backfillCLIP(
+        folderPath: String,
+        folderDB: DatabaseWriter,
+        globalDB: DatabaseWriter? = nil,
+        clipProvider: CLIPEmbeddingProvider,
+        onProgress: (@Sendable (Int, Int, String) -> Void)? = nil
+    ) async throws -> BackfillResult {
+        let modelName = CLIPEmbeddingProvider.modelName
+
+        // 1. 查找所有缺少 CLIP 向量的 clips
+        let clipsToProcess: [(clipId: Int64, thumbnailPath: String, videoPath: String)] =
+            try await folderDB.read { db in
+                let rows = try Row.fetchAll(db, sql: """
+                    SELECT c.clip_id, c.thumbnail_path, v.file_path
+                    FROM clips c
+                    JOIN videos v ON v.video_id = c.video_id
+                    WHERE c.thumbnail_path IS NOT NULL
+                      AND c.clip_id NOT IN (
+                          SELECT cv.clip_id FROM clip_vectors cv
+                          WHERE cv.model_name = ?
+                      )
+                    ORDER BY v.video_id, c.clip_id
+                    """, arguments: [modelName])
+                return rows.compactMap { row -> (Int64, String, String)? in
+                    let clipId: Int64? = row["clip_id"]
+                    let thumb: String? = row["thumbnail_path"]
+                    let videoPath: String? = row["file_path"]
+                    guard let cid = clipId, let t = thumb, let vp = videoPath else {
+                        return nil
+                    }
+                    return (cid, t, vp)
+                }
+            }
+
+        let total = clipsToProcess.count
+        guard total > 0 else {
+            return BackfillResult(totalClips: 0, encoded: 0, skipped: 0, failed: 0)
+        }
+
+        // 2. 确认 image encoder 可用
+        guard await clipProvider.isImageEncoderAvailable else {
+            throw NSError(domain: "LayeredIndexer", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "SigLIP2 image encoder 不可用"
+            ])
+        }
+
+        // 3. 逐个编码
+        var encoded = 0
+        var skipped = 0
+        var failed = 0
+
+        for (index, item) in clipsToProcess.enumerated() {
+            try Task.checkCancellation()
+
+            let videoName = (item.videoPath as NSString).lastPathComponent
+            onProgress?(index, total, videoName)
+
+            // 检查缩略图文件存在
+            guard FileManager.default.fileExists(atPath: item.thumbnailPath) else {
+                skipped += 1
+                continue
+            }
+
+            do {
+                let vector = try await clipProvider.encodeImage(path: item.thumbnailPath)
+                let data = EmbeddingUtils.serializeEmbedding(vector)
+                try await folderDB.write { db in
+                    try db.execute(sql: """
+                        INSERT OR REPLACE INTO clip_vectors
+                        (clip_id, model_name, dimensions, vector)
+                        VALUES (?, ?, ?, ?)
+                        """, arguments: [
+                            item.clipId, modelName,
+                            vector.count, data
+                        ])
+                }
+                encoded += 1
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                failed += 1
+            }
+        }
+
+        // 4. 同步到全局库
+        if let globalDB = globalDB {
+            let _ = try SyncEngine.sync(
+                folderPath: folderPath,
+                folderDB: folderDB,
+                globalDB: globalDB,
+                force: true
+            )
+        }
+
+        return BackfillResult(
+            totalClips: total,
+            encoded: encoded,
+            skipped: skipped,
+            failed: failed
+        )
+    }
 }

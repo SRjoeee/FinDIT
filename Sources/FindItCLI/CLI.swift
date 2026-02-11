@@ -42,6 +42,8 @@ struct FindItCLI: AsyncParsableCommand {
             CLIPCommand.self,
             // EmbeddingGemma commands
             GemmaCommand.self,
+            // Backfill commands
+            CLIPBackfillCommand.self,
         ]
     )
 }
@@ -1335,5 +1337,62 @@ struct EmbedCommand: AsyncParsableCommand {
             force: true
         )
         print("同步到全局索引: \(syncResult.syncedClips) 个片段")
+    }
+}
+
+// MARK: - clip-backfill
+
+struct CLIPBackfillCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "clip-backfill",
+        abstract: "为已有片段补充 CLIP 向量（不重建场景/片段）"
+    )
+
+    @Option(name: .long, help: "素材文件夹路径")
+    var folder: String
+
+    func run() async throws {
+        let folderPath = (folder as NSString).standardizingPath
+        guard FileManager.default.fileExists(atPath: folderPath) else {
+            print("错误: 文件夹不存在: \(folderPath)")
+            throw ExitCode.failure
+        }
+
+        let folderDB = try DatabaseManager.openFolderDatabase(at: folderPath)
+        let globalDB = try DatabaseManager.openGlobalDatabase()
+
+        // 初始化 CLIP provider
+        let clipProvider = CLIPEmbeddingProvider()
+        guard await clipProvider.isImageEncoderAvailable else {
+            print("错误: SigLIP2 image encoder 不可用（检查模型文件）")
+            throw ExitCode.failure
+        }
+        print("✓ SigLIP2 image encoder 已就绪")
+
+        let startTime = CFAbsoluteTimeGetCurrent()
+
+        let result = try await LayeredIndexer.backfillCLIP(
+            folderPath: folderPath,
+            folderDB: folderDB,
+            globalDB: globalDB,
+            clipProvider: clipProvider,
+            onProgress: { current, total, videoName in
+                if current % 50 == 0 || current == total - 1 {
+                    print("  [\(current + 1)/\(total)] \(videoName)")
+                }
+            }
+        )
+
+        let elapsed = CFAbsoluteTimeGetCurrent() - startTime
+        print()
+        print("CLIP 补填完成 (\(String(format: "%.1f", elapsed))s)")
+        print("  总计: \(result.totalClips) 个片段")
+        print("  编码: \(result.encoded)")
+        print("  跳过: \(result.skipped) (缩略图缺失)")
+        print("  失败: \(result.failed)")
+
+        if result.encoded > 0 {
+            print("  已同步到全局索引")
+        }
     }
 }

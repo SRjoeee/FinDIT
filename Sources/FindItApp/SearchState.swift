@@ -99,8 +99,11 @@ final class SearchState {
     /// 向量搜索 debounce Task
     private var vectorSearchTask: Task<Void, Never>?
 
-    /// Embedding provider（懒初始化，Gemini 优先，EmbeddingGemma 回退）
-    private var embeddingProvider: (any EmbeddingProvider)?
+    /// Gemini embedding provider（在线，768d）
+    private var geminiProvider: GeminiEmbeddingProvider?
+
+    /// EmbeddingGemma provider（离线回退，768d）
+    private var gemmaProvider: EmbeddingGemmaProvider?
 
     /// 是否已尝试初始化 provider（避免反复尝试）
     private var hasTriedInitProvider = false
@@ -267,25 +270,53 @@ final class SearchState {
             // === 2. 文本嵌入搜索路径 (VectorStore brute-force) ===
             var textEmbResults: [VectorSearchResult]?
             if let textProvider = textProvider {
-                await loadVectorStoreIfNeeded(provider: textProvider, db: db)
+                do {
+                    await loadVectorStoreIfNeeded(provider: textProvider, db: db)
 
-                let queryEmbedding = try await textProvider.embed(text: trimmed)
+                    let queryEmbedding = try await textProvider.embed(text: trimmed)
 
-                // 再次检查查询没变
-                guard trimmed == self.query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+                    // 再次检查查询没变
+                    guard trimmed == self.query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
 
-                let allowedClipIDs = try await resolveAllowedClipIDs(db: db)
+                    let allowedClipIDs = try await resolveAllowedClipIDs(db: db)
 
-                if let store = vectorStore {
-                    let storeResults = await store.search(
-                        query: queryEmbedding,
-                        limit: 100,
-                        allowedClipIDs: allowedClipIDs
-                    )
-                    if !storeResults.isEmpty {
-                        textEmbResults = storeResults.map {
-                            VectorSearchResult(clipId: $0.clipId, similarity: $0.similarity)
+                    if let store = vectorStore {
+                        let storeResults = await store.search(
+                            query: queryEmbedding,
+                            limit: 100,
+                            allowedClipIDs: allowedClipIDs
+                        )
+                        if !storeResults.isEmpty {
+                            textEmbResults = storeResults.map {
+                                VectorSearchResult(clipId: $0.clipId, similarity: $0.similarity)
+                            }
                         }
+                    }
+                } catch {
+                    // Gemini embed 失败（断网等）→ 尝试 EmbeddingGemma 离线回退
+                    if let gemma = gemmaProvider, textProvider is GeminiEmbeddingProvider {
+                        print("[SearchState] Gemini 嵌入失败，回退到 EmbeddingGemma: \(error.localizedDescription)")
+                        do {
+                            await loadVectorStoreIfNeeded(provider: gemma, db: db)
+                            let queryEmbedding = try await gemma.embed(text: trimmed)
+                            guard trimmed == self.query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+                            let allowedClipIDs = try await resolveAllowedClipIDs(db: db)
+                            if let store = vectorStore {
+                                let storeResults = await store.search(
+                                    query: queryEmbedding, limit: 100, allowedClipIDs: allowedClipIDs
+                                )
+                                if !storeResults.isEmpty {
+                                    textEmbResults = storeResults.map {
+                                        VectorSearchResult(clipId: $0.clipId, similarity: $0.similarity)
+                                    }
+                                }
+                            }
+                        } catch {
+                            // EmbeddingGemma 也失败，回退到 CLIP + FTS5
+                            print("[SearchState] EmbeddingGemma 也失败: \(error.localizedDescription)")
+                        }
+                    } else {
+                        print("[SearchState] 文本嵌入失败，无离线回退: \(error.localizedDescription)")
                     }
                 }
             }
@@ -298,9 +329,11 @@ final class SearchState {
             let filter = self.folderFilter
             let prefix = self.pathPrefixFilter
             let parsed = QueryParser.parse(trimmed)
-            let weights = SearchEngine.resolveWeights(
-                query: trimmed, mode: mode,
-                hasEmbedding: textEmbResults != nil || clipResults != nil
+            let weights = SearchEngine.resolveThreeWayWeights(
+                query: trimmed,
+                mode: mode,
+                hasCLIP: clipResults != nil,
+                hasTextEmb: textEmbResults != nil
             )
 
             // 异步翻译扩展（Apple Translation 优先 → 词典回退）
@@ -365,38 +398,32 @@ final class SearchState {
         }
     }
 
-    /// 获取或初始化 embedding provider
+    /// 获取最佳可用 embedding provider
     ///
-    /// 策略：Gemini（768 维，云端） → EmbeddingGemma（768 维，离线） → nil。
-    /// 已初始化时直接返回缓存实例。
-    /// 初始化失败后进入冷却，直到收到配置变更通知再重试。
+    /// 策略: Gemini (768d, 云端) 优先 → EmbeddingGemma (768d, 离线) 回退 → nil。
+    /// 两个 provider 同时初始化，运行时按可用性选择。
+    /// 断网时 Gemini embed() 会失败，由调用方 catch 后用 gemmaProvider 重试。
     private func getEmbeddingProvider() -> (any EmbeddingProvider)? {
-        if let provider = embeddingProvider {
-            return provider
+        // 懒初始化两个 provider
+        if !hasTriedInitProvider {
+            hasTriedInitProvider = true
+            let config = ProviderConfig.load()
+            if let apiKey = try? APIKeyManager.resolveAPIKey() {
+                geminiProvider = GeminiEmbeddingProvider(
+                    apiKey: apiKey,
+                    config: config.toEmbeddingConfig()
+                )
+            }
+            let gemma = EmbeddingGemmaProvider()
+            if gemma.isAvailable() {
+                gemmaProvider = gemma
+            }
         }
-        guard !hasTriedInitProvider else { return nil }
-        hasTriedInitProvider = true
-
-        // 优先 Gemini（使用 ProviderConfig 的模型设置）
-        let config = ProviderConfig.load()
-        if let apiKey = try? APIKeyManager.resolveAPIKey() {
-            let provider = GeminiEmbeddingProvider(
-                apiKey: apiKey,
-                config: config.toEmbeddingConfig()
-            )
-            self.embeddingProvider = provider
-            return provider
+        // 运行时选择: Gemini 优先，离线回退 EmbeddingGemma
+        if let gemini = geminiProvider {
+            return gemini
         }
-
-        // 无 API Key → 回退到 EmbeddingGemma 本地模型（768d，离线）
-        let gemmaProvider = EmbeddingGemmaProvider()
-        if gemmaProvider.isAvailable() {
-            self.embeddingProvider = gemmaProvider
-            return gemmaProvider
-        }
-
-        // 无 API Key 且无 EmbeddingGemma → 仅使用 FTS5 + CLIP 搜索
-        return nil
+        return gemmaProvider
     }
 
     /// 解析向量过滤所需 clip_id 集合（有过滤时）

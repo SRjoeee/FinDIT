@@ -139,12 +139,16 @@ final class SearchState {
     /// 过滤缓存（避免每次输入都重复查询 clip_id 集合）
     private var vectorFilterCache: (key: VectorFilterCacheKey, clipIDs: Set<Int64>)?
 
+    /// 搜索结果 LRU 缓存（32 条，重复查询 <1ms）
+    private var searchCache = SearchLRUCache<SearchCacheKey, [SearchEngine.SearchResult]>(capacity: 32)
+
     /// 使 VectorStore 和 USearch 缓存失效
     ///
     /// 当视频被删除或新索引完成时调用，
     /// 确保下次向量搜索重新从数据库加载最新数据。
     func invalidateVectorStore() {
         vectorStore = nil
+        searchCache.clear()
         invalidateVectorFilterCache()
         Task {
             await vectorIndexManager?.invalidateAll()
@@ -227,139 +231,191 @@ final class SearchState {
 
     /// 执行向量搜索（在 debounce 后调用）
     ///
-    /// 三路搜索: CLIP (USearch) + 文本嵌入 (VectorStore) + FTS5
+    /// 三路并行搜索: CLIP (USearch) ∥ 文本嵌入 (VectorStore) ∥ 翻译扩展
+    /// 渐进式展示: CLIP+FTS5 先到先显示 → TextEmb 到达后刷新融合结果
     private func performVectorSearch(query: String) async {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        // 确保当前查询没变
         guard trimmed == self.query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
         guard let db = appState?.globalDB else { return }
 
-        // 懒初始化 embedding provider
-        let textProvider = getEmbeddingProvider()
+        let mode = self.searchMode
+        let filter = self.folderFilter
+        let prefix = self.pathPrefixFilter
+        let parsed = QueryParser.parse(trimmed)
+
+        // Fix 5: 缓存命中 → 立即返回
+        let cacheKey = SearchCacheKey(
+            query: trimmed, folderFilter: filter,
+            pathPrefixFilter: prefix, mode: mode
+        )
+        if let cached = searchCache.get(cacheKey) {
+            self.results = cached
+            return
+        }
 
         isVectorSearching = true
         defer { isVectorSearching = false }
 
-        do {
-            // 并行准备 CLIP 和文本嵌入搜索
-            let clipProvider = await ensureClipProvider()
+        // === 在 MainActor 上提前捕获所有依赖 ===
+        let clipProv = await ensureClipProvider()
+        let _ = getEmbeddingProvider()  // 触发懒初始化
+        let gemini = geminiProvider
+        let gemma = gemmaProvider
+        let manager = vectorIndexManager
+        let translator = ensureTranslator()
 
-            // === 1. CLIP 搜索路径 (USearch HNSW) ===
-            var clipResults: [VectorSearchResult]?
-            if let clipProvider = clipProvider, let manager = vectorIndexManager {
-                do {
-                    let clipQuery = try await clipProvider.encodeText(trimmed)
-                    if let clipIndex = try await manager.getClipIndex() {
-                        let allowedClipIDs = try await resolveAllowedClipIDs(db: db)
-                        if let allowed = allowedClipIDs {
-                            clipResults = try clipIndex.searchSimilarity(
-                                query: clipQuery, count: 100, allowedClipIDs: allowed
-                            )
-                        } else {
-                            clipResults = try clipIndex.searchSimilarity(
-                                query: clipQuery, count: 100
-                            )
-                        }
-                    }
-                } catch {
-                    // CLIP 搜索失败非致命，回退到文本嵌入 + FTS5
-                }
+        // 预加载 VectorStore（确保 TextEmb 路径可用）
+        if vectorStore == nil {
+            let anyProvider: (any EmbeddingProvider)? = gemini ?? gemma
+            if let provider = anyProvider, let pool = appState?.globalDB {
+                await loadVectorStoreIfNeeded(provider: provider, db: pool)
             }
+        }
+        let capturedStore = vectorStore
 
-            // === 2. 文本嵌入搜索路径 (VectorStore brute-force) ===
-            var textEmbResults: [VectorSearchResult]?
-            if let textProvider = textProvider {
-                do {
-                    await loadVectorStoreIfNeeded(provider: textProvider, db: db)
+        // 解析过滤 clip_id 集合（两路共享）
+        let allowedClipIDs = try? await resolveAllowedClipIDs(db: db)
 
-                    let queryEmbedding = try await textProvider.embed(text: trimmed)
+        // === Fix 1: 三路并行 (CLIP ∥ TextEmb ∥ Translation) ===
+        // nonisolated static 函数脱离 @MainActor，真正并发执行
+        async let clipFuture = Self.runClipSearch(
+            query: trimmed, clipProvider: clipProv,
+            manager: manager, allowedClipIDs: allowedClipIDs
+        )
+        async let textEmbFuture = Self.runTextEmbSearch(
+            query: trimmed, geminiProvider: gemini,
+            gemmaProvider: gemma, vectorStore: capturedStore,
+            allowedClipIDs: allowedClipIDs
+        )
+        async let expandedFuture = QueryPipeline.expand(
+            trimmed, parsed: parsed, translator: translator
+        )
 
-                    // 再次检查查询没变
-                    guard trimmed == self.query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+        // === Fix 2: 渐进式展示 ===
 
-                    let allowedClipIDs = try await resolveAllowedClipIDs(db: db)
+        // Phase 2: CLIP + Translation 先到 → 立即展示中间结果
+        let clipResults = await clipFuture
+        let expanded = await expandedFuture
 
-                    if let store = vectorStore {
-                        let storeResults = await store.search(
-                            query: queryEmbedding,
-                            limit: 100,
-                            allowedClipIDs: allowedClipIDs
-                        )
-                        if !storeResults.isEmpty {
-                            textEmbResults = storeResults.map {
-                                VectorSearchResult(clipId: $0.clipId, similarity: $0.similarity)
-                            }
-                        }
-                    }
-                } catch {
-                    // Gemini embed 失败（断网等）→ 尝试 EmbeddingGemma 离线回退
-                    if let gemma = gemmaProvider, textProvider is GeminiEmbeddingProvider {
-                        print("[SearchState] Gemini 嵌入失败，回退到 EmbeddingGemma: \(error.localizedDescription)")
-                        do {
-                            await loadVectorStoreIfNeeded(provider: gemma, db: db)
-                            let queryEmbedding = try await gemma.embed(text: trimmed)
-                            guard trimmed == self.query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
-                            let allowedClipIDs = try await resolveAllowedClipIDs(db: db)
-                            if let store = vectorStore {
-                                let storeResults = await store.search(
-                                    query: queryEmbedding, limit: 100, allowedClipIDs: allowedClipIDs
-                                )
-                                if !storeResults.isEmpty {
-                                    textEmbResults = storeResults.map {
-                                        VectorSearchResult(clipId: $0.clipId, similarity: $0.similarity)
-                                    }
-                                }
-                            }
-                        } catch {
-                            // EmbeddingGemma 也失败，回退到 CLIP + FTS5
-                            print("[SearchState] EmbeddingGemma 也失败: \(error.localizedDescription)")
-                        }
-                    } else {
-                        print("[SearchState] 文本嵌入失败，无离线回退: \(error.localizedDescription)")
-                    }
-                }
-            }
-
-            // 再次检查查询没变
+        if clipResults != nil {
             guard trimmed == self.query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
-
-            // === 3. 三路融合搜索（含跨语言扩展）===
-            let mode = self.searchMode
-            let filter = self.folderFilter
-            let prefix = self.pathPrefixFilter
-            let parsed = QueryParser.parse(trimmed)
-            let weights = SearchEngine.resolveThreeWayWeights(
-                query: trimmed,
-                mode: mode,
-                hasCLIP: clipResults != nil,
-                hasTextEmb: textEmbResults != nil
+            let intermediateWeights = SearchEngine.resolveThreeWayWeights(
+                query: trimmed, mode: mode, hasCLIP: true, hasTextEmb: false
             )
-
-            // 异步翻译扩展（Apple Translation 优先 → 词典回退）
-            let translator = ensureTranslator()
-            let expanded = await QueryPipeline.expand(
-                trimmed, parsed: parsed, translator: translator
-            )
-
-            let capturedClipResults = clipResults
-            let capturedTextEmbResults = textEmbResults
-            let searchResults = try await db.read { dbConn in
+            let capturedClip = clipResults
+            if let intermediateResults = try? await db.read({ dbConn in
                 try SearchEngine.threeWaySearch(
-                    dbConn,
-                    query: parsed,
-                    expandedQuery: expanded,
-                    clipResults: capturedClipResults,
-                    textEmbResults: capturedTextEmbResults,
-                    weights: weights,
-                    folderPaths: filter,
-                    pathPrefixFilter: prefix,
-                    limit: 50
+                    dbConn, query: parsed, expandedQuery: expanded,
+                    clipResults: capturedClip, textEmbResults: nil,
+                    weights: intermediateWeights,
+                    folderPaths: filter, pathPrefixFilter: prefix, limit: 50
                 )
+            }) {
+                guard trimmed == self.query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+                self.results = intermediateResults
             }
+        }
+
+        // Phase 3: TextEmb 到达 → 刷新为完整三路融合
+        let textEmbResults = await textEmbFuture
+        guard trimmed == self.query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+
+        let finalWeights = SearchEngine.resolveThreeWayWeights(
+            query: trimmed, mode: mode,
+            hasCLIP: clipResults != nil,
+            hasTextEmb: textEmbResults != nil
+        )
+        let capturedClip = clipResults
+        let capturedTextEmb = textEmbResults
+        if let searchResults = try? await db.read({ dbConn in
+            try SearchEngine.threeWaySearch(
+                dbConn, query: parsed, expandedQuery: expanded,
+                clipResults: capturedClip, textEmbResults: capturedTextEmb,
+                weights: finalWeights,
+                folderPaths: filter, pathPrefixFilter: prefix, limit: 50
+            )
+        }) {
             self.results = searchResults
+            searchCache.put(cacheKey, value: searchResults)
+        }
+    }
+
+    // MARK: - 并行搜索路径（nonisolated，脱离 MainActor）
+
+    /// CLIP 搜索路径: text → SigLIP2 encode → USearch HNSW
+    nonisolated private static func runClipSearch(
+        query: String,
+        clipProvider: CLIPEmbeddingProvider?,
+        manager: VectorIndexManager?,
+        allowedClipIDs: Set<Int64>?
+    ) async -> [VectorSearchResult]? {
+        guard let clipProvider, let manager else { return nil }
+        do {
+            let clipQuery = try await clipProvider.encodeText(query)
+            guard let clipIndex = try await manager.getClipIndex() else { return nil }
+            if let allowed = allowedClipIDs {
+                return try clipIndex.searchSimilarity(
+                    query: clipQuery, count: 100, allowedClipIDs: allowed
+                )
+            } else {
+                return try clipIndex.searchSimilarity(query: clipQuery, count: 100)
+            }
         } catch {
-            // 向量搜索失败不影响已有 FTS5 结果
+            return nil
+        }
+    }
+
+    /// TextEmb 搜索路径: Gemini (2s 超时) 竞速 EmbeddingGemma → VectorStore brute-force
+    nonisolated private static func runTextEmbSearch(
+        query: String,
+        geminiProvider: GeminiEmbeddingProvider?,
+        gemmaProvider: EmbeddingGemmaProvider?,
+        vectorStore: VectorStore?,
+        allowedClipIDs: Set<Int64>?
+    ) async -> [VectorSearchResult]? {
+        guard geminiProvider != nil || gemmaProvider != nil else { return nil }
+        guard let store = vectorStore else { return nil }
+
+        // Fix 4: Gemini (2s 硬超时) 竞速 EmbeddingGemma，取先到者
+        let embedding: [Float]? = await withTaskGroup(of: [Float]?.self) { group in
+            if let gemini = geminiProvider {
+                group.addTask {
+                    do {
+                        return try await withThrowingTaskGroup(of: [Float].self) { inner in
+                            inner.addTask { try await gemini.embed(text: query) }
+                            inner.addTask {
+                                try await Task.sleep(for: .seconds(2))
+                                throw CancellationError()
+                            }
+                            let result = try await inner.next()!
+                            inner.cancelAll()
+                            return result
+                        }
+                    } catch {
+                        return nil
+                    }
+                }
+            }
+            if let gemma = gemmaProvider {
+                group.addTask { try? await gemma.embed(text: query) }
+            }
+            for await result in group {
+                if result != nil {
+                    group.cancelAll()
+                    return result
+                }
+            }
+            return nil
+        }
+
+        guard let emb = embedding else { return nil }
+        let storeResults = await store.search(
+            query: emb, limit: 100, allowedClipIDs: allowedClipIDs
+        )
+        guard !storeResults.isEmpty else { return nil }
+        return storeResults.map {
+            VectorSearchResult(clipId: $0.clipId, similarity: $0.similarity)
         }
     }
 
@@ -563,5 +619,103 @@ final class SearchState {
 
         clipProvider = provider
         return provider
+    }
+
+    // MARK: - 启动预热
+
+    /// 后台预加载 ONNX 模型、USearch 索引和 VectorStore
+    ///
+    /// 在 App 启动后调用，消除首次搜索的冷启动延迟（1-3s → ~100ms）。
+    /// 所有重计算在后台线程执行，不阻塞 UI。
+    func prewarm() {
+        Task.detached(priority: .utility) { [weak self] in
+            // 1. CLIP provider — 触发 ONNX session + tokenizer 加载
+            let clip = CLIPEmbeddingProvider()
+            let available = await clip.isTextEncoderAvailable
+            if available {
+                _ = try? await clip.encodeText("warmup")
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if available {
+                    self.clipProvider = clip
+                }
+                self.hasTriedInitClipProvider = true
+            }
+
+            // 2. USearch 索引 — 触发 mmap 或重建
+            let manager = await MainActor.run { [weak self] in self?.vectorIndexManager }
+            if let manager {
+                _ = try? await manager.getClipIndex()
+            }
+
+            // 3+4. TextEmb providers + VectorStore
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                let _ = self.getEmbeddingProvider()
+                let provider: (any EmbeddingProvider)? = self.geminiProvider ?? self.gemmaProvider
+                if let provider, let db = self.appState?.globalDB {
+                    Task { @MainActor [weak self] in
+                        await self?.loadVectorStoreIfNeeded(provider: provider, db: db)
+                    }
+                }
+            }
+
+            print("[SearchState] prewarm 完成")
+        }
+    }
+}
+
+// MARK: - 搜索缓存类型
+
+/// 搜索缓存 key（查询 + 过滤条件 + 模式）
+private struct SearchCacheKey: Hashable {
+    let query: String
+    let folderFilter: Set<String>?
+    let pathPrefixFilter: String?
+    let mode: SearchEngine.SearchMode
+}
+
+/// 轻量 LRU 缓存（SearchState 专用，避免跨模块依赖）
+private struct SearchLRUCache<Key: Hashable, Value> {
+    private let capacity: Int
+    private var storage: [Key: Value] = [:]
+    private var order: [Key] = []
+
+    init(capacity: Int) {
+        self.capacity = max(1, capacity)
+    }
+
+    mutating func get(_ key: Key) -> Value? {
+        if let value = storage[key] {
+            if let idx = order.firstIndex(of: key) {
+                order.remove(at: idx)
+                order.append(key)
+            }
+            return value
+        }
+        return nil
+    }
+
+    mutating func put(_ key: Key, value: Value) {
+        if storage[key] != nil {
+            storage[key] = value
+            if let idx = order.firstIndex(of: key) {
+                order.remove(at: idx)
+                order.append(key)
+            }
+        } else {
+            if order.count >= capacity {
+                let evicted = order.removeFirst()
+                storage.removeValue(forKey: evicted)
+            }
+            storage[key] = value
+            order.append(key)
+        }
+    }
+
+    mutating func clear() {
+        storage.removeAll()
+        order.removeAll()
     }
 }

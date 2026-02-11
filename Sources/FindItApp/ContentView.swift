@@ -112,6 +112,7 @@ struct ContentView: View {
             // 初始化向量索引管理器（需要 globalDB 已就绪）
             if let db = appState.globalDB {
                 searchState.vectorIndexManager = VectorIndexManager(globalDB: db)
+                searchState.prewarm()
             }
             // 启动时主动对账卷路径重定向（处理"卷已挂载但无出现事件"的场景）。
             volumeMonitor.reconcilePathsAtStartup()

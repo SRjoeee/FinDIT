@@ -108,6 +108,8 @@ public final class USearchVectorIndex: VectorIndexEngine, @unchecked Sendable {
     }
 
     public func addBatch(keys: [UInt64], vectors: [[Float]]) throws {
+        precondition(keys.count == vectors.count,
+                     "keys.count (\(keys.count)) != vectors.count (\(vectors.count))")
         lock.lock()
         defer { lock.unlock() }
         try ensureCapacityLocked(for: keys.count)

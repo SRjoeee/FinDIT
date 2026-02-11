@@ -239,18 +239,25 @@ final class SearchState {
     }
 
     /// 懒加载 VectorStore（首次向量搜索时触发）
+    ///
+    /// 同时加载 Gemini 和 EmbeddingGemma 的 768d 文本嵌入向量。
+    /// 两者都是 768d L2 归一化文本嵌入，可在同一 VectorStore 中混合搜索。
     private func loadVectorStoreIfNeeded(provider: any EmbeddingProvider, db: DatabasePool) async {
         guard vectorStore == nil, !isLoadingVectorStore else { return }
         isLoadingVectorStore = true
         defer { isLoadingVectorStore = false }
 
         do {
+            // 加载所有 768d 文本嵌入（Gemini + EmbeddingGemma 均兼容）
+            let compatibleModels = ["gemini", "embedding-gemma"]
+            let placeholders = compatibleModels.map { _ in "?" }.joined(separator: ", ")
             let entries: [(clipId: Int64, embeddingData: Data)] = try await db.read { dbConn in
                 let rows = try Row.fetchAll(dbConn, sql: """
                     SELECT clip_id, embedding
                     FROM clips
-                    WHERE embedding IS NOT NULL AND embedding_model = ?
-                    """, arguments: [provider.name])
+                    WHERE embedding IS NOT NULL
+                      AND embedding_model IN (\(placeholders))
+                    """, arguments: StatementArguments(compatibleModels))
                 return rows.compactMap { row in
                     guard let clipId = row["clip_id"] as? Int64,
                           let data = row["embedding"] as? Data else { return nil }
@@ -268,7 +275,7 @@ final class SearchState {
 
     /// 获取或初始化 embedding provider
     ///
-    /// 策略：Gemini（768 维，云端） → NLEmbedding（512 维，离线）。
+    /// 策略：Gemini（768 维，云端） → EmbeddingGemma（768 维，离线） → nil。
     /// 已初始化时直接返回缓存实例。
     /// 初始化失败后进入冷却，直到收到配置变更通知再重试。
     private func getEmbeddingProvider() -> (any EmbeddingProvider)? {
@@ -289,8 +296,14 @@ final class SearchState {
             return provider
         }
 
-        // NLEmbedding (512d) 已废弃，与 768d 索引不兼容，不再作为回退
-        // 无 API Key 时仅使用 FTS5 + CLIP 搜索
+        // 无 API Key → 回退到 EmbeddingGemma 本地模型（768d，离线）
+        let gemmaProvider = EmbeddingGemmaProvider()
+        if gemmaProvider.isAvailable() {
+            self.embeddingProvider = gemmaProvider
+            return gemmaProvider
+        }
+
+        // 无 API Key 且无 EmbeddingGemma → 仅使用 FTS5 + CLIP 搜索
         return nil
     }
 

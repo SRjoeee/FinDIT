@@ -40,6 +40,8 @@ struct FindItCLI: AsyncParsableCommand {
             RebaseCommand.self,
             // CLIP commands
             CLIPCommand.self,
+            // EmbeddingGemma commands
+            GemmaCommand.self,
         ]
     )
 }

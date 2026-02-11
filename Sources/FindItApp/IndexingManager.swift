@@ -543,7 +543,7 @@ final class IndexingManager {
         }
 
         // EmbeddingProvider: 仅在未跳过时初始化
-        // 注: NLEmbedding (512d) 已废弃，与 768d 索引不兼容，不再作为回退
+        // 策略: Gemini (768d, 云端) → EmbeddingGemma (768d, 离线) → nil
         if embeddingProvider == nil, !options.skipEmbedding {
             if let apiKey = resolvedAPIKey {
                 embeddingProvider = GeminiEmbeddingProvider(
@@ -551,8 +551,13 @@ final class IndexingManager {
                     config: config.toEmbeddingConfig()
                 )
             } else {
-                // 无 API Key 时跳过文本嵌入（CLIP 离线嵌入仍可用）
-                print("[IndexingManager] 无 Gemini API Key，跳过文本嵌入（CLIP 离线索引不受影响）")
+                // 无 API Key → 尝试 EmbeddingGemma 本地模型
+                let gemmaProvider = EmbeddingGemmaProvider()
+                if gemmaProvider.isAvailable() {
+                    embeddingProvider = gemmaProvider
+                } else {
+                    print("[IndexingManager] 无 Gemini API Key 且 EmbeddingGemma 模型未安装，跳过文本嵌入（CLIP 离线索引不受影响）")
+                }
             }
         }
     }

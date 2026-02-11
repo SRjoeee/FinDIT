@@ -248,7 +248,7 @@ public enum SearchEngine {
             guard let embedding = queryEmbedding, let model = embeddingModel else {
                 return [] // 无向量时返回空
             }
-            return try vectorSearch(db, queryEmbedding: embedding, embeddingModel: model, folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter, limit: limit)
+            return try vectorSearch(db, queryEmbedding: embedding, embeddingModels: [model], folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter, limit: limit)
         }
 
         // 纯 FTS 模式或无向量
@@ -268,7 +268,7 @@ public enum SearchEngine {
         } else if let embedding = queryEmbedding, let model = embeddingModel {
             // SQLite 全表扫描回退：先查出完整结果，再提取分数
             let rawResults = try vectorSearch(
-                db, queryEmbedding: embedding, embeddingModel: model,
+                db, queryEmbedding: embedding, embeddingModels: [model],
                 folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter, limit: limit * 2
             )
             textEmbResults = rawResults.compactMap { r in
@@ -607,19 +607,22 @@ public enum SearchEngine {
 
     /// 纯向量搜索
     ///
-    /// 加载所有匹配 embeddingModel 的 clips，计算余弦相似度排序。
+    /// 加载所有匹配 embeddingModels 的 clips，计算余弦相似度排序。
+    /// 支持多模型名以兼容 Gemini / EmbeddingGemma 混合索引场景。
     static func vectorSearch(
         _ db: Database,
         queryEmbedding: [Float],
-        embeddingModel: String,
+        embeddingModels: [String],
         folderPaths: Set<String>? = nil,
         pathPrefixFilter: String? = nil,
         limit: Int = 50
     ) throws -> [SearchResult] {
+        guard !embeddingModels.isEmpty else { return [] }
         let filterSQL = folderFilterSQL(folderPaths: folderPaths)
         let prefixSQL = pathPrefixFilterSQL(pathPrefixFilter)
+        let placeholders = embeddingModels.map { _ in "?" }.joined(separator: ", ")
         var args = StatementArguments()
-        args += [embeddingModel]
+        for model in embeddingModels { args += [model] }
         appendFolderArgs(&args, folderPaths: folderPaths)
         appendPrefixArgs(&args, pathPrefixFilter: pathPrefixFilter)
 
@@ -634,7 +637,7 @@ public enum SearchEngine {
                    c.embedding
             FROM clips c
             LEFT JOIN videos v ON v.video_id = c.video_id
-            WHERE c.embedding IS NOT NULL AND c.embedding_model = ?\(filterSQL)\(prefixSQL)
+            WHERE c.embedding IS NOT NULL AND c.embedding_model IN (\(placeholders))\(filterSQL)\(prefixSQL)
             """, arguments: args)
 
         var results: [(SearchResult, Double)] = []
@@ -768,7 +771,7 @@ public enum SearchEngine {
     /// 根据搜索模式和查询内容解析权重（向后兼容）
     ///
     /// 内部委托给 `resolveThreeWayWeights`。
-    static func resolveWeights(query: String, mode: SearchMode, hasEmbedding: Bool) -> SearchWeights {
+    public static func resolveWeights(query: String, mode: SearchMode, hasEmbedding: Bool) -> SearchWeights {
         resolveThreeWayWeights(
             query: query,
             mode: mode,

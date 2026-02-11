@@ -200,7 +200,9 @@ public final class SigLIP2ImageEncoder: CLIPImageEncoder, @unchecked Sendable {
 
         // 优先取 image_embeds (投影后)，回退到 pooler_output
         let preferredKeys = ["image_embeds", "pooler_output"]
-        let targetKey = preferredKeys.first { outputNames.contains($0) } ?? outputNames.first!
+        guard let targetKey = preferredKeys.first(where: { outputNames.contains($0) }) ?? outputNames.first else {
+            throw CLIPError.inferenceFailed(detail: "ONNX model has no output tensors")
+        }
         guard let outputValue = outputs[targetKey] else {
             throw CLIPError.inferenceFailed(detail: "No output for key '\(targetKey)'")
         }

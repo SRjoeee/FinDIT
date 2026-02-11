@@ -55,7 +55,7 @@ final class DatabaseContext: @unchecked Sendable {
 
     // MARK: - Embedding 支持
 
-    /// 获取可用的 EmbeddingProvider（Gemini → NLEmbedding 回退链）
+    /// 获取可用的 EmbeddingProvider（Gemini → EmbeddingGemma 回退链）
     ///
     /// 首次调用自动检测并缓存，后续调用直接返回缓存。
     /// 如果没有任何可用 provider，返回 nil。
@@ -71,7 +71,7 @@ final class DatabaseContext: @unchecked Sendable {
             }
             state.providerResolved = true
 
-            // 尝试 Gemini
+            // 尝试 Gemini (768d, 在线)
             if let apiKey = try? APIKeyManager.resolveAPIKey() {
                 let gemini = GeminiEmbeddingProvider(apiKey: apiKey)
                 if gemini.isAvailable() {
@@ -80,20 +80,26 @@ final class DatabaseContext: @unchecked Sendable {
                 }
             }
 
-            // 回退 NLEmbedding
-            let nl = NLEmbeddingProvider()
-            if nl.isAvailable() {
-                state.cachedProvider = nl
-                return nl
+            // 回退 EmbeddingGemma (768d, 离线)
+            let gemma = EmbeddingGemmaProvider()
+            if gemma.isAvailable() {
+                state.cachedProvider = gemma
+                return gemma
             }
 
             return nil
         }
     }
 
+    /// 768d 文本嵌入兼容模型列表
+    ///
+    /// Gemini 和 EmbeddingGemma 均产生 768 维文本嵌入。
+    /// 加载 VectorStore 时同时包含两者，避免切换 provider 后旧向量不可搜索。
+    private static let compatible768dModels = ["gemini", "embedding-gemma"]
+
     /// 获取向量存储（按需从全局库加载 + 缓存）
     ///
-    /// VectorStore 在首次使用时从全局库加载全部 embedding 到内存，
+    /// VectorStore 在首次使用时从全局库加载全部兼容维度的 embedding 到内存，
     /// 后续搜索直接使用内存中的数据。
     func getVectorStore(provider: any EmbeddingProvider) async throws -> VectorStore {
         let cached: VectorStore? = searchState.withLock { state in
@@ -103,13 +109,20 @@ final class DatabaseContext: @unchecked Sendable {
             return existing
         }
 
-        // 从全局库加载
+        // 加载当前 provider 及所有相同维度的兼容模型
+        let models = Self.compatible768dModels.contains(provider.name)
+            ? Self.compatible768dModels
+            : [provider.name]
+        let placeholders = models.map { _ in "?" }.joined(separator: ", ")
+
         let store = VectorStore(dimensions: provider.dimensions, embeddingModel: provider.name)
         let entries: [(clipId: Int64, embeddingData: Data)] = try await globalDB.read { db in
+            var args = StatementArguments()
+            for model in models { args += [model] }
             let rows = try Row.fetchAll(db, sql: """
                 SELECT clip_id, embedding FROM clips
-                WHERE embedding IS NOT NULL AND embedding_model = ?
-                """, arguments: [provider.name])
+                WHERE embedding IS NOT NULL AND embedding_model IN (\(placeholders))
+                """, arguments: args)
             return rows.map { (clipId: $0["clip_id"], embeddingData: $0["embedding"]) }
         }
 

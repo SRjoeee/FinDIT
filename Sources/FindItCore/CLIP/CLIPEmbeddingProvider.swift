@@ -36,6 +36,10 @@ public actor CLIPEmbeddingProvider {
     ) {
         let imgEnc = imageEncoder ?? SigLIP2ImageEncoder()
         let txtEnc = textEncoder ?? SigLIP2TextEncoder()
+        precondition(
+            imgEnc.dimensions == txtEnc.dimensions,
+            "CLIP image encoder (\(imgEnc.dimensions)d) and text encoder (\(txtEnc.dimensions)d) dimensions must match"
+        )
         self.imageEncoder = imgEnc
         self.textEncoder = txtEnc
         self.dimensions = imgEnc.dimensions

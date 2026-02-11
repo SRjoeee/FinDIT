@@ -69,6 +69,8 @@ public final class USearchVectorIndex: VectorIndexEngine, @unchecked Sendable {
 
     /// 已预分配的容量（USearch 要求 add 前 reserve）
     private var reservedCapacity: Int = 0
+    /// view() 后为 true，禁止写操作
+    private var isReadOnly = false
     private let lock = NSLock()
 
     /// 初始预分配和每次扩容的增量
@@ -103,6 +105,7 @@ public final class USearchVectorIndex: VectorIndexEngine, @unchecked Sendable {
     public func add(key: UInt64, vector: [Float]) throws {
         lock.lock()
         defer { lock.unlock() }
+        try guardNotReadOnly()
         try ensureCapacityLocked(for: 1)
         try index.add(key: key, vector: vector)
     }
@@ -112,6 +115,7 @@ public final class USearchVectorIndex: VectorIndexEngine, @unchecked Sendable {
                      "keys.count (\(keys.count)) != vectors.count (\(vectors.count))")
         lock.lock()
         defer { lock.unlock() }
+        try guardNotReadOnly()
         try ensureCapacityLocked(for: keys.count)
         for (key, vector) in zip(keys, vectors) {
             try index.add(key: key, vector: vector)
@@ -119,6 +123,9 @@ public final class USearchVectorIndex: VectorIndexEngine, @unchecked Sendable {
     }
 
     public func remove(key: UInt64) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        try guardNotReadOnly()
         _ = try index.remove(key: key)
     }
 
@@ -145,7 +152,7 @@ public final class USearchVectorIndex: VectorIndexEngine, @unchecked Sendable {
         return zip(keys, distances).map { key, distance in
             VectorSearchResult(
                 clipId: Int64(bitPattern: key),
-                similarity: 1.0 - distance
+                similarity: min(1.0, max(0.0, 1.0 - distance))
             )
         }
     }
@@ -174,7 +181,7 @@ public final class USearchVectorIndex: VectorIndexEngine, @unchecked Sendable {
         return zip(keys, distances).map { key, distance in
             VectorSearchResult(
                 clipId: Int64(bitPattern: key),
-                similarity: 1.0 - distance
+                similarity: min(1.0, max(0.0, 1.0 - distance))
             )
         }
     }
@@ -202,14 +209,16 @@ public final class USearchVectorIndex: VectorIndexEngine, @unchecked Sendable {
         try index.view(path: path)
         lock.lock()
         reservedCapacity = (try? index.count) ?? 0
+        isReadOnly = true
         lock.unlock()
     }
 
     public func clear() throws {
-        try index.clear()
         lock.lock()
+        defer { lock.unlock() }
+        try guardNotReadOnly()
+        try index.clear()
         reservedCapacity = 0
-        lock.unlock()
     }
 
     /// 预分配容量（大批量添加前调用以减少重新分配）
@@ -217,6 +226,13 @@ public final class USearchVectorIndex: VectorIndexEngine, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         try reserveLocked(capacity)
+    }
+
+    /// 检查只读状态（调用方必须已持有 lock）
+    private func guardNotReadOnly() throws {
+        if isReadOnly {
+            throw VectorIndexError.readOnly
+        }
     }
 
     /// 不加锁的预分配（调用方必须已持有 lock）
@@ -283,5 +299,20 @@ extension USearchVectorIndex {
     /// UInt64 key → Int64 clip_id
     public static func keyToClipId(_ key: UInt64) -> Int64 {
         Int64(bitPattern: key)
+    }
+}
+
+// MARK: - VectorIndexError
+
+/// USearch 向量索引错误
+public enum VectorIndexError: LocalizedError, Sendable {
+    /// 尝试对 mmap 只读索引执行写操作
+    case readOnly
+
+    public var errorDescription: String? {
+        switch self {
+        case .readOnly:
+            return "Cannot modify a read-only (mmap) vector index. Load with load() instead of view() for write access."
+        }
     }
 }

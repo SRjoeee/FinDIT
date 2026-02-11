@@ -62,7 +62,7 @@ public final class SigLIP2TextEncoder: CLIPTextEncoder, @unchecked Sendable {
         let tokenIds = try tokenizer.encode(lowered)
 
         // swift-sentencepiece 是 1-indexed，SigLIP2 期望 0-indexed → -1
-        var inputIds = tokenIds.map { Int32($0) - 1 }
+        var inputIds = tokenIds.map { Int32(max(0, $0 - 1)) }
 
         // Truncate BEFORE appending EOS，保证 EOS 始终存在
         let maxLen = config.maxTextLength
@@ -197,7 +197,9 @@ public final class SigLIP2TextEncoder: CLIPTextEncoder, @unchecked Sendable {
 
         // 优先取 text_embeds (投影后)，回退到 pooler_output
         let preferredKeys = ["text_embeds", "pooler_output"]
-        let targetKey = preferredKeys.first { outputNames.contains($0) } ?? outputNames.first!
+        guard let targetKey = preferredKeys.first(where: { outputNames.contains($0) }) ?? outputNames.first else {
+            throw CLIPError.inferenceFailed(detail: "ONNX model has no output tensors")
+        }
         guard let outputValue = outputs[targetKey] else {
             throw CLIPError.inferenceFailed(detail: "No output for key '\(targetKey)'")
         }

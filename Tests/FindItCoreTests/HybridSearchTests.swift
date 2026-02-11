@@ -272,7 +272,7 @@ final class HybridSearchTests: XCTestCase {
         // 搜索向量接近 vec1
         let queryVec: [Float] = [0.9, 0.1, 0.0]
         let results = try db.read { dbConn in
-            try SearchEngine.vectorSearch(dbConn, queryEmbedding: queryVec, embeddingModel: "test")
+            try SearchEngine.vectorSearch(dbConn, queryEmbedding: queryVec, embeddingModels: ["test"])
         }
 
         XCTAssertEqual(results.count, 2)
@@ -291,7 +291,7 @@ final class HybridSearchTests: XCTestCase {
         try insertGlobalClip(db, sourceClipId: 2, embedding: data, embeddingModel: "nl-embedding")
 
         let results = try db.read { dbConn in
-            try SearchEngine.vectorSearch(dbConn, queryEmbedding: vec, embeddingModel: "gemini")
+            try SearchEngine.vectorSearch(dbConn, queryEmbedding: vec, embeddingModels: ["gemini"])
         }
 
         XCTAssertEqual(results.count, 1)

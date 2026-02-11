@@ -17,6 +17,15 @@ public enum SyncEngine {
         public let syncedVideos: Int
         /// 本次同步的片段数
         public let syncedClips: Int
+        /// 本次同步的 CLIP 向量数
+        public let syncedVectors: Int
+
+        /// 兼容旧代码：不含向量数的初始化
+        init(syncedVideos: Int, syncedClips: Int, syncedVectors: Int = 0) {
+            self.syncedVideos = syncedVideos
+            self.syncedClips = syncedClips
+            self.syncedVectors = syncedVectors
+        }
     }
 
     /// 每批同步的最大记录数（控制内存峰值）
@@ -278,7 +287,85 @@ public enum SyncEngine {
             if batch.count < batchSize { break }
         }
 
-        // 6. 始终更新同步进度（确保空文件夹也有记录，UI 才能显示）
+        // 6. 同步 clip_vectors（CLIP 向量）
+        //    使用文件夹库的 clip_id → 全局库的 clip_id 映射
+        let clipIdMap: [Int64: Int64] = try globalDB.read { db in
+            var map: [Int64: Int64] = [:]
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT source_clip_id, clip_id FROM clips
+                WHERE source_folder = ?
+                """, arguments: [folderPath])
+            for row in rows {
+                if let srcId: Int64 = row["source_clip_id"],
+                   let globalId: Int64 = row["clip_id"] {
+                    map[srcId] = globalId
+                }
+            }
+            return map
+        }
+
+        var totalSyncedVectors = 0
+
+        // 检查文件夹库是否有 clip_vectors 表
+        let folderHasClipVectors = try folderDB.read { db in
+            try db.tableExists("clip_vectors")
+        }
+        // 检查全局库是否有 clip_vectors 表
+        let globalHasClipVectors = try globalDB.read { db in
+            try db.tableExists("clip_vectors")
+        }
+
+        if folderHasClipVectors && globalHasClipVectors {
+            let vectorSQL = """
+                INSERT INTO clip_vectors
+                    (clip_id, source_folder, source_vector_id, model_name, dimensions, vector)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_folder, source_vector_id) DO UPDATE SET
+                    clip_id = excluded.clip_id,
+                    model_name = excluded.model_name,
+                    dimensions = excluded.dimensions,
+                    vector = excluded.vector
+                """
+
+            var vectorOffset = 0
+            while true {
+                let batch: [(vectorId: Int64, clipId: Int64, modelName: String, dimensions: Int, vector: Data)] =
+                    try folderDB.read { db in
+                        let rows = try Row.fetchAll(db, sql: """
+                            SELECT vector_id, clip_id, model_name, dimensions, vector
+                            FROM clip_vectors
+                            ORDER BY vector_id
+                            LIMIT ? OFFSET ?
+                            """, arguments: [batchSize, vectorOffset])
+                        return rows.map { row in
+                            (vectorId: row["vector_id"] as Int64,
+                             clipId: row["clip_id"] as Int64,
+                             modelName: row["model_name"] as String,
+                             dimensions: row["dimensions"] as Int,
+                             vector: row["vector"] as Data)
+                        }
+                    }
+
+                guard !batch.isEmpty else { break }
+
+                try globalDB.write { db in
+                    let stmt = try db.makeStatement(sql: vectorSQL)
+                    for entry in batch {
+                        guard let globalClipId = clipIdMap[entry.clipId] else { continue }
+                        try stmt.execute(arguments: [
+                            globalClipId, folderPath, entry.vectorId,
+                            entry.modelName, entry.dimensions, entry.vector
+                        ])
+                        totalSyncedVectors += 1
+                    }
+                }
+
+                vectorOffset += batch.count
+                if batch.count < batchSize { break }
+            }
+        }
+
+        // 7. 始终更新同步进度（确保空文件夹也有记录，UI 才能显示）
         try globalDB.write { db in
             try db.execute(sql: """
                 INSERT INTO sync_meta (
@@ -295,7 +382,7 @@ public enum SyncEngine {
                 """, arguments: [folderPath, volumeUUID, volumeName, currentVideoRowId, currentClipRowId])
         }
 
-        return SyncResult(syncedVideos: totalSyncedVideos, syncedClips: totalSyncedClips)
+        return SyncResult(syncedVideos: totalSyncedVideos, syncedClips: totalSyncedClips, syncedVectors: totalSyncedVectors)
     }
 
     /// 删除全局库中指定文件夹的所有同步数据
@@ -303,6 +390,11 @@ public enum SyncEngine {
     /// 用于文件夹被移除时清理全局库。
     public static func removeFolderData(folderPath: String, from globalDB: DatabaseWriter) throws {
         try globalDB.write { db in
+            // clip_vectors 引用 clips(clip_id) ON DELETE CASCADE，
+            // 但 source_folder 直接删除更干净
+            if try db.tableExists("clip_vectors") {
+                try db.execute(sql: "DELETE FROM clip_vectors WHERE source_folder = ?", arguments: [folderPath])
+            }
             try db.execute(sql: "DELETE FROM clips WHERE source_folder = ?", arguments: [folderPath])
             try db.execute(sql: "DELETE FROM videos WHERE source_folder = ?", arguments: [folderPath])
             try db.execute(sql: "DELETE FROM sync_meta WHERE folder_path = ?", arguments: [folderPath])

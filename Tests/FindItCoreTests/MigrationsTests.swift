@@ -18,7 +18,7 @@ final class MigrationsTests: XCTestCase {
                 ORDER BY name
                 """)
         }
-        XCTAssertEqual(tables, ["clips", "videos", "watched_folders"])
+        XCTAssertEqual(tables, ["clip_vectors", "clips", "videos", "watched_folders"])
     }
 
     func testFolderMigrationWatchedFoldersColumns() throws {

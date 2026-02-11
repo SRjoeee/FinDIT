@@ -139,6 +139,27 @@ public enum Migrations {
             )
         }
 
+        // R2b: CLIP 向量存储表（Source of truth，USearch 索引可从此重建）
+        migrator.registerMigration("v9_addClipVectors") { db in
+            try db.create(table: "clip_vectors") { t in
+                t.autoIncrementedPrimaryKey("vector_id")
+                t.column("clip_id", .integer).notNull()
+                    .references("clips", onDelete: .cascade)
+                t.column("model_name", .text).notNull()
+                t.column("dimensions", .integer).notNull()
+                t.column("vector", .blob).notNull()
+                t.column("created_at", .text)
+                    .notNull()
+                    .defaults(sql: "(datetime('now'))")
+                t.uniqueKey(["clip_id", "model_name"])
+            }
+            try db.create(
+                index: "idx_clip_vectors_model",
+                on: "clip_vectors",
+                columns: ["model_name"]
+            )
+        }
+
         return migrator
     }
 
@@ -437,6 +458,31 @@ public enum Migrations {
 
             // 从现有数据重建 FTS 索引
             try db.execute(sql: "INSERT INTO clips_fts(clips_fts) VALUES('rebuild')")
+        }
+
+        // R2b: CLIP 向量存储表（从文件夹库同步，USearch 索引可从此重建）
+        migrator.registerMigration("v10_addClipVectors") { db in
+            try db.create(table: "clip_vectors") { t in
+                t.autoIncrementedPrimaryKey("vector_id")
+                t.column("clip_id", .integer).notNull()
+                    .references("clips", onDelete: .cascade)
+                t.column("source_folder", .text).notNull()
+                t.column("source_vector_id", .integer).notNull()
+                t.column("model_name", .text).notNull()
+                t.column("dimensions", .integer).notNull()
+                t.column("vector", .blob).notNull()
+                t.uniqueKey(["source_folder", "source_vector_id"])
+            }
+            try db.create(
+                index: "idx_clip_vectors_clip_id",
+                on: "clip_vectors",
+                columns: ["clip_id"]
+            )
+            try db.create(
+                index: "idx_clip_vectors_model",
+                on: "clip_vectors",
+                columns: ["model_name"]
+            )
         }
 
         return migrator

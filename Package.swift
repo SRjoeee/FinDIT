@@ -37,6 +37,8 @@ let package = Package(
         .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager.git", from: "1.20.0"),
         // Stage R2a: SentencePiece tokenizer for SigLIP2 text encoder
         .package(url: "https://github.com/jkrukowski/swift-sentencepiece.git", from: "0.0.3"),
+        // Stage R2b: USearch HNSW 向量索引
+        .package(url: "https://github.com/unum-cloud/usearch", from: "2.0.0"),
     ],
     targets: [
         // xxHash C 库（嵌入官方 v0.8.3 源码，BSD 2-Clause）
@@ -55,6 +57,7 @@ let package = Package(
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager"),
                 .product(name: "SentencepieceTokenizer", package: "swift-sentencepiece"),
+                .product(name: "USearch", package: "usearch"),
             ],
         ),
         .executableTarget(

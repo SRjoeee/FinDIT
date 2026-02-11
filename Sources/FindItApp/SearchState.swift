@@ -305,7 +305,8 @@ final class SearchState {
         if clipResults != nil {
             guard trimmed == self.query.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
             let intermediateWeights = SearchEngine.resolveThreeWayWeights(
-                query: trimmed, mode: mode, hasCLIP: true, hasTextEmb: false
+                query: trimmed, mode: mode, hasCLIP: true, hasTextEmb: false,
+                isQuoted: parsed.hasQuotedPhrase
             )
             let capturedClip = clipResults
             if let intermediateResults = try? await db.read({ dbConn in
@@ -329,7 +330,8 @@ final class SearchState {
         let finalWeights = SearchEngine.resolveThreeWayWeights(
             query: trimmed, mode: mode,
             hasCLIP: clipResults != nil,
-            hasTextEmb: textEmbResults != nil
+            hasTextEmb: textEmbResults != nil,
+            isQuoted: parsed.hasQuotedPhrase
         )
         let capturedClip = clipResults
         let capturedTextEmb = textEmbResults
@@ -368,6 +370,7 @@ final class SearchState {
                 return try clipIndex.searchSimilarity(query: clipQuery, count: 100)
             }
         } catch {
+            Self.logger.error("CLIP search failed: \(error.localizedDescription)")
             return nil
         }
     }
@@ -400,7 +403,10 @@ final class SearchState {
             return nil
         }
 
-        guard let emb = embedding else { return nil }
+        guard let emb = embedding else {
+            Self.logger.debug("TextEmb embedding failed for: \(query)")
+            return nil
+        }
         let storeResults = await store.search(
             query: emb, limit: 100, allowedClipIDs: allowedClipIDs
         )

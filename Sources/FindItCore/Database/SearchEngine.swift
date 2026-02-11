@@ -69,6 +69,12 @@ public enum SearchEngine {
         public static let twoWayNoTextEmb = SearchWeights(clipWeight: 0.7, ftsWeight: 0.3, textEmbWeight: 0.0)
     }
 
+    /// 翻译命中的 FTS5 rank 折扣系数
+    ///
+    /// 翻译结果的精确度低于原始语言命中，降权 20% 以避免
+    /// 低质量翻译压过精确的原始匹配。
+    private static let translationRankDiscount: Double = 0.8
+
     // MARK: - 搜索结果
 
     /// 搜索结果
@@ -428,8 +434,7 @@ public enum SearchEngine {
                 )
                 for result in translatedResults {
                     if ftsScores[result.clipId] == nil {
-                        // 翻译命中的权重略低于原始命中 (0.8x)
-                        ftsScores[result.clipId] = result.rank * 0.8
+                        ftsScores[result.clipId] = result.rank * translationRankDiscount
                         if resultData[result.clipId] == nil {
                             resultData[result.clipId] = result
                         }
@@ -601,6 +606,9 @@ public enum SearchEngine {
     ) -> [Int64: Double] {
         guard !scores.isEmpty else { return [:] }
 
+        // 极小 range 阈值，防止浮点除法产生不稳定的极大值
+        let epsilon: Double = 1e-10
+
         if isNegatedRank {
             // FTS5 rank 是负数（越小越好），取反后做 min-max
             guard let rawMax = scores.values.max(),
@@ -608,7 +616,7 @@ public enum SearchEngine {
             let negatedMin = -rawMax
             let negatedMax = -rawMin
             let range = negatedMax - negatedMin
-            if range > 0 {
+            if range > epsilon {
                 return scores.mapValues { (-$0 - negatedMin) / range }
             } else {
                 // 单一结果或全部相同：给满分，让权重决定贡献
@@ -618,7 +626,7 @@ public enum SearchEngine {
             guard let minVal = scores.values.min(),
                   let maxVal = scores.values.max() else { return [:] }
             let range = maxVal - minVal
-            if range > 0 {
+            if range > epsilon {
                 return scores.mapValues { ($0 - minVal) / range }
             } else {
                 // 单一结果或全部相同：给满分，让权重决定贡献
@@ -776,7 +784,8 @@ public enum SearchEngine {
         mode: SearchMode = .auto,
         hasCLIP: Bool,
         hasTextEmb: Bool,
-        isImageQuery: Bool = false
+        isImageQuery: Bool = false,
+        isQuoted: Bool = false
     ) -> SearchWeights {
         // 以图搜视频: 100% CLIP
         if isImageQuery {
@@ -804,8 +813,8 @@ public enum SearchEngine {
             return .ftsOnly
         }
 
-        // 查询特征分析
-        let isQuoted = query.contains("\"")
+        // 查询特征分析（优先使用调用方传入的 ParsedQuery 结果）
+        let isQuoted = isQuoted || query.contains("\"")
         let isLong: Bool = {
             if containsCJK(query) {
                 // CJK: NLTokenizer 分词，4+ token 视为描述性长查询

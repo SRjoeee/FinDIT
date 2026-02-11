@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 
 /// 向量索引重建器
 ///
@@ -9,6 +10,8 @@ import GRDB
 /// - 索引文件损坏或删除后恢复
 /// - 模型升级后重新编码
 public enum VectorIndexRebuilder {
+
+    private static let logger = Logger(subsystem: "com.findit.core", category: "VectorRebuilder")
 
     /// 重建结果
     public struct RebuildResult: Sendable {
@@ -40,6 +43,7 @@ public enum VectorIndexRebuilder {
         let batchSize = 5000
         var offset = 0
         var totalCount = 0
+        var skippedCount = 0
 
         // 先获取总数以预分配容量
         let totalVectors = try db.read { db in
@@ -72,7 +76,11 @@ public enum VectorIndexRebuilder {
             var batchVectors: [[Float]] = []
             for (clipId, vectorData) in batch {
                 let vector = EmbeddingUtils.deserializeEmbedding(vectorData)
-                guard vector.count == Int(config.dimensions) else { continue }
+                guard vector.count == Int(config.dimensions) else {
+                    logger.warning("Skipped clip \(clipId): expected \(config.dimensions)d, got \(vector.count)d")
+                    skippedCount += 1
+                    continue
+                }
                 batchKeys.append(USearchVectorIndex.clipIdToKey(clipId))
                 batchVectors.append(vector)
             }
@@ -89,6 +97,9 @@ public enum VectorIndexRebuilder {
         try vectorIndex.save(to: savePath)
 
         let duration = CFAbsoluteTimeGetCurrent() - start
+        if skippedCount > 0 {
+            logger.warning("Rebuild complete: \(totalCount) vectors indexed, \(skippedCount) skipped (dimension mismatch)")
+        }
         return RebuildResult(vectorCount: totalCount, duration: duration)
     }
 

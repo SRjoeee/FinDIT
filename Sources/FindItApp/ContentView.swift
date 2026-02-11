@@ -118,6 +118,9 @@ struct ContentView: View {
             fileWatcherManager.startWatching()
             // 启动后自动恢复可达文件夹的索引任务（含 pending/failed/orphan 恢复路径）。
             indexingManager.indexPendingFolders()
+            // 注册夜间自动索引（24h 周期，系统空闲时触发）
+            BackgroundIndexScheduler.shared.indexingManager = indexingManager
+            BackgroundIndexScheduler.shared.register()
             searchState.loadFacets()
             // 清理过期 orphaned 记录（方法内部已通过 runBlockingIO 下沉阻塞 I/O）
             Task(priority: .utility) {

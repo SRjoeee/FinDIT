@@ -69,6 +69,7 @@ public enum LayeredIndexer {
         public let rateLimiter: GeminiRateLimiter?
         public let ffmpegConfig: FFmpegConfig
         public let skipLayers: Set<Layer>
+        public let networkResilience: NetworkResilience?
 
         public init(
             mediaService: (any MediaService)? = nil,
@@ -79,7 +80,8 @@ public enum LayeredIndexer {
             apiKey: String? = nil,
             rateLimiter: GeminiRateLimiter? = nil,
             ffmpegConfig: FFmpegConfig = .default,
-            skipLayers: Set<Layer> = []
+            skipLayers: Set<Layer> = [],
+            networkResilience: NetworkResilience? = nil
         ) {
             self.mediaService = mediaService
             self.clipProvider = clipProvider
@@ -90,6 +92,7 @@ public enum LayeredIndexer {
             self.rateLimiter = rateLimiter
             self.ffmpegConfig = ffmpegConfig
             self.skipLayers = skipLayers
+            self.networkResilience = networkResilience
         }
     }
 
@@ -620,6 +623,16 @@ public enum LayeredIndexer {
 
         // ── Layer 3: VLM 描述 + 文本嵌入 ──
         if shouldRunLayer(.textDescription, currentLayer: currentLayer, config: config) {
+            // 网络容错: Gemini API 调用前等待网络恢复
+            if config.apiKey != nil, let net = config.networkResilience {
+                let connected = await net.isConnected
+                if !connected {
+                    progress("[L3] 等待网络连接...")
+                    try await net.waitForConnection()
+                    progress("[L3] 网络已恢复")
+                }
+            }
+
             // 3a. Vision 分析 (Gemini > LocalVLM > skip)
             let hasVisionEngine = config.apiKey != nil || config.vlmContainer != nil
             if hasVisionEngine {

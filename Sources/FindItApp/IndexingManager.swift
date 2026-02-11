@@ -84,6 +84,12 @@ final class IndexingManager {
     /// 当前处理 Task（用于取消）
     private var processingTask: Task<Void, Never>?
 
+    /// 正在处理的文件夹 Task（用于并行文件夹处理）
+    private var activeFolderTasks: [String: Task<Void, Never>] = [:]
+
+    /// 同时处理的最大文件夹数
+    private let maxConcurrentFolders = 3
+
     /// ProcessInfo 后台活动令牌（防止 macOS 节能降速）
     private var backgroundActivity: NSObjectProtocol?
 
@@ -97,6 +103,9 @@ final class IndexingManager {
 
     /// 共享 Gemini 限速器
     private var rateLimiter: GeminiRateLimiter?
+
+    /// 网络连通性监控
+    private var networkResilience: NetworkResilience?
 
     /// 共享嵌入 provider
     private var embeddingProvider: (any EmbeddingProvider)?
@@ -126,7 +135,7 @@ final class IndexingManager {
         // 避免重复入队
         guard !pendingFolders.contains(path) else { return }
         // 避免正在处理的文件夹重复入队
-        guard currentFolder != path else { return }
+        guard activeFolderTasks[path] == nil else { return }
 
         pendingFolders.append(path)
         if !excluding.isEmpty {
@@ -164,6 +173,11 @@ final class IndexingManager {
     func cancelIndexing() {
         processingTask?.cancel()
         processingTask = nil
+        // 取消所有活跃的文件夹处理任务
+        for (_, task) in activeFolderTasks {
+            task.cancel()
+        }
+        activeFolderTasks.removeAll()
         pendingFolders.removeAll()
         pendingVideos.removeAll()
         // 唤醒可能阻塞在信号量上的等待者
@@ -257,15 +271,29 @@ final class IndexingManager {
             reason: "FindIt is indexing video files"
         )
 
-        while !pendingFolders.isEmpty || !pendingVideos.isEmpty {
+        while !pendingFolders.isEmpty || !pendingVideos.isEmpty || !activeFolderTasks.isEmpty {
             guard !Task.isCancelled else { break }
 
-            if !pendingFolders.isEmpty {
+            // 启动新文件夹任务（不超过并发上限）
+            while !pendingFolders.isEmpty && activeFolderTasks.count < maxConcurrentFolders {
                 let folderPath = pendingFolders.removeFirst()
-                fileWatcherManager?.folderIndexingStarted(folderPath)
-                await processFolder(folderPath)
-                fileWatcherManager?.folderIndexingFinished(folderPath)
-            } else if let (folderPath, videos) = pendingVideos.first {
+                activeFolderTasks[folderPath] = Task { [weak self] in
+                    guard let self else { return }
+                    self.fileWatcherManager?.folderIndexingStarted(folderPath)
+                    await self.processFolder(folderPath)
+                    self.fileWatcherManager?.folderIndexingFinished(folderPath)
+                    self.activeFolderTasks.removeValue(forKey: folderPath)
+                }
+            }
+
+            // 有活跃任务：等待轮询直到有任务完成或新任务可启动
+            if !activeFolderTasks.isEmpty {
+                try? await Task.sleep(for: .milliseconds(200))
+                continue
+            }
+
+            // 无活跃文件夹任务 → 处理增量视频队列（低优先级）
+            if let (folderPath, videos) = pendingVideos.first {
                 pendingVideos.removeValue(forKey: folderPath)
                 await processSpecificVideos(videos, in: folderPath)
             }
@@ -538,6 +566,13 @@ final class IndexingManager {
             rateLimiter = GeminiRateLimiter(config: config.toRateLimiterConfig())
         }
 
+        // NetworkResilience: Gemini API 调用前等待网络恢复
+        if networkResilience == nil, resolvedAPIKey != nil {
+            let net = NetworkResilience()
+            Task { await net.start() }
+            networkResilience = net
+        }
+
         // EmbeddingProvider: 仅在未跳过时初始化
         // 策略: Gemini (768d, 云端) → EmbeddingGemma (768d, 离线) → nil
         if embeddingProvider == nil, !options.skipEmbedding {
@@ -588,7 +623,8 @@ final class IndexingManager {
             embeddingProvider: effectiveEmbedding,
             apiKey: effectiveAPIKey,
             rateLimiter: rateLimiter,
-            skipLayers: skipLayers
+            skipLayers: skipLayers,
+            networkResilience: networkResilience
         )
     }
 }

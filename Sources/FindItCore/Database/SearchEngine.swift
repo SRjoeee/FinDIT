@@ -125,6 +125,85 @@ public enum SearchEngine {
         public let similarity: Double?
         /// 融合后的最终得分（0-1，越大越相关）
         public let finalScore: Double?
+
+        /// 从 GRDB Row 构造 SearchResult（统一字段映射）
+        ///
+        /// 集中 20+ 字段的 Row→SearchResult 映射，避免在每个搜索方法中重复构造。
+        /// SQL 查询的列名约定：clip_id, source_folder, source_clip_id, video_id,
+        /// file_path, file_name, start_time, end_time, scene, description,
+        /// subjects, actions, objects, tags, transcript, thumbnail_path,
+        /// user_tags, rating, color_label, shot_type, mood, lighting, colors
+        static func from(
+            row: Row,
+            rank: Double = 0.0,
+            similarity: Double? = nil,
+            finalScore: Double? = nil
+        ) -> SearchResult {
+            SearchResult(
+                clipId: row["clip_id"],
+                sourceFolder: row["source_folder"],
+                sourceClipId: row["source_clip_id"],
+                videoId: row["video_id"],
+                filePath: row["file_path"],
+                fileName: row["file_name"],
+                startTime: row["start_time"],
+                endTime: row["end_time"],
+                scene: row["scene"],
+                clipDescription: row["description"],
+                subjects: row["subjects"],
+                actions: row["actions"],
+                objects: row["objects"],
+                tags: row["tags"],
+                transcript: row["transcript"],
+                thumbnailPath: row["thumbnail_path"],
+                userTags: row["user_tags"],
+                rating: row["rating"] ?? 0,
+                colorLabel: row["color_label"],
+                shotType: row["shot_type"],
+                mood: row["mood"],
+                lighting: row["lighting"],
+                colors: row["colors"],
+                rank: rank,
+                similarity: similarity,
+                finalScore: finalScore
+            )
+        }
+
+        /// 复制当前结果并更新分数（用于 threeWaySearch 融合）
+        func withScores(
+            rank: Double,
+            similarity: Double?,
+            finalScore: Double?
+        ) -> SearchResult {
+            SearchResult(
+                clipId: clipId,
+                sourceFolder: sourceFolder,
+                sourceClipId: sourceClipId,
+                videoId: videoId,
+                filePath: filePath,
+                fileName: fileName,
+                startTime: startTime,
+                endTime: endTime,
+                scene: scene,
+                clipDescription: clipDescription,
+                subjects: subjects,
+                actions: actions,
+                objects: objects,
+                tags: tags,
+                transcript: transcript,
+                thumbnailPath: thumbnailPath,
+                userTags: userTags,
+                rating: rating,
+                colorLabel: colorLabel,
+                shotType: shotType,
+                mood: mood,
+                lighting: lighting,
+                colors: colors,
+                rank: rank,
+                similarity: similarity,
+                finalScore: finalScore
+            )
+        }
     }
 
     // MARK: - FTS5 搜索
@@ -175,36 +254,7 @@ public enum SearchEngine {
             LIMIT ?
             """, arguments: args)
 
-        return rows.map { row in
-            SearchResult(
-                clipId: row["clip_id"],
-                sourceFolder: row["source_folder"],
-                sourceClipId: row["source_clip_id"],
-                videoId: row["video_id"],
-                filePath: row["file_path"],
-                fileName: row["file_name"],
-                startTime: row["start_time"],
-                endTime: row["end_time"],
-                scene: row["scene"],
-                clipDescription: row["description"],
-                subjects: row["subjects"],
-                actions: row["actions"],
-                objects: row["objects"],
-                tags: row["tags"],
-                transcript: row["transcript"],
-                thumbnailPath: row["thumbnail_path"],
-                userTags: row["user_tags"],
-                rating: row["rating"] ?? 0,
-                colorLabel: row["color_label"],
-                shotType: row["shot_type"],
-                mood: row["mood"],
-                lighting: row["lighting"],
-                colors: row["colors"],
-                rank: row["rank"],
-                similarity: nil,
-                finalScore: nil
-            )
-        }
+        return rows.map { SearchResult.from(row: $0, rank: $0["rank"]) }
     }
 
     // MARK: - 混合搜索
@@ -431,30 +481,7 @@ public enum SearchEngine {
                 textEmbScores[clipId] ?? 0.0
             )
 
-            let merged = SearchResult(
-                clipId: data.clipId,
-                sourceFolder: data.sourceFolder,
-                sourceClipId: data.sourceClipId,
-                videoId: data.videoId,
-                filePath: data.filePath,
-                fileName: data.fileName,
-                startTime: data.startTime,
-                endTime: data.endTime,
-                scene: data.scene,
-                clipDescription: data.clipDescription,
-                subjects: data.subjects,
-                actions: data.actions,
-                objects: data.objects,
-                tags: data.tags,
-                transcript: data.transcript,
-                thumbnailPath: data.thumbnailPath,
-                userTags: data.userTags,
-                rating: data.rating,
-                colorLabel: data.colorLabel,
-                shotType: data.shotType,
-                mood: data.mood,
-                lighting: data.lighting,
-                colors: data.colors,
+            let merged = data.withScores(
                 rank: ftsScores[clipId] ?? 0.0,
                 similarity: bestSimilarity > 0 ? bestSimilarity : nil,
                 finalScore: finalScore
@@ -548,34 +575,7 @@ public enum SearchEngine {
         var result: [Int64: SearchResult] = [:]
         for row in rows {
             let clipId: Int64 = row["clip_id"]
-            result[clipId] = SearchResult(
-                clipId: clipId,
-                sourceFolder: row["source_folder"],
-                sourceClipId: row["source_clip_id"],
-                videoId: row["video_id"],
-                filePath: row["file_path"],
-                fileName: row["file_name"],
-                startTime: row["start_time"],
-                endTime: row["end_time"],
-                scene: row["scene"],
-                clipDescription: row["description"],
-                subjects: row["subjects"],
-                actions: row["actions"],
-                objects: row["objects"],
-                tags: row["tags"],
-                transcript: row["transcript"],
-                thumbnailPath: row["thumbnail_path"],
-                userTags: row["user_tags"],
-                rating: row["rating"] ?? 0,
-                colorLabel: row["color_label"],
-                shotType: row["shot_type"],
-                mood: row["mood"],
-                lighting: row["lighting"],
-                colors: row["colors"],
-                rank: 0.0,
-                similarity: nil,
-                finalScore: nil
-            )
+            result[clipId] = SearchResult.from(row: row)
         }
         return result
     }
@@ -667,34 +667,7 @@ public enum SearchEngine {
             let clipEmbedding = EmbeddingUtils.deserializeEmbedding(embeddingData)
             let similarity = Double(EmbeddingUtils.cosineSimilarity(queryEmbedding, clipEmbedding))
 
-            let result = SearchResult(
-                clipId: row["clip_id"],
-                sourceFolder: row["source_folder"],
-                sourceClipId: row["source_clip_id"],
-                videoId: row["video_id"],
-                filePath: row["file_path"],
-                fileName: row["file_name"],
-                startTime: row["start_time"],
-                endTime: row["end_time"],
-                scene: row["scene"],
-                clipDescription: row["description"],
-                subjects: row["subjects"],
-                actions: row["actions"],
-                objects: row["objects"],
-                tags: row["tags"],
-                transcript: row["transcript"],
-                thumbnailPath: row["thumbnail_path"],
-                userTags: row["user_tags"],
-                rating: row["rating"] ?? 0,
-                colorLabel: row["color_label"],
-                shotType: row["shot_type"],
-                mood: row["mood"],
-                lighting: row["lighting"],
-                colors: row["colors"],
-                rank: 0.0,
-                similarity: similarity,
-                finalScore: similarity
-            )
+            let result = SearchResult.from(row: row, similarity: similarity, finalScore: similarity)
             results.append((result, similarity))
         }
 
@@ -749,34 +722,7 @@ public enum SearchEngine {
         for row in rows {
             let clipId: Int64 = row["clip_id"]
             let sim = similarities[clipId] ?? 0.0
-            results.append(SearchResult(
-                clipId: clipId,
-                sourceFolder: row["source_folder"],
-                sourceClipId: row["source_clip_id"],
-                videoId: row["video_id"],
-                filePath: row["file_path"],
-                fileName: row["file_name"],
-                startTime: row["start_time"],
-                endTime: row["end_time"],
-                scene: row["scene"],
-                clipDescription: row["description"],
-                subjects: row["subjects"],
-                actions: row["actions"],
-                objects: row["objects"],
-                tags: row["tags"],
-                transcript: row["transcript"],
-                thumbnailPath: row["thumbnail_path"],
-                userTags: row["user_tags"],
-                rating: row["rating"] ?? 0,
-                colorLabel: row["color_label"],
-                shotType: row["shot_type"],
-                mood: row["mood"],
-                lighting: row["lighting"],
-                colors: row["colors"],
-                rank: 0.0,
-                similarity: sim,
-                finalScore: sim
-            ))
+            results.append(SearchResult.from(row: row, similarity: sim, finalScore: sim))
         }
 
         results.sort {

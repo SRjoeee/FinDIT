@@ -46,6 +46,22 @@ static IBlackmagicRawFactory* CreateFactory()
     return factory;
 }
 
+static std::string jsonEscape(const std::string& s) {
+    std::string result;
+    result.reserve(s.size());
+    for (char c : s) {
+        switch (c) {
+            case '"':  result += "\\\""; break;
+            case '\\': result += "\\\\"; break;
+            case '\n': result += "\\n"; break;
+            case '\r': result += "\\r"; break;
+            case '\t': result += "\\t"; break;
+            default:   result += c;
+        }
+    }
+    return result;
+}
+
 // Forward declaration
 static bool WriteJPEG(const char* outputPath, uint32_t srcW, uint32_t srcH,
                       void* rgbaData, int maxDim);
@@ -548,10 +564,11 @@ static int CmdExtractAudio(const char* filePath, const char* outputPath)
         fclose(f);
 
         // Output metadata JSON to stdout
+        std::string escapedPath = jsonEscape(outputPath);
         printf("{\"sampleRate\":%u,\"channels\":%u,\"bitDepth\":%u,"
                "\"samples\":%llu,\"outputPath\":\"%s\"}\n",
                sampleRate, channelCount, bitDepth,
-               (unsigned long long)sampleCount, outputPath);
+               (unsigned long long)sampleCount, escapedPath.c_str());
         ret = 0;
     }
 

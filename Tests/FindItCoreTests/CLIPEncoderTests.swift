@@ -310,6 +310,9 @@ final class SigLIP2TextEncoderTests: XCTestCase {
         // 所有位都应该是 real token（截断后无 padding）
         let realCount = mask.filter { $0 == 1 }.count
         XCTAssertEqual(realCount, 64, "超长文本截断后应全部填满")
+        // EOS 应始终是最后一个 real token（不被截断丢失）
+        let eosId = SigLIP2Config.base224.eosTokenId
+        XCTAssertEqual(ids[63], eosId, "超长文本截断后最后一个 token 应为 EOS")
     }
 }
 

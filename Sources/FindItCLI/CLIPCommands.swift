@@ -189,7 +189,7 @@ struct CLIPMatchCommand: AsyncParsableCommand {
             }
 
             let imgEmb = try await provider.encodeImage(path: path)
-            let sim = cosineSimilarity(queryEmb, imgEmb)
+            let sim = EmbeddingUtils.cosineSimilarity(queryEmb, imgEmb)
             results.append((path: path, similarity: sim))
         }
 
@@ -203,17 +203,4 @@ struct CLIPMatchCommand: AsyncParsableCommand {
         }
     }
 
-    private func cosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {
-        guard a.count == b.count, !a.isEmpty else { return 0 }
-        var dot: Float = 0
-        var normA: Float = 0
-        var normB: Float = 0
-        for i in 0..<a.count {
-            dot += a[i] * b[i]
-            normA += a[i] * a[i]
-            normB += b[i] * b[i]
-        }
-        let denom = sqrt(normA) * sqrt(normB)
-        return denom > 0 ? dot / denom : 0
-    }
 }

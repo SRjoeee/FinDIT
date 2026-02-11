@@ -485,6 +485,13 @@ public enum Migrations {
             )
         }
 
+        // R2c: 全局库 clip_vectors 补齐 created_at 列（与文件夹库 v9 对齐）
+        migrator.registerMigration("v11_addClipVectorsCreatedAt") { db in
+            try db.alter(table: "clip_vectors") { t in
+                t.add(column: "created_at", .text).defaults(sql: "(datetime('now'))")
+            }
+        }
+
         return migrator
     }
 }

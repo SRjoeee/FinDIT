@@ -101,12 +101,16 @@ public final class USearchVectorIndex: VectorIndexEngine, @unchecked Sendable {
     // MARK: - VectorIndexEngine
 
     public func add(key: UInt64, vector: [Float]) throws {
-        try ensureCapacity(for: 1)
+        lock.lock()
+        defer { lock.unlock() }
+        try ensureCapacityLocked(for: 1)
         try index.add(key: key, vector: vector)
     }
 
     public func addBatch(keys: [UInt64], vectors: [[Float]]) throws {
-        try ensureCapacity(for: keys.count)
+        lock.lock()
+        defer { lock.unlock() }
+        try ensureCapacityLocked(for: keys.count)
         for (key, vector) in zip(keys, vectors) {
             try index.add(key: key, vector: vector)
         }
@@ -210,13 +214,17 @@ public final class USearchVectorIndex: VectorIndexEngine, @unchecked Sendable {
     public func reserve(_ capacity: Int) throws {
         lock.lock()
         defer { lock.unlock() }
+        try reserveLocked(capacity)
+    }
+
+    /// 不加锁的预分配（调用方必须已持有 lock）
+    private func reserveLocked(_ capacity: Int) throws {
         try index.reserve(UInt32(capacity))
         reservedCapacity = capacity
     }
 
-    /// 确保有足够容量容纳新增向量
-    private func ensureCapacity(for additionalCount: Int) throws {
-        lock.lock()
+    /// 确保有足够容量容纳新增向量（调用方必须已持有 lock）
+    private func ensureCapacityLocked(for additionalCount: Int) throws {
         let currentCount = (try? index.count) ?? 0
         let needed = currentCount + additionalCount
         if needed > reservedCapacity {
@@ -224,10 +232,7 @@ public final class USearchVectorIndex: VectorIndexEngine, @unchecked Sendable {
                 needed,
                 max(Self.initialCapacity, reservedCapacity * Self.growFactor)
             )
-            lock.unlock()
-            try reserve(newCapacity)
-        } else {
-            lock.unlock()
+            try reserveLocked(newCapacity)
         }
     }
 

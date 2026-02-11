@@ -320,8 +320,8 @@ final class ThreeWayFusionTests: XCTestCase {
     func testNormalizeScoresSingleValue() {
         let scores: [Int64: Double] = [1: 0.5]
         let normalized = SearchEngine.normalizeScores(scores, isNegatedRank: false)
-        // range=0 → 全部 0
-        XCTAssertEqual(normalized[1]!, 0.0, accuracy: 0.01)
+        // range=0 → 满分 1.0（单一命中不应被清零）
+        XCTAssertEqual(normalized[1]!, 1.0, accuracy: 0.01)
     }
 }
 

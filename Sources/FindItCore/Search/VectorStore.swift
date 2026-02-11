@@ -162,8 +162,7 @@ public actor VectorStore {
 
         let k = min(limit, candidateIndices.count)
         var indices = candidateIndices
-        // partialSort: 只需要前 K 个最大值
-        // 对 100K 数据，full sort ~5ms，可接受
+        // 全排序取前 K 个（100K 数据 ~5ms，可接受）
         indices.sort {
             dotProducts[$0] > dotProducts[$1] ||
             (dotProducts[$0] == dotProducts[$1] && clipIds[$0] < clipIds[$1])

@@ -197,4 +197,16 @@ public enum EmbeddingUtils {
         }
         return values.map { ($0 - minVal) / range }
     }
+
+    /// L2 归一化（单位向量化）
+    ///
+    /// - Parameter vector: 输入向量
+    /// - Returns: L2 归一化后的向量（零向量返回原值）
+    public static func l2Normalize(_ vector: [Float]) -> [Float] {
+        var sum: Float = 0
+        for x in vector { sum += x * x }
+        let norm = sqrt(sum)
+        guard norm > 0 else { return vector }
+        return vector.map { $0 / norm }
+    }
 }

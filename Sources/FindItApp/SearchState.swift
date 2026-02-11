@@ -289,13 +289,8 @@ final class SearchState {
             return provider
         }
 
-        // 回退 NLEmbedding（离线）
-        let nlProvider = NLEmbeddingProvider()
-        if nlProvider.isAvailable() {
-            self.embeddingProvider = nlProvider
-            return nlProvider
-        }
-
+        // NLEmbedding (512d) 已废弃，与 768d 索引不兼容，不再作为回退
+        // 无 API Key 时仅使用 FTS5 + CLIP 搜索
         return nil
     }
 

@@ -209,9 +209,10 @@ public enum SearchEngine {
 
     // MARK: - 混合搜索
 
-    /// 混合搜索入口
+    /// 混合搜索入口（向后兼容）
     ///
     /// 结合 FTS5 关键词搜索和向量语义搜索，通过融合排序返回最相关结果。
+    /// 内部委托给 `threeWaySearch`（clipResults = nil，仅 FTS5 + 文本嵌入两路融合）。
     ///
     /// - Parameters:
     ///   - db: 全局库数据库连接
@@ -255,17 +256,32 @@ public enum SearchEngine {
             return try search(db, query: trimmed, folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter, limit: limit)
         }
 
-        // 混合模式
-        guard let embedding = queryEmbedding, let model = embeddingModel else {
-            return try search(db, query: trimmed, folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter, limit: limit)
+        // 混合模式 → 委托给 threeWaySearch (clipResults = nil)
+        let parsed = QueryParser.parse(trimmed)
+
+        // 将旧格式向量结果转为 VectorSearchResult
+        var textEmbResults: [VectorSearchResult]?
+        if let storeResults = vectorStoreResults {
+            textEmbResults = storeResults.map {
+                VectorSearchResult(clipId: $0.clipId, similarity: $0.similarity)
+            }
+        } else if let embedding = queryEmbedding, let model = embeddingModel {
+            // SQLite 全表扫描回退：先查出完整结果，再提取分数
+            let rawResults = try vectorSearch(
+                db, queryEmbedding: embedding, embeddingModel: model,
+                folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter, limit: limit * 2
+            )
+            textEmbResults = rawResults.compactMap { r in
+                guard let sim = r.similarity else { return nil }
+                return VectorSearchResult(clipId: r.clipId, similarity: Float(sim))
+            }
         }
 
-        return try fusionSearch(
+        return try threeWaySearch(
             db,
-            query: trimmed,
-            queryEmbedding: embedding,
-            embeddingModel: model,
-            vectorStoreResults: vectorStoreResults,
+            query: parsed,
+            clipResults: nil,
+            textEmbResults: textEmbResults,
             weights: weights,
             folderPaths: folderPaths,
             pathPrefixFilter: pathPrefixFilter,
@@ -548,6 +564,9 @@ public enum SearchEngine {
 
     /// Min-Max 归一化分数映射
     ///
+    /// 当只有一个结果（或所有分数相同）时 range == 0，返回 1.0 而非 0.0，
+    /// 确保有命中的搜索路不会因归一化而被清零。
+    ///
     /// - Parameters:
     ///   - scores: clipId → 原始分数
     ///   - isNegatedRank: 若为 true，取反后再归一化（FTS5 rank 是负数）
@@ -568,7 +587,8 @@ public enum SearchEngine {
             if range > 0 {
                 return scores.mapValues { (-$0 - negatedMin) / range }
             } else {
-                return scores.mapValues { _ in 0.0 }
+                // 单一结果或全部相同：给满分，让权重决定贡献
+                return scores.mapValues { _ in 1.0 }
             }
         } else {
             guard let minVal = scores.values.min(),
@@ -577,7 +597,8 @@ public enum SearchEngine {
             if range > 0 {
                 return scores.mapValues { ($0 - minVal) / range }
             } else {
-                return scores.mapValues { _ in 0.0 }
+                // 单一结果或全部相同：给满分，让权重决定贡献
+                return scores.mapValues { _ in 1.0 }
             }
         }
     }
@@ -740,101 +761,6 @@ public enum SearchEngine {
             (($0.similarity ?? 0) == ($1.similarity ?? 0) && $0.clipId < $1.clipId)
         }
         return Array(results.prefix(limit))
-    }
-
-    // MARK: - 融合搜索
-
-    /// FTS5 + 向量融合搜索
-    static func fusionSearch(
-        _ db: Database,
-        query: String,
-        queryEmbedding: [Float],
-        embeddingModel: String,
-        vectorStoreResults: [(clipId: Int64, similarity: Float)]? = nil,
-        weights: SearchWeights,
-        folderPaths: Set<String>? = nil,
-        pathPrefixFilter: String? = nil,
-        limit: Int
-    ) throws -> [SearchResult] {
-        // 1. FTS5 搜索
-        let ftsResults = try search(db, query: query, folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter, limit: limit * 2)
-
-        // 2. 向量搜索（VectorStore 加速或逐行扫描回退）
-        let vectorResults: [SearchResult]
-        if let storeResults = vectorStoreResults {
-            vectorResults = try vectorSearchFromStore(db, storeResults: storeResults, folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter, limit: limit * 2)
-        } else {
-            vectorResults = try vectorSearch(
-                db, queryEmbedding: queryEmbedding,
-                embeddingModel: embeddingModel, folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter, limit: limit * 2
-            )
-        }
-
-        // 3. 构建 clipId → 数据映射
-        var ftsScores: [Int64: Double] = [:]
-        var vectorScores: [Int64: Double] = [:]
-        var resultData: [Int64: SearchResult] = [:]
-
-        for result in ftsResults {
-            ftsScores[result.clipId] = result.rank
-            resultData[result.clipId] = result
-        }
-        for result in vectorResults {
-            vectorScores[result.clipId] = result.similarity ?? 0.0
-            if resultData[result.clipId] == nil {
-                resultData[result.clipId] = result
-            }
-        }
-
-        // 4. 归一化（复用公共 normalizeScores 方法）
-        let normalizedFTSMap = normalizeScores(ftsScores, isNegatedRank: true)
-        let normalizedVecMap = normalizeScores(vectorScores, isNegatedRank: false)
-
-        // 5. 融合排序
-        let allClipIds = Set(ftsScores.keys).union(vectorScores.keys)
-        var fusedResults: [(SearchResult, Double)] = []
-
-        for clipId in allClipIds {
-            guard let data = resultData[clipId] else { continue }
-
-            let ftsNorm = normalizedFTSMap[clipId] ?? 0.0
-            let vecNorm = normalizedVecMap[clipId] ?? 0.0
-            let finalScore = weights.ftsWeight * ftsNorm + weights.vectorWeight * vecNorm
-
-            let merged = SearchResult(
-                clipId: data.clipId,
-                sourceFolder: data.sourceFolder,
-                sourceClipId: data.sourceClipId,
-                videoId: data.videoId,
-                filePath: data.filePath,
-                fileName: data.fileName,
-                startTime: data.startTime,
-                endTime: data.endTime,
-                scene: data.scene,
-                clipDescription: data.clipDescription,
-                subjects: data.subjects,
-                actions: data.actions,
-                objects: data.objects,
-                tags: data.tags,
-                transcript: data.transcript,
-                thumbnailPath: data.thumbnailPath,
-                userTags: data.userTags,
-                rating: data.rating,
-                colorLabel: data.colorLabel,
-                shotType: data.shotType,
-                mood: data.mood,
-                lighting: data.lighting,
-                colors: data.colors,
-                rank: ftsScores[clipId] ?? 0.0,
-                similarity: vectorScores[clipId],
-                finalScore: finalScore
-            )
-            fusedResults.append((merged, finalScore))
-        }
-
-        // 按融合得分降序（同分时按 clipId 升序保证稳定性）
-        fusedResults.sort { $0.1 > $1.1 || ($0.1 == $1.1 && $0.0.clipId < $1.0.clipId) }
-        return Array(fusedResults.prefix(limit).map { $0.0 })
     }
 
     // MARK: - 权重解析

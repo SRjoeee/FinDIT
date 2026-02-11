@@ -217,17 +217,6 @@ public final class SigLIP2ImageEncoder: CLIPImageEncoder, @unchecked Sendable {
         }
 
         // L2 归一化
-        return l2Normalize(embedding)
-    }
-
-    // MARK: - Utility
-
-    /// L2 归一化
-    private func l2Normalize(_ v: [Float]) -> [Float] {
-        var sum: Float = 0
-        for x in v { sum += x * x }
-        let norm = sqrt(sum)
-        guard norm > 0 else { return v }
-        return v.map { $0 / norm }
+        return EmbeddingUtils.l2Normalize(embedding)
     }
 }

@@ -55,7 +55,7 @@ public final class SigLIP2TextEncoder: CLIPTextEncoder, @unchecked Sendable {
 
     /// 文本 → token IDs + attention mask
     ///
-    /// 流程: 小写化 → SentencePiece 分词 → ID -1 修正 → 追加 EOS → pad/truncate 到 64
+    /// 流程: 小写化 → SentencePiece 分词 → ID -1 修正 → truncate → 追加 EOS → pad 到 64
     func tokenize(_ text: String) throws -> (inputIds: [Int32], attentionMask: [Int32]) {
         let tokenizer = try getTokenizer()
         let lowered = text.lowercased()
@@ -63,13 +63,13 @@ public final class SigLIP2TextEncoder: CLIPTextEncoder, @unchecked Sendable {
 
         // swift-sentencepiece 是 1-indexed，SigLIP2 期望 0-indexed → -1
         var inputIds = tokenIds.map { Int32($0) - 1 }
-        inputIds.append(config.eosTokenId)
 
-        // Truncate
+        // Truncate BEFORE appending EOS，保证 EOS 始终存在
         let maxLen = config.maxTextLength
-        if inputIds.count > maxLen {
-            inputIds = Array(inputIds.prefix(maxLen))
+        if inputIds.count > maxLen - 1 {
+            inputIds = Array(inputIds.prefix(maxLen - 1))
         }
+        inputIds.append(config.eosTokenId)
 
         // Attention mask: 1 for real tokens, 0 for padding
         let realLength = inputIds.count
@@ -214,16 +214,6 @@ public final class SigLIP2TextEncoder: CLIPTextEncoder, @unchecked Sendable {
         }
 
         // L2 归一化
-        return l2Normalize(embedding)
-    }
-
-    // MARK: - Utility
-
-    private func l2Normalize(_ v: [Float]) -> [Float] {
-        var sum: Float = 0
-        for x in v { sum += x * x }
-        let norm = sqrt(sum)
-        guard norm > 0 else { return v }
-        return v.map { $0 / norm }
+        return EmbeddingUtils.l2Normalize(embedding)
     }
 }

@@ -543,6 +543,7 @@ final class IndexingManager {
         }
 
         // EmbeddingProvider: 仅在未跳过时初始化
+        // 注: NLEmbedding (512d) 已废弃，与 768d 索引不兼容，不再作为回退
         if embeddingProvider == nil, !options.skipEmbedding {
             if let apiKey = resolvedAPIKey {
                 embeddingProvider = GeminiEmbeddingProvider(
@@ -550,11 +551,8 @@ final class IndexingManager {
                     config: config.toEmbeddingConfig()
                 )
             } else {
-                let nlProvider = NLEmbeddingProvider()
-                if nlProvider.isAvailable() {
-                    embeddingProvider = nlProvider
-                    print("[IndexingManager] 使用 NLEmbedding 离线嵌入 (512 维)")
-                }
+                // 无 API Key 时跳过文本嵌入（CLIP 离线嵌入仍可用）
+                print("[IndexingManager] 无 Gemini API Key，跳过文本嵌入（CLIP 离线索引不受影响）")
             }
         }
     }

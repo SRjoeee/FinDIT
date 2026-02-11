@@ -23,6 +23,8 @@ public enum PipelineManager {
     /// 处理阶段
     public enum Stage: String, CaseIterable {
         case pending = "pending"
+        case metadataDone = "metadata_done"
+        case vectorsDone = "vectors_done"
         case sttRunning = "stt_running"
         case sttDone = "stt_done"
         case visionRunning = "vision_running"
@@ -34,10 +36,12 @@ public enum PipelineManager {
         var order: Int {
             switch self {
             case .pending:        return 0
-            case .sttRunning:     return 1
-            case .sttDone:        return 2
-            case .visionRunning:  return 3
-            case .completed:      return 4
+            case .metadataDone:   return 1
+            case .vectorsDone:    return 2
+            case .sttRunning:     return 3
+            case .sttDone:        return 4
+            case .visionRunning:  return 5
+            case .completed:      return 6
             case .failed:         return -1
             case .orphaned:       return -2
             }
@@ -153,6 +157,39 @@ public enum PipelineManager {
 
     /// 处理单个视频的完整管线
     ///
+    // MARK: - 分层索引入口
+
+    /// 分层索引入口（推荐）
+    ///
+    /// 使用 LayeredIndexer 四层架构:
+    /// - Layer 0: 元数据提取
+    /// - Layer 1: 场景检测 + CLIP 编码 → **可搜索**
+    /// - Layer 2: 语音转录
+    /// - Layer 3: VLM 描述 + 文本嵌入
+    ///
+    /// Layer 1 完成后视频即可通过 CLIP 向量搜索。
+    public static func processVideoLayered(
+        videoPath: String,
+        folderPath: String,
+        folderDB: DatabaseWriter,
+        globalDB: DatabaseWriter? = nil,
+        config: LayeredIndexer.Config,
+        skipSync: Bool = false,
+        onProgress: (@Sendable (String) -> Void)? = nil
+    ) async throws -> ProcessingResult {
+        try await LayeredIndexer.indexVideo(
+            videoPath: videoPath,
+            folderPath: folderPath,
+            folderDB: folderDB,
+            globalDB: globalDB,
+            config: config,
+            skipSync: skipSync,
+            onProgress: onProgress
+        )
+    }
+
+    // MARK: - 旧管线入口
+
     /// 流程:
     /// 1. 注册视频到数据库
     /// 2. 场景检测 + 关键帧提取（FFmpeg）

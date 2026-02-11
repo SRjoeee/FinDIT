@@ -271,6 +271,124 @@ public final class IndexingScheduler: @unchecked Sendable {
         return nil
     }
 
+    // MARK: - 分层索引
+
+    /// 并行处理视频列表（分层索引）
+    ///
+    /// 使用 `LayeredIndexer` 四层架构。Layer 1 完成后视频即可搜索。
+    public func processVideosLayered(
+        _ videos: [String],
+        folderPath: String,
+        folderDB: DatabaseWriter,
+        globalDB: DatabaseWriter? = nil,
+        config: LayeredIndexer.Config,
+        onProgress: @Sendable @escaping (VideoProgress) -> Void = { _ in },
+        onComplete: @Sendable @escaping (VideoOutcome) -> Void = { _ in }
+    ) async -> SyncEngine.SyncResult? {
+        guard !videos.isEmpty else { return nil }
+
+        let sem = videoSemaphore
+        let monitor = resourceMonitor
+        var requiresForceSync = false
+
+        await monitor.startMonitoring { recommended in
+            Task { await sem.setMaxPermits(recommended) }
+        }
+
+        await withTaskGroup(of: Bool.self) { group in
+            for videoPath in videos {
+                guard !Task.isCancelled else { break }
+                await sem.acquire()
+                guard !Task.isCancelled else {
+                    await sem.release()
+                    break
+                }
+
+                let fileName = (videoPath as NSString).lastPathComponent
+
+                group.addTask {
+                    onProgress(VideoProgress(
+                        videoPath: videoPath, fileName: fileName, stage: "准备中"
+                    ))
+
+                    do {
+                        let result = try await PipelineManager.processVideoLayered(
+                            videoPath: videoPath,
+                            folderPath: folderPath,
+                            folderDB: folderDB,
+                            globalDB: globalDB,
+                            config: config,
+                            skipSync: true,
+                            onProgress: { stage in
+                                onProgress(VideoProgress(
+                                    videoPath: videoPath,
+                                    fileName: fileName,
+                                    stage: stage
+                                ))
+                            }
+                        )
+
+                        await sem.release()
+
+                        onComplete(.success(
+                            videoPath: videoPath,
+                            clipsCreated: result.clipsCreated,
+                            clipsAnalyzed: result.clipsAnalyzed,
+                            clipsEmbedded: result.clipsEmbedded,
+                            sttSkippedNoAudio: result.sttSkippedNoAudio
+                        ))
+                        return result.requiresForceSync
+
+                    } catch is CancellationError {
+                        await sem.release()
+                        onComplete(.skipped(videoPath: videoPath))
+                        return false
+
+                    } catch {
+                        await sem.release()
+                        onComplete(.failure(
+                            videoPath: videoPath,
+                            error: error.localizedDescription
+                        ))
+                        return false
+                    }
+                }
+            }
+            for await childRequiresForceSync in group {
+                requiresForceSync = requiresForceSync || childRequiresForceSync
+            }
+        }
+
+        await monitor.stopMonitoring()
+
+        if let globalDB = globalDB {
+            do {
+                let sr = try SyncEngine.sync(
+                    folderPath: folderPath,
+                    folderDB: folderDB,
+                    globalDB: globalDB,
+                    force: requiresForceSync
+                )
+                if sr.syncedClips > 0 || sr.syncedVideos > 0 {
+                    onProgress(VideoProgress(
+                        videoPath: folderPath,
+                        fileName: "",
+                        stage: "同步完成: \(sr.syncedVideos) 视频, \(sr.syncedClips) 片段"
+                    ))
+                }
+                return sr
+            } catch {
+                onProgress(VideoProgress(
+                    videoPath: folderPath,
+                    fileName: "",
+                    stage: "同步失败: \(error.localizedDescription)"
+                ))
+                return nil
+            }
+        }
+        return nil
+    }
+
     // MARK: - 运行时控制
 
     /// 更新性能模式

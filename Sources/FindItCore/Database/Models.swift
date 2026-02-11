@@ -78,6 +78,7 @@ public struct Video: Codable, FetchableRecord, MutablePersistableRecord {
     public var priority: Int
     public var lastProcessedClip: Int?
     public var srtPath: String?
+    public var indexLayer: Int
 
     public static let databaseTableName = "videos"
 
@@ -98,6 +99,7 @@ public struct Video: Codable, FetchableRecord, MutablePersistableRecord {
         case priority
         case lastProcessedClip = "last_processed_clip"
         case srtPath = "srt_path"
+        case indexLayer = "index_layer"
     }
 
     public init(
@@ -116,7 +118,8 @@ public struct Video: Codable, FetchableRecord, MutablePersistableRecord {
         orphanedAt: String? = nil,
         priority: Int = 0,
         lastProcessedClip: Int? = nil,
-        srtPath: String? = nil
+        srtPath: String? = nil,
+        indexLayer: Int = 0
     ) {
         self.videoId = videoId
         self.folderId = folderId
@@ -134,6 +137,7 @@ public struct Video: Codable, FetchableRecord, MutablePersistableRecord {
         self.priority = priority
         self.lastProcessedClip = lastProcessedClip
         self.srtPath = srtPath
+        self.indexLayer = indexLayer
     }
 
     public mutating func didInsert(_ inserted: InsertionSuccess) {

@@ -160,6 +160,22 @@ public enum Migrations {
             )
         }
 
+        // R3: 分层索引 — 添加 index_layer 列
+        migrator.registerMigration("v10_addIndexLayer") { db in
+            try db.alter(table: "videos") { t in
+                t.add(column: "index_layer", .integer).defaults(to: 0)
+            }
+            // 映射现有 index_status 到 index_layer
+            try db.execute(sql: """
+                UPDATE videos SET index_layer = CASE
+                    WHEN index_status = 'completed' THEN 3
+                    WHEN index_status IN ('stt_done', 'vision_running') THEN 2
+                    WHEN index_status = 'stt_running' THEN 1
+                    ELSE 0
+                END
+            """)
+        }
+
         return migrator
     }
 
@@ -489,6 +505,13 @@ public enum Migrations {
         migrator.registerMigration("v11_addClipVectorsCreatedAt") { db in
             try db.alter(table: "clip_vectors") { t in
                 t.add(column: "created_at", .text).defaults(sql: "(datetime('now'))")
+            }
+        }
+
+        // R3: 分层索引 — 全局库添加 index_layer 列
+        migrator.registerMigration("v12_addIndexLayer") { db in
+            try db.alter(table: "videos") { t in
+                t.add(column: "index_layer", .integer).defaults(to: 0)
             }
         }
 

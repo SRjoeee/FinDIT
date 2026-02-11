@@ -104,6 +104,9 @@ final class IndexingManager {
     /// 共享媒体服务（CompositeMediaService: AVFoundation + FFmpeg 路由）
     private var mediaService: (any MediaService)?
 
+    /// 共享 CLIP 嵌入提供者（SigLIP2 图像编码，Layer 1 使用）
+    private var clipProvider: CLIPEmbeddingProvider?
+
     /// 已解析的 API Key（nil = 尝试过但没找到）
     private var resolvedAPIKey: String?
 
@@ -329,27 +332,20 @@ final class IndexingManager {
         initSharedResources(options: options)
 
         let globalDB = appState?.globalDB
-
-        // 根据 skip 标志决定传递什么参数
-        let effectiveAPIKey = options.skipVision ? nil : resolvedAPIKey
-        let effectiveEmbeddingProvider = options.skipEmbedding ? nil : embeddingProvider
+        let layeredConfig = buildLayeredConfig(options: options)
 
         print("[IndexingManager] 开始并行索引: \(videoFiles.count) 个视频 (模式: \(options.performanceMode.displayName))")
 
         // 确保 scheduler 存在
         let currentScheduler = ensureScheduler(mode: options.performanceMode)
 
-        // 通过调度器并行处理视频
-        let syncResult = await currentScheduler.processVideos(
+        // 通过调度器并行处理视频（分层索引）
+        let syncResult = await currentScheduler.processVideosLayered(
             videoFiles,
             folderPath: folderPath,
             folderDB: folderDB,
             globalDB: globalDB,
-            apiKey: effectiveAPIKey,
-            rateLimiter: rateLimiter,
-            embeddingProvider: effectiveEmbeddingProvider,
-            skipStt: options.skipStt,
-            mediaService: mediaService,
+            config: layeredConfig,
             onProgress: { [weak self] progress in
                 Task { @MainActor [weak self] in
                     guard let self = self else { return }
@@ -445,8 +441,7 @@ final class IndexingManager {
         initSharedResources(options: options)
 
         let globalDB = appState?.globalDB
-        let effectiveAPIKey = options.skipVision ? nil : resolvedAPIKey
-        let effectiveEmbeddingProvider = options.skipEmbedding ? nil : embeddingProvider
+        let layeredConfig = buildLayeredConfig(options: options)
 
         let progressKey = folderPath
         // 累加到现有进度（如果有）或创建新的
@@ -460,15 +455,12 @@ final class IndexingManager {
 
         let currentScheduler = ensureScheduler(mode: options.performanceMode)
 
-        let syncResult = await currentScheduler.processVideos(
+        let syncResult = await currentScheduler.processVideosLayered(
             existingPaths,
             folderPath: folderPath,
             folderDB: folderDB,
             globalDB: globalDB,
-            apiKey: effectiveAPIKey,
-            rateLimiter: rateLimiter,
-            embeddingProvider: effectiveEmbeddingProvider,
-            skipStt: options.skipStt,
+            config: layeredConfig,
             onProgress: { [weak self] progress in
                 Task { @MainActor [weak self] in
                     guard let self = self else { return }
@@ -569,5 +561,34 @@ final class IndexingManager {
         if mediaService == nil {
             mediaService = CompositeMediaService.makeDefault()
         }
+
+        // CLIPEmbeddingProvider: SigLIP2 图像编码（Layer 1 CLIP 向量）
+        if clipProvider == nil {
+            let provider = CLIPEmbeddingProvider()
+            clipProvider = provider
+        }
+    }
+
+    /// 构建 LayeredIndexer.Config
+    private func buildLayeredConfig(options: IndexingOptions) -> LayeredIndexer.Config {
+        var skipLayers: Set<LayeredIndexer.Layer> = []
+        if options.skipStt { skipLayers.insert(.stt) }
+        if options.skipVision && options.skipEmbedding {
+            skipLayers.insert(.textDescription)
+        }
+
+        let effectiveAPIKey = options.skipVision ? nil : resolvedAPIKey
+        let effectiveEmbedding = options.skipEmbedding ? nil : embeddingProvider
+
+        return LayeredIndexer.Config(
+            mediaService: mediaService,
+            clipProvider: clipProvider,
+            whisperKit: nil,
+            vlmContainer: nil,
+            embeddingProvider: effectiveEmbedding,
+            apiKey: effectiveAPIKey,
+            rateLimiter: rateLimiter,
+            skipLayers: skipLayers
+        )
     }
 }

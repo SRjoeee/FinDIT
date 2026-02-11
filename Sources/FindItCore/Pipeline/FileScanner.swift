@@ -11,10 +11,35 @@ public enum FileScanner {
         "mp4", "mov", "mkv", "avi", "mxf", "webm", "m4v", "ts", "mts"
     ]
 
+    /// 支持的照片扩展名（预埋，R5 启用）
+    public static let photoExtensions: Set<String> = [
+        "jpg", "jpeg", "png", "heic", "tiff", "webp", "raw", "dng"
+    ]
+
+    /// 支持的音频扩展名（预埋，R5 启用）
+    public static let audioExtensions: Set<String> = [
+        "mp3", "wav", "aac", "flac", "m4a", "aiff"
+    ]
+
+    /// 所有支持的媒体扩展名
+    public static let allSupportedExtensions: Set<String> =
+        supportedExtensions.union(photoExtensions).union(audioExtensions)
+
     /// 判断文件路径是否为支持的视频格式
     public static func isVideoFile(_ path: String) -> Bool {
         let ext = (path as NSString).pathExtension.lowercased()
         return supportedExtensions.contains(ext)
+    }
+
+    /// 判断文件的媒体类型
+    ///
+    /// - Returns: `.video`, `.photo`, `.audio`, 或 nil（不支持的格式）
+    public static func mediaType(for path: String) -> MediaType? {
+        let ext = (path as NSString).pathExtension.lowercased()
+        if supportedExtensions.contains(ext) { return .video }
+        if photoExtensions.contains(ext) { return .photo }
+        if audioExtensions.contains(ext) { return .audio }
+        return nil
     }
 
     /// 递归扫描文件夹中的视频文件

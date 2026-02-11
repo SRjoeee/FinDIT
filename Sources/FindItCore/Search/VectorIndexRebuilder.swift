@@ -67,14 +67,20 @@ public enum VectorIndexRebuilder {
 
             guard !batch.isEmpty else { break }
 
+            // 批量添加：先过滤有效向量，再一次 addBatch
+            var batchKeys: [UInt64] = []
+            var batchVectors: [[Float]] = []
             for (clipId, vectorData) in batch {
                 let vector = EmbeddingUtils.deserializeEmbedding(vectorData)
                 guard vector.count == Int(config.dimensions) else { continue }
-                let key = USearchVectorIndex.clipIdToKey(clipId)
-                try vectorIndex.add(key: key, vector: vector)
+                batchKeys.append(USearchVectorIndex.clipIdToKey(clipId))
+                batchVectors.append(vector)
+            }
+            if !batchKeys.isEmpty {
+                try vectorIndex.addBatch(keys: batchKeys, vectors: batchVectors)
             }
 
-            totalCount += batch.count
+            totalCount += batchKeys.count  // 只计数成功添加的向量
             offset += batchSize
 
             if batch.count < batchSize { break }
@@ -110,11 +116,13 @@ public enum VectorIndexRebuilder {
     ///   - indexPath: USearch 索引文件路径
     ///   - db: 数据库（用于比较向量数量）
     ///   - modelName: 模型名称
+    ///   - config: USearch 索引配置（不同索引可能使用不同配置）
     /// - Returns: 是否需要重建
     public static func needsRebuild(
         indexPath: String,
         db: DatabaseReader,
-        modelName: String
+        modelName: String,
+        config: USearchVectorIndex.Config = .clip768
     ) throws -> Bool {
         // 索引文件不存在 → 需要重建
         guard USearchVectorIndex.indexFileExists(at: indexPath) else {
@@ -134,7 +142,6 @@ public enum VectorIndexRebuilder {
         }
 
         // 加载索引比较数量
-        let config = USearchVectorIndex.Config.clip768
         let index = try USearchVectorIndex(config: config)
         try index.load(from: indexPath)
         let indexCount = try index.count

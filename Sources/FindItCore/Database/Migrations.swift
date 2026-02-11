@@ -176,6 +176,13 @@ public enum Migrations {
             """)
         }
 
+        // R1: MediaService — 添加 media_type 列
+        migrator.registerMigration("v11_addMediaType") { db in
+            try db.alter(table: "videos") { t in
+                t.add(column: "media_type", .text).defaults(to: "video")
+            }
+        }
+
         return migrator
     }
 
@@ -513,6 +520,34 @@ public enum Migrations {
             try db.alter(table: "videos") { t in
                 t.add(column: "index_layer", .integer).defaults(to: 0)
             }
+        }
+
+        // R1: MediaService — 添加 media_type 列
+        migrator.registerMigration("v13_addMediaType") { db in
+            try db.alter(table: "videos") { t in
+                t.add(column: "media_type", .text).defaults(to: "video")
+            }
+        }
+
+        // 补全: 全局 videos 添加 created_at 列
+        migrator.registerMigration("v14_addCreatedAt") { db in
+            // SQLite ALTER TABLE ADD COLUMN 不支持非常量默认值，
+            // 先添加列（默认 NULL），再回填
+            try db.alter(table: "videos") { t in
+                t.add(column: "created_at", .text)
+            }
+            try db.execute(sql: "UPDATE videos SET created_at = datetime('now') WHERE created_at IS NULL")
+        }
+
+        // 补全: 回填 index_layer（从文件夹库的 index_status 映射）
+        migrator.registerMigration("v15_backfillIndexLayer") { db in
+            // 全局库的 videos 没有 index_status 列，
+            // 将所有 index_layer = 0 且有 clips 的视频标记为已完成（保守策略）
+            try db.execute(sql: """
+                UPDATE videos SET index_layer = 3
+                WHERE index_layer = 0
+                  AND video_id IN (SELECT DISTINCT video_id FROM clips)
+            """)
         }
 
         return migrator

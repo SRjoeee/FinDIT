@@ -105,6 +105,36 @@ public enum SceneDetector {
         return segments
     }
 
+    /// 异步场景检测（不阻塞 Swift 并发线程）
+    public static func detectScenesAsync(
+        inputPath: String,
+        videoDuration: Double? = nil,
+        config: Config = .default,
+        ffmpegConfig: FFmpegConfig = .default
+    ) async throws -> [SceneSegment] {
+        guard FileManager.default.fileExists(atPath: inputPath) else {
+            throw FFmpegError.inputFileNotFound(path: inputPath)
+        }
+
+        let duration: Double
+        if let provided = videoDuration {
+            duration = provided
+        } else {
+            duration = try await FFmpegBridge.videoDurationAsync(inputPath: inputPath, config: ffmpegConfig)
+        }
+        guard duration > 0 else { return [] }
+
+        let args = buildDetectionArguments(inputPath: inputPath, threshold: config.threshold)
+        let result = try await FFmpegBridge.runAsync(arguments: args, config: ffmpegConfig)
+
+        let timestamps = parseTimestamps(from: result.stderr)
+        let filtered = filterByMinGap(timestamps, minGap: config.minSegmentDuration)
+        var segments = segmentsFromCutPoints(filtered, videoDuration: duration)
+        segments = mergeShortSegments(segments, minDuration: config.minSegmentDuration)
+        segments = splitLongSegments(segments, maxDuration: config.maxSegmentDuration, interval: config.paddingInterval)
+        return segments
+    }
+
     // MARK: - 优化版：合并场景检测 + 时长 + 音频提取
 
     /// 合并结果
@@ -168,6 +198,47 @@ public enum SceneDetector {
 
         let args = buildDetectionArguments(inputPath: inputPath, threshold: config.threshold)
         let result = try FFmpegBridge.run(arguments: args, config: ffmpegConfig)
+        return try buildCombinedResult(
+            ffmpegResult: result,
+            config: config,
+            audioOutputPath: nil,
+            audioExtracted: false
+        )
+    }
+
+    /// 异步优化版场景检测（不阻塞 Swift 并发线程）
+    public static func detectScenesOptimizedAsync(
+        inputPath: String,
+        audioOutputPath: String? = nil,
+        config: Config = .default,
+        ffmpegConfig: FFmpegConfig = .default
+    ) async throws -> CombinedDetectionResult {
+        guard FileManager.default.fileExists(atPath: inputPath) else {
+            throw FFmpegError.inputFileNotFound(path: inputPath)
+        }
+
+        if let audioPath = audioOutputPath {
+            let combinedArgs = buildCombinedArguments(
+                inputPath: inputPath,
+                threshold: config.threshold,
+                audioOutputPath: audioPath
+            )
+            do {
+                let result = try await FFmpegBridge.runAsync(arguments: combinedArgs, config: ffmpegConfig)
+                return try buildCombinedResult(
+                    ffmpegResult: result,
+                    config: config,
+                    audioOutputPath: audioPath,
+                    audioExtracted: true
+                )
+            } catch let FFmpegError.processExitedWithError(_, stderr)
+                where FFmpegBridge.isMissingAudioStreamError(stderr: stderr) {
+                try? FileManager.default.removeItem(atPath: audioPath)
+            }
+        }
+
+        let args = buildDetectionArguments(inputPath: inputPath, threshold: config.threshold)
+        let result = try await FFmpegBridge.runAsync(arguments: args, config: ffmpegConfig)
         return try buildCombinedResult(
             ffmpegResult: result,
             config: config,

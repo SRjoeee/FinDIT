@@ -84,6 +84,14 @@ final class IndexingManager {
     /// 当前处理 Task（用于取消）
     private var processingTask: Task<Void, Never>?
 
+    /// ProcessInfo 后台活动令牌（防止 macOS 节能降速）
+    private var backgroundActivity: NSObjectProtocol?
+
+    /// 进度回调节流：上次 MainActor 更新时间
+    private var lastProgressUpdate: ContinuousClock.Instant = .now
+    /// 进度节流间隔（500ms）
+    private let progressThrottleInterval: Duration = .milliseconds(500)
+
     /// 并行调度器（根据 IndexingOptions.performanceMode 初始化）
     private var scheduler: IndexingScheduler?
 
@@ -156,6 +164,7 @@ final class IndexingManager {
         if let scheduler = scheduler {
             Task { await scheduler.releaseWaiters() }
         }
+        endBackgroundActivity()
         isIndexing = false
         currentFolder = nil
         currentVideoName = nil
@@ -236,6 +245,12 @@ final class IndexingManager {
     private func processQueue() async {
         isIndexing = true
 
+        // 声明后台活动，防止 macOS 在 App 最小化时节能降速
+        backgroundActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.suddenTerminationDisabled, .automaticTerminationDisabled],
+            reason: "FindIt is indexing video files"
+        )
+
         while !pendingFolders.isEmpty || !pendingVideos.isEmpty {
             guard !Task.isCancelled else { break }
 
@@ -250,7 +265,8 @@ final class IndexingManager {
             }
         }
 
-        // 队列清空
+        // 队列清空，结束后台活动声明
+        endBackgroundActivity()
         isIndexing = false
         currentFolder = nil
         currentVideoName = nil
@@ -332,8 +348,14 @@ final class IndexingManager {
             skipStt: options.skipStt,
             onProgress: { [weak self] progress in
                 Task { @MainActor [weak self] in
-                    self?.currentVideoName = progress.fileName
-                    self?.currentStage = progress.stage
+                    guard let self = self else { return }
+                    // 节流：距上次 UI 更新不足 500ms 则跳过属性写入，
+                    // 避免频繁触发 @Observable 变更通知和 SwiftUI 重渲染
+                    let now = ContinuousClock.now
+                    guard now - self.lastProgressUpdate >= self.progressThrottleInterval else { return }
+                    self.lastProgressUpdate = now
+                    self.currentVideoName = progress.fileName
+                    self.currentStage = progress.stage
                 }
             },
             onComplete: { [weak self] outcome in
@@ -445,8 +467,12 @@ final class IndexingManager {
             skipStt: options.skipStt,
             onProgress: { [weak self] progress in
                 Task { @MainActor [weak self] in
-                    self?.currentVideoName = progress.fileName
-                    self?.currentStage = progress.stage
+                    guard let self = self else { return }
+                    let now = ContinuousClock.now
+                    guard now - self.lastProgressUpdate >= self.progressThrottleInterval else { return }
+                    self.lastProgressUpdate = now
+                    self.currentVideoName = progress.fileName
+                    self.currentStage = progress.stage
                 }
             },
             onComplete: { [weak self] outcome in
@@ -491,6 +517,14 @@ final class IndexingManager {
         scheduler = newScheduler
         currentMode = mode
         return newScheduler
+    }
+
+    /// 结束后台活动声明
+    private func endBackgroundActivity() {
+        if let activity = backgroundActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            backgroundActivity = nil
+        }
     }
 
     /// 懒初始化共享资源

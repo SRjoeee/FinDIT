@@ -100,16 +100,33 @@ public enum SyncEngine {
         var excludedSourceVideoIds = Set<Int64>()
 
         // 3. 分批同步 videos
+        // 预编译 video upsert SQL（循环外构建一次）
+        let videoSQL = """
+            INSERT INTO videos
+                (source_folder, source_video_id, file_path, file_name, duration, file_size, file_hash, srt_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_folder, source_video_id) DO UPDATE SET
+                file_path = excluded.file_path,
+                file_name = excluded.file_name,
+                duration = excluded.duration,
+                file_size = excluded.file_size,
+                file_hash = excluded.file_hash,
+                srt_path = excluded.srt_path
+            """
+
         while true {
             let batch = try folderDB.read { db in
                 try Video.fetchAfterRowId(db, rowId: currentVideoRowId, limit: batchSize)
             }
             guard !batch.isEmpty else { break }
-            // 注意：这里必须按“实际成功 upsert”的条数累计，而不是 batch.count。
+            // 注意：这里必须按"实际成功 upsert"的条数累计，而不是 batch.count。
             // 跳过的 orphaned/子目录冲突/唯一约束冲突记录不应计入用户可见同步数量。
             var syncedVideosInBatch = 0
 
             try globalDB.write { db in
+                // PreparedStatement: SQL 编译一次，循环内仅绑定参数
+                let videoStmt = try db.makeStatement(sql: videoSQL)
+
                 for video in batch {
                     // 跳过属于已注册子文件夹的视频（子文件夹有独立索引库，由其自行同步）
                     if !childFolderPaths.isEmpty,
@@ -131,22 +148,11 @@ public enum SyncEngine {
                     }
 
                     do {
-                        try db.execute(sql: """
-                            INSERT INTO videos
-                                (source_folder, source_video_id, file_path, file_name, duration, file_size, file_hash, srt_path)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            ON CONFLICT(source_folder, source_video_id) DO UPDATE SET
-                                file_path = excluded.file_path,
-                                file_name = excluded.file_name,
-                                duration = excluded.duration,
-                                file_size = excluded.file_size,
-                                file_hash = excluded.file_hash,
-                                srt_path = excluded.srt_path
-                            """, arguments: [
-                                folderPath, video.videoId,
-                                video.filePath, video.fileName,
-                                video.duration, video.fileSize, video.fileHash, video.srtPath
-                            ])
+                        try videoStmt.execute(arguments: [
+                            folderPath, video.videoId,
+                            video.filePath, video.fileName,
+                            video.duration, video.fileSize, video.fileHash, video.srtPath
+                        ])
                     } catch DatabaseError.SQLITE_CONSTRAINT {
                         // file_path 被其他 source_folder 占据 → 跳过（该文件由另一个文件夹"拥有"）
                         print("[SyncEngine] 跳过冲突视频: \(video.filePath) (source_folder=\(folderPath))")
@@ -217,6 +223,9 @@ public enum SyncEngine {
             var syncedClipsInBatch = 0
 
             try globalDB.write { db in
+                // PreparedStatement: SQL 编译一次，循环内仅绑定参数
+                let clipStmt = try db.makeStatement(sql: clipSQL)
+
                 for clip in batch {
                     // 跳过属于被排除视频的 clips
                     if let videoId = clip.videoId, excludedSourceVideoIds.contains(videoId) {
@@ -250,7 +259,7 @@ public enum SyncEngine {
                     args.append(clip.colorLabel)
 
                     do {
-                        try db.execute(sql: clipSQL, arguments: StatementArguments(args))
+                        try clipStmt.execute(arguments: StatementArguments(args))
                     } catch DatabaseError.SQLITE_CONSTRAINT {
                         print("[SyncEngine] 跳过冲突片段: clip_id=\(clip.clipId ?? -1) (source_folder=\(folderPath))")
                         if let cid = clip.clipId, cid > currentClipRowId {

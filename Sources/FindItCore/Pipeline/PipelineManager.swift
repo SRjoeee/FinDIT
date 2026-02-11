@@ -456,7 +456,7 @@ public enum PipelineManager {
                         .appendingPathComponent("video_\(videoId).wav")
                 }
 
-                let detection = try SceneDetector.detectScenesOptimized(
+                let detection = try await SceneDetector.detectScenesOptimizedAsync(
                     inputPath: videoPath,
                     audioOutputPath: audioOutputPath,
                     ffmpegConfig: ffmpegConfig
@@ -485,7 +485,7 @@ public enum PipelineManager {
                 // 关键帧提取
                 progress("提取关键帧中...")
                 let thumbDir = thumbnailDirectory(folderPath: folderPath, videoId: videoId)
-                let frames = try KeyframeExtractor.extractKeyframes(
+                let frames = try await KeyframeExtractor.extractKeyframesAsync(
                     inputPath: videoPath,
                     segments: sceneSegments,
                     outputDirectory: thumbDir,
@@ -588,7 +588,7 @@ public enum PipelineManager {
                         atPath: tmpDir, withIntermediateDirectories: true
                     )
                     audioPath = (tmpDir as NSString).appendingPathComponent("video_\(videoId).wav")
-                    try AudioExtractor.extractAudio(
+                    try await AudioExtractor.extractAudioAsync(
                         inputPath: videoPath,
                         outputPath: audioPath,
                         config: ffmpegConfig
@@ -716,6 +716,22 @@ public enum PipelineManager {
             let engineName = apiKey != nil ? "Gemini" : "LocalVLM"
             progress("视觉分析中 [\(engineName)]...")
 
+            // 批量写入缓冲（每 10 个 clip 合并为一次事务，减少 ~80% 写 I/O）
+            let visionBatchSize = 10
+            var pendingUpdates: [(clipId: Int64, result: AnalysisResult)] = []
+
+            /// 刷新待写入的视觉分析结果到数据库
+            func flushPendingUpdates() throws {
+                guard !pendingUpdates.isEmpty else { return }
+                let updates = pendingUpdates
+                pendingUpdates.removeAll()
+                try batchUpdateClipVision(
+                    updates: updates,
+                    videoId: videoId,
+                    folderDB: folderDB
+                )
+            }
+
             for (index, clip) in clips.enumerated() {
                 try Task.checkCancellation()
                 guard let clipId = clip.clipId, clipId > lastProcessed else { continue }
@@ -756,22 +772,18 @@ public enum PipelineManager {
                     let localResult = AnalysisResult.fromClip(clip)
                     let merged = LocalVisionAnalyzer.mergeResults(local: localResult, remote: result)
 
-                    try updateClipVision(
-                        clipId: clipId,
-                        result: merged,
-                        folderDB: folderDB
-                    )
-                    // 仅在成功写入视觉结果后推进断点，避免失败 clip 被跳过
-                    try await folderDB.write { db in
-                        try db.execute(
-                            sql: "UPDATE videos SET last_processed_clip = ? WHERE video_id = ?",
-                            arguments: [clipId, videoId]
-                        )
-                    }
+                    pendingUpdates.append((clipId: clipId, result: merged))
                     clipsAnalyzed += 1
                     progress("场景 \(index + 1)/\(clips.count) 分析完成")
 
+                    // 每 visionBatchSize 个 clip 刷新一次
+                    if pendingUpdates.count >= visionBatchSize {
+                        try flushPendingUpdates()
+                    }
+
                 } catch is CancellationError {
+                    // 取消前先刷新已有结果，避免丢失进度
+                    try? flushPendingUpdates()
                     throw CancellationError()
                 } catch {
                     if let limiter = rateLimiter,
@@ -783,6 +795,9 @@ public enum PipelineManager {
                     // 继续处理下一个 clip
                 }
             }
+
+            // 刷新剩余的待写入结果
+            try flushPendingUpdates()
 
             try updateVideoStatus(folderDB: folderDB, videoId: videoId, status: .completed)
         } else if !hasVisionEngine && currentStage.isBefore(.completed) {
@@ -1043,23 +1058,53 @@ public enum PipelineManager {
         result: AnalysisResult,
         folderDB: DatabaseWriter
     ) throws {
+        try batchUpdateClipVision(
+            updates: [(clipId: clipId, result: result)],
+            videoId: nil,
+            folderDB: folderDB
+        )
+    }
+
+    /// 批量更新多个 clip 的视觉分析结果（单事务）
+    ///
+    /// 同时更新 `last_processed_clip` 断点（取批次中最大的 clipId）。
+    /// 50 个场景的视频从 50 次事务降为 ~5 次。
+    static func batchUpdateClipVision(
+        updates: [(clipId: Int64, result: AnalysisResult)],
+        videoId: Int64?,
+        folderDB: DatabaseWriter
+    ) throws {
+        guard !updates.isEmpty else { return }
+
         let fields = VisionField.allActive
         let setClause = VisionField.sqlSetClause(fields: fields)
-        let sql = "UPDATE clips SET \(setClause), tags = ? WHERE clip_id = ?"
-
-        var args: [DatabaseValueConvertible?] = []
-        for field in fields {
-            if field.isArray {
-                args.append(encodeJSONArray(result.arrayValue(for: field)))
-            } else {
-                args.append(result.stringValue(for: field))
-            }
-        }
-        args.append(encodeJSONArray(result.tags))
-        args.append(clipId)
+        let visionSQL = "UPDATE clips SET \(setClause), tags = ? WHERE clip_id = ?"
 
         try folderDB.write { db in
-            try db.execute(sql: sql, arguments: StatementArguments(args))
+            let stmt = try db.makeStatement(sql: visionSQL)
+
+            for update in updates {
+                var args: [DatabaseValueConvertible?] = []
+                for field in fields {
+                    if field.isArray {
+                        args.append(encodeJSONArray(update.result.arrayValue(for: field)))
+                    } else {
+                        args.append(update.result.stringValue(for: field))
+                    }
+                }
+                args.append(encodeJSONArray(update.result.tags))
+                args.append(update.clipId)
+
+                try stmt.execute(arguments: StatementArguments(args))
+            }
+
+            // 更新断点到批次中最大的 clipId
+            if let vid = videoId, let maxClipId = updates.map(\.clipId).max() {
+                try db.execute(
+                    sql: "UPDATE videos SET last_processed_clip = ? WHERE video_id = ?",
+                    arguments: [maxClipId, vid]
+                )
+            }
         }
     }
 

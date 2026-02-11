@@ -34,6 +34,27 @@ public enum AudioExtractor {
         return outputPath
     }
 
+    /// 异步提取音频（不阻塞 Swift 并发线程）
+    @discardableResult
+    public static func extractAudioAsync(
+        inputPath: String,
+        outputPath: String,
+        config: FFmpegConfig = .default
+    ) async throws -> String {
+        guard FileManager.default.fileExists(atPath: inputPath) else {
+            throw FFmpegError.inputFileNotFound(path: inputPath)
+        }
+
+        let args = buildArguments(inputPath: inputPath, outputPath: outputPath)
+        _ = try await FFmpegBridge.runAsync(arguments: args, config: config)
+
+        guard FileManager.default.fileExists(atPath: outputPath) else {
+            throw FFmpegError.outputFileNotCreated(path: outputPath)
+        }
+
+        return outputPath
+    }
+
     /// 构建音频提取命令参数
     static func buildArguments(inputPath: String, outputPath: String) -> [String] {
         [

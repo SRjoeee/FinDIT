@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 /// 系统资源监控器
 ///
@@ -17,6 +18,11 @@ public actor ResourceMonitor {
 
     // MARK: - 系统快照
 
+    /// 用户空闲检测阈值（秒）
+    ///
+    /// 用户超过此时长无键盘/鼠标输入视为空闲，索引可全速运行。
+    public static let userIdleThreshold: TimeInterval = 60
+
     /// 系统状态快照
     public struct SystemSnapshot: Sendable {
         /// 热量状态
@@ -27,6 +33,8 @@ public actor ResourceMonitor {
         public let processorCount: Int
         /// 是否启用低电量模式
         public let isLowPowerMode: Bool
+        /// 用户是否空闲（无键鼠输入超过阈值）
+        public let isUserIdle: Bool
         /// 采样时间
         public let timestamp: Date
 
@@ -35,12 +43,14 @@ public actor ResourceMonitor {
             availableMemoryMB: Int,
             processorCount: Int,
             isLowPowerMode: Bool,
+            isUserIdle: Bool = true,
             timestamp: Date = Date()
         ) {
             self.thermalState = thermalState
             self.availableMemoryMB = availableMemoryMB
             self.processorCount = processorCount
             self.isLowPowerMode = isLowPowerMode
+            self.isUserIdle = isUserIdle
             self.timestamp = timestamp
         }
     }
@@ -143,8 +153,28 @@ public actor ResourceMonitor {
             thermalState: ProcessInfo.processInfo.thermalState,
             availableMemoryMB: availableMemoryMB(),
             processorCount: ProcessInfo.processInfo.activeProcessorCount,
-            isLowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled
+            isLowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            isUserIdle: detectUserIdle()
         )
+    }
+
+    /// 检测用户是否空闲（无键鼠输入超过阈值）
+    ///
+    /// 使用 `CGEventSource.secondsSinceLastEventType` 检测
+    /// 键盘和鼠标的最后活动时间。
+    private static func detectUserIdle() -> Bool {
+        let idleSinceKeyboard = CGEventSource.secondsSinceLastEventType(
+            .hidSystemState, eventType: .keyDown
+        )
+        let idleSinceMouse = CGEventSource.secondsSinceLastEventType(
+            .hidSystemState, eventType: .mouseMoved
+        )
+        let idleSinceClick = CGEventSource.secondsSinceLastEventType(
+            .hidSystemState, eventType: .leftMouseDown
+        )
+        // 取最短的空闲时间（最近一次任意输入）
+        let minIdle = min(idleSinceKeyboard, idleSinceMouse, idleSinceClick)
+        return minIdle > userIdleThreshold
     }
 
     /// 获取可用内存 (MB)
@@ -213,6 +243,11 @@ public actor ResourceMonitor {
             concurrency = 1
         } else if snapshot.availableMemoryMB < 1024 {
             concurrency = max(1, concurrency / 2)
+        }
+
+        // 用户活跃时降速（background 模式不再额外降级，已经最低）
+        if !snapshot.isUserIdle && effectiveMode != .background {
+            concurrency = max(1, concurrency * 2 / 3)
         }
 
         return concurrency

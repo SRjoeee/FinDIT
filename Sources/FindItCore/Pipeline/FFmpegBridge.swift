@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// FFmpeg 相关错误
 public enum FFmpegError: LocalizedError {
@@ -206,6 +207,142 @@ public enum FFmpegBridge {
         }
 
         return ProcessResult(exitCode: process.terminationStatus, stdout: stdout, stderr: stderr)
+    }
+
+    /// 异步获取视频文件时长（不阻塞 Swift 并发线程）
+    public static func videoDurationAsync(inputPath: String, config: FFmpegConfig = .default) async throws -> Double {
+        guard FileManager.default.fileExists(atPath: inputPath) else {
+            throw FFmpegError.inputFileNotFound(path: inputPath)
+        }
+
+        // 使用 runAsync 代替直接调用 Process
+        // ffmpeg -i 不指定输出时返回退出码 1，stderr 含 Duration
+        do {
+            let result = try await runAsync(arguments: ["-i", inputPath], config: config, timeout: 30)
+            guard let duration = parseDuration(from: result.stderr) else {
+                throw FFmpegError.outputParsingFailed(detail: "未找到 Duration 信息")
+            }
+            return duration
+        } catch FFmpegError.processExitedWithError(_, let stderr) {
+            // ffmpeg -i 无输出会退出码 1，但 stderr 有 Duration
+            guard let duration = parseDuration(from: stderr) else {
+                throw FFmpegError.outputParsingFailed(detail: "未找到 Duration 信息")
+            }
+            return duration
+        }
+    }
+
+    /// 异步执行 FFmpeg 命令（不阻塞 Swift 并发线程）
+    ///
+    /// 使用 `terminationHandler` 代替 `waitUntilExit()`，释放调用线程。
+    /// 并行索引 8 个视频时，从阻塞 8 个并发线程变为 0 个阻塞。
+    ///
+    /// - Parameters:
+    ///   - arguments: 命令行参数（不含 ffmpeg 路径）
+    ///   - config: FFmpeg 配置
+    ///   - timeout: 超时时间（nil 使用 config.defaultTimeout）
+    /// - Returns: ProcessResult
+    /// - Throws: FFmpegError
+    public static func runAsync(
+        arguments: [String],
+        config: FFmpegConfig = .default,
+        timeout: TimeInterval? = nil
+    ) async throws -> ProcessResult {
+        try validateExecutable(config: config)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: config.ffmpegPath)
+        process.arguments = arguments
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        let effectiveTimeout = timeout ?? config.defaultTimeout
+
+        return try await withCheckedThrowingContinuation { continuation in
+            // 标记是否已 resume，防止超时和正常完成重复 resume
+            let resumed = OSAllocatedUnfairLock(initialState: false)
+
+            // 超时机制
+            let timeoutItem = DispatchWorkItem {
+                if process.isRunning {
+                    process.terminate()
+                }
+                let alreadyResumed = resumed.withLock { old -> Bool in
+                    let was = old; old = true; return was
+                }
+                if !alreadyResumed {
+                    continuation.resume(throwing: FFmpegError.timeout(seconds: effectiveTimeout))
+                }
+            }
+            DispatchQueue.global().asyncAfter(
+                deadline: .now() + effectiveTimeout,
+                execute: timeoutItem
+            )
+
+            // 在后台线程并发读取 stdout/stderr，防止管道缓冲区死锁
+            let group = DispatchGroup()
+            var stdoutResult = Data()
+            var stderrResult = Data()
+
+            group.enter()
+            DispatchQueue.global().async {
+                stdoutResult = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                group.leave()
+            }
+            group.enter()
+            DispatchQueue.global().async {
+                stderrResult = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                group.leave()
+            }
+
+            // terminationHandler 代替 waitUntilExit()，不阻塞调用线程
+            process.terminationHandler = { terminatedProcess in
+                timeoutItem.cancel()
+                group.wait() // 等管道读完（管道在进程退出后很快结束）
+
+                let alreadyResumed = resumed.withLock { old -> Bool in
+                    let was = old; old = true; return was
+                }
+                guard !alreadyResumed else { return }
+
+                let stdout = String(data: stdoutResult, encoding: .utf8) ?? ""
+                let stderr = String(data: stderrResult, encoding: .utf8) ?? ""
+
+                if terminatedProcess.terminationReason == .uncaughtSignal {
+                    continuation.resume(throwing: FFmpegError.timeout(seconds: effectiveTimeout))
+                    return
+                }
+
+                if terminatedProcess.terminationStatus != 0 {
+                    continuation.resume(throwing: FFmpegError.processExitedWithError(
+                        exitCode: terminatedProcess.terminationStatus,
+                        stderr: stderr
+                    ))
+                    return
+                }
+
+                continuation.resume(returning: ProcessResult(
+                    exitCode: terminatedProcess.terminationStatus,
+                    stdout: stdout,
+                    stderr: stderr
+                ))
+            }
+
+            do {
+                try process.run()
+            } catch {
+                timeoutItem.cancel()
+                let alreadyResumed = resumed.withLock { old -> Bool in
+                    let was = old; old = true; return was
+                }
+                if !alreadyResumed {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     // MARK: - Internal

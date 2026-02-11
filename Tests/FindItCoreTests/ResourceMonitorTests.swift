@@ -142,6 +142,60 @@ final class ResourceMonitorTests: XCTestCase {
         XCTAssertEqual(c, 1)
     }
 
+    // MARK: - 用户活跃度感知
+
+    func testComputeConcurrencyUserActive() {
+        // 用户活跃时降速: fullSpeed 6 → 6*2/3 = 4
+        let snapshot = ResourceMonitor.SystemSnapshot(
+            thermalState: .nominal,
+            availableMemoryMB: 8192,
+            processorCount: 8,
+            isLowPowerMode: false,
+            isUserIdle: false
+        )
+        let c = ResourceMonitor.computeConcurrency(snapshot: snapshot, mode: .fullSpeed)
+        XCTAssertEqual(c, 4, "用户活跃时应降至 2/3")
+    }
+
+    func testComputeConcurrencyUserActiveBalanced() {
+        // balanced(8核)=4, 用户活跃 → 4*2/3 = 2
+        let snapshot = ResourceMonitor.SystemSnapshot(
+            thermalState: .nominal,
+            availableMemoryMB: 8192,
+            processorCount: 8,
+            isLowPowerMode: false,
+            isUserIdle: false
+        )
+        let c = ResourceMonitor.computeConcurrency(snapshot: snapshot, mode: .balanced)
+        XCTAssertEqual(c, 2, "balanced + 用户活跃")
+    }
+
+    func testComputeConcurrencyUserActiveBackgroundNoFurtherDegradation() {
+        // background 模式不再额外降级
+        let snapshot = ResourceMonitor.SystemSnapshot(
+            thermalState: .nominal,
+            availableMemoryMB: 8192,
+            processorCount: 8,
+            isLowPowerMode: false,
+            isUserIdle: false
+        )
+        let c = ResourceMonitor.computeConcurrency(snapshot: snapshot, mode: .background)
+        XCTAssertEqual(c, 2, "background 不应因用户活跃再降级")
+    }
+
+    func testComputeConcurrencyUserIdleFullSpeed() {
+        // 用户空闲时不降速
+        let snapshot = ResourceMonitor.SystemSnapshot(
+            thermalState: .nominal,
+            availableMemoryMB: 8192,
+            processorCount: 8,
+            isLowPowerMode: false,
+            isUserIdle: true
+        )
+        let c = ResourceMonitor.computeConcurrency(snapshot: snapshot, mode: .fullSpeed)
+        XCTAssertEqual(c, 6, "用户空闲不应降速")
+    }
+
     // MARK: - ResourceMonitor actor
 
     func testMonitorSampleAndRecommend() async {

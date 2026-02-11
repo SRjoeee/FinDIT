@@ -155,6 +155,98 @@ public enum KeyframeExtractor {
         return frames
     }
 
+    /// 异步关键帧提取（不阻塞 Swift 并发线程）
+    public static func extractKeyframesAsync(
+        inputPath: String,
+        segments: [SceneSegment],
+        outputDirectory: String,
+        config: Config = .default,
+        ffmpegConfig: FFmpegConfig = .default
+    ) async throws -> [ExtractedFrame] {
+        guard FileManager.default.fileExists(atPath: inputPath) else {
+            throw FFmpegError.inputFileNotFound(path: inputPath)
+        }
+
+        try FileManager.default.createDirectory(
+            atPath: outputDirectory,
+            withIntermediateDirectories: true
+        )
+
+        var frames: [ExtractedFrame] = []
+
+        for (sceneIndex, segment) in segments.enumerated() {
+            let frameCount = framesPerScene(duration: segment.duration, config: config)
+            let timestamps = frameTimestamps(segment: segment, frameCount: frameCount)
+            guard !timestamps.isEmpty else { continue }
+
+            if timestamps.count == 1 {
+                let fileName = String(format: "scene_%03d_frame_%02d.jpg", sceneIndex, 0)
+                let outputPath = (outputDirectory as NSString).appendingPathComponent(fileName)
+                let args = buildExtractArguments(
+                    inputPath: inputPath,
+                    timestamp: timestamps[0],
+                    outputPath: outputPath,
+                    config: config
+                )
+                _ = try await FFmpegBridge.runAsync(arguments: args, config: ffmpegConfig)
+                if FileManager.default.fileExists(atPath: outputPath) {
+                    frames.append(ExtractedFrame(
+                        sceneIndex: sceneIndex,
+                        timestamp: timestamps[0],
+                        filePath: outputPath
+                    ))
+                }
+            } else {
+                let outputPattern = (outputDirectory as NSString)
+                    .appendingPathComponent(String(format: "scene_%03d_frame_%%02d.jpg", sceneIndex))
+                let args = buildBatchExtractArguments(
+                    inputPath: inputPath,
+                    segment: segment,
+                    timestamps: timestamps,
+                    outputPattern: outputPattern,
+                    config: config
+                )
+                _ = try await FFmpegBridge.runAsync(arguments: args, config: ffmpegConfig)
+
+                var batchFrameCount = 0
+                for (frameIndex, timestamp) in timestamps.enumerated() {
+                    let fileName = String(format: "scene_%03d_frame_%02d.jpg", sceneIndex, frameIndex)
+                    let outputPath = (outputDirectory as NSString).appendingPathComponent(fileName)
+                    if FileManager.default.fileExists(atPath: outputPath) {
+                        frames.append(ExtractedFrame(
+                            sceneIndex: sceneIndex,
+                            timestamp: timestamp,
+                            filePath: outputPath
+                        ))
+                        batchFrameCount += 1
+                    }
+                }
+
+                if batchFrameCount == 0 {
+                    let midpoint = (segment.startTime + segment.endTime) / 2
+                    let fallbackName = String(format: "scene_%03d_frame_00.jpg", sceneIndex)
+                    let fallbackPath = (outputDirectory as NSString).appendingPathComponent(fallbackName)
+                    let fallbackArgs = buildExtractArguments(
+                        inputPath: inputPath,
+                        timestamp: midpoint,
+                        outputPath: fallbackPath,
+                        config: config
+                    )
+                    _ = try? await FFmpegBridge.runAsync(arguments: fallbackArgs, config: ffmpegConfig)
+                    if FileManager.default.fileExists(atPath: fallbackPath) {
+                        frames.append(ExtractedFrame(
+                            sceneIndex: sceneIndex,
+                            timestamp: midpoint,
+                            filePath: fallbackPath
+                        ))
+                    }
+                }
+            }
+        }
+
+        return frames
+    }
+
     // MARK: - Internal 纯函数
 
     /// 计算场景应提取的帧数

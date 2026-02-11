@@ -91,20 +91,25 @@ final class HybridSearchTests: XCTestCase {
 
     func testSearchWeightsDefault() {
         let w = SearchEngine.SearchWeights.default
-        XCTAssertEqual(w.ftsWeight, 0.4, accuracy: 0.01)
-        XCTAssertEqual(w.vectorWeight, 0.6, accuracy: 0.01)
+        XCTAssertEqual(w.clipWeight, 0.5, accuracy: 0.01)
+        XCTAssertEqual(w.ftsWeight, 0.2, accuracy: 0.01)
+        XCTAssertEqual(w.textEmbWeight, 0.3, accuracy: 0.01)
+        // vectorWeight 是 textEmbWeight 的别名
+        XCTAssertEqual(w.vectorWeight, w.textEmbWeight, accuracy: 0.01)
     }
 
     func testSearchWeightsExactMatch() {
         let w = SearchEngine.SearchWeights.exactMatch
-        XCTAssertEqual(w.ftsWeight, 0.9, accuracy: 0.01)
-        XCTAssertEqual(w.vectorWeight, 0.1, accuracy: 0.01)
+        XCTAssertEqual(w.clipWeight, 0.1, accuracy: 0.01)
+        XCTAssertEqual(w.ftsWeight, 0.8, accuracy: 0.01)
+        XCTAssertEqual(w.textEmbWeight, 0.1, accuracy: 0.01)
     }
 
     func testSearchWeightsSemantic() {
         let w = SearchEngine.SearchWeights.semantic
-        XCTAssertEqual(w.ftsWeight, 0.2, accuracy: 0.01)
-        XCTAssertEqual(w.vectorWeight, 0.8, accuracy: 0.01)
+        XCTAssertEqual(w.clipWeight, 0.6, accuracy: 0.01)
+        XCTAssertEqual(w.ftsWeight, 0.1, accuracy: 0.01)
+        XCTAssertEqual(w.textEmbWeight, 0.3, accuracy: 0.01)
     }
 
     // MARK: - resolveWeights
@@ -117,32 +122,35 @@ final class HybridSearchTests: XCTestCase {
 
     func testResolveWeightsVectorMode() {
         let w = SearchEngine.resolveWeights(query: "test", mode: .vector, hasEmbedding: true)
+        // vector 模式优先 CLIP，所以 clipWeight=1.0
+        XCTAssertEqual(w.clipWeight, 1.0)
         XCTAssertEqual(w.ftsWeight, 0.0)
-        XCTAssertEqual(w.vectorWeight, 1.0)
     }
 
     func testResolveWeightsAutoQuoted() {
         let w = SearchEngine.resolveWeights(query: "\"精确匹配\"", mode: .auto, hasEmbedding: true)
-        XCTAssertEqual(w.ftsWeight, 0.9, accuracy: 0.01)
-        XCTAssertEqual(w.vectorWeight, 0.1, accuracy: 0.01)
+        XCTAssertEqual(w.ftsWeight, 0.8, accuracy: 0.01)
+        XCTAssertEqual(w.textEmbWeight, 0.1, accuracy: 0.01)
     }
 
     func testResolveWeightsAutoLongQuery() {
         let w = SearchEngine.resolveWeights(query: "一个女生在海边看日落的场景", mode: .auto, hasEmbedding: true)
-        XCTAssertEqual(w.ftsWeight, 0.2, accuracy: 0.01)
-        XCTAssertEqual(w.vectorWeight, 0.8, accuracy: 0.01)
+        XCTAssertEqual(w.ftsWeight, 0.1, accuracy: 0.01)
+        XCTAssertEqual(w.clipWeight, 0.6, accuracy: 0.01)
     }
 
     func testResolveWeightsAutoShortQuery() {
         let w = SearchEngine.resolveWeights(query: "海边日落", mode: .auto, hasEmbedding: true)
-        XCTAssertEqual(w.ftsWeight, 0.4, accuracy: 0.01)
-        XCTAssertEqual(w.vectorWeight, 0.6, accuracy: 0.01)
+        XCTAssertEqual(w.clipWeight, 0.5, accuracy: 0.01)
+        XCTAssertEqual(w.ftsWeight, 0.2, accuracy: 0.01)
     }
 
     func testResolveWeightsAutoNoEmbedding() {
+        // hasEmbedding=false → hasCLIP=true, hasTextEmb=false → twoWayNoTextEmb
         let w = SearchEngine.resolveWeights(query: "test", mode: .auto, hasEmbedding: false)
-        XCTAssertEqual(w.ftsWeight, 1.0)
-        XCTAssertEqual(w.vectorWeight, 0.0)
+        XCTAssertEqual(w.clipWeight, 0.7, accuracy: 0.01)
+        XCTAssertEqual(w.ftsWeight, 0.3, accuracy: 0.01)
+        XCTAssertEqual(w.textEmbWeight, 0.0, accuracy: 0.01)
     }
 
     // MARK: - resolveWeights CJK 阈值
@@ -150,22 +158,24 @@ final class HybridSearchTests: XCTestCase {
     func testResolveWeightsCJKMediumQuery() {
         // "艺术工作室绘画" = 7 字符, CJK 阈值 5, 7 > 5 → semantic
         let w = SearchEngine.resolveWeights(query: "艺术工作室绘画", mode: .auto, hasEmbedding: true)
-        XCTAssertEqual(w.ftsWeight, 0.2, accuracy: 0.01)
-        XCTAssertEqual(w.vectorWeight, 0.8, accuracy: 0.01)
+        XCTAssertEqual(w.clipWeight, 0.6, accuracy: 0.01)
+        XCTAssertEqual(w.ftsWeight, 0.1, accuracy: 0.01)
+        XCTAssertEqual(w.textEmbWeight, 0.3, accuracy: 0.01)
     }
 
     func testResolveWeightsEnglishMediumQuery() {
         // "beach scene" = 11 字符, 非 CJK 阈值 10, 11 > 10 → semantic
         let w = SearchEngine.resolveWeights(query: "beach scene", mode: .auto, hasEmbedding: true)
-        XCTAssertEqual(w.ftsWeight, 0.2, accuracy: 0.01)
-        XCTAssertEqual(w.vectorWeight, 0.8, accuracy: 0.01)
+        XCTAssertEqual(w.clipWeight, 0.6, accuracy: 0.01)
+        XCTAssertEqual(w.ftsWeight, 0.1, accuracy: 0.01)
     }
 
     func testResolveWeightsEnglishShortQuery() {
         // "beach sun" = 9 字符, 非 CJK 阈值 10, 9 <= 10 → default
         let w = SearchEngine.resolveWeights(query: "beach sun", mode: .auto, hasEmbedding: true)
-        XCTAssertEqual(w.ftsWeight, 0.4, accuracy: 0.01)
-        XCTAssertEqual(w.vectorWeight, 0.6, accuracy: 0.01)
+        XCTAssertEqual(w.clipWeight, 0.5, accuracy: 0.01)
+        XCTAssertEqual(w.ftsWeight, 0.2, accuracy: 0.01)
+        XCTAssertEqual(w.textEmbWeight, 0.3, accuracy: 0.01)
     }
 
     // MARK: - v3 Migration (index_status 索引)

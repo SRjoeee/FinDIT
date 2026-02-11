@@ -5,13 +5,19 @@ import NaturalLanguage
 
 /// Apple NLEmbedding 离线嵌入工具
 ///
+/// - Important: **已废弃**。NLEmbedding 输出 512 维向量，与 CLIP/Gemini 的 768 维
+///   不兼容，无法混合搜索。请改用 `CLIPEmbeddingProvider`（CLIP text encoder,
+///   768 维, 跨模态）或 `GeminiEmbeddingProvider`（768 维, 文本语义）。
+///   将在后续版本移除。
+///
 /// 使用系统内置的 NaturalLanguage 框架计算文本向量嵌入。
 /// 完全离线运行，无需 API Key 或网络连接。
 ///
 /// 特点:
-/// - 512 维向量输出
+/// - 512 维向量输出（与 768 维索引不兼容）
 /// - 需要对应语言的嵌入模型（系统预装英文、中文等主要语言）
 /// - 通过 `NLEmbedding.wordEmbedding(for:)` 加载模型
+@available(*, deprecated, message: "NLEmbedding 512d 与 CLIP/Gemini 768d 不兼容，请使用 CLIPEmbeddingProvider")
 public enum NLEmbeddingUtil {
 
     /// 检测文本的主要语言
@@ -104,8 +110,12 @@ public enum NLEmbeddingUtil {
 
 /// Apple NLEmbedding 离线嵌入提供者
 ///
+/// - Important: **已废弃**。512 维输出与 768 维索引不兼容。
+///   离线文本嵌入请使用 `CLIPEmbeddingProvider`（跨模态, 768 维）。
+///
 /// 封装 NLEmbeddingUtil 为 EmbeddingProvider 协议。
 /// 完全离线，作为 Gemini API 不可用时的回退方案。
+@available(*, deprecated, message: "512d 与 768d 索引不兼容，请使用 CLIPEmbeddingProvider")
 public final class NLEmbeddingProvider: EmbeddingProvider, Sendable {
     public let name = "nl-embedding"
     public let dimensions = 512

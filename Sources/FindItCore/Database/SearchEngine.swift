@@ -21,19 +21,52 @@ public enum SearchEngine {
         case auto
     }
 
-    /// 搜索权重配置
-    public struct SearchWeights: Sendable {
-        /// FTS5 分数权重
+    /// 搜索权重配置（三路融合）
+    ///
+    /// 三路权重: CLIP 视觉相似度 + FTS5 关键词 + 文本嵌入语义。
+    /// 权重之和应为 1.0，但不强制（内部会按比例使用）。
+    public struct SearchWeights: Sendable, Equatable {
+        /// CLIP 视觉相似度权重（SigLIP2 跨模态搜索）
+        public var clipWeight: Double
+        /// FTS5 关键词匹配权重
         public var ftsWeight: Double
-        /// 向量相似度权重
-        public var vectorWeight: Double
+        /// 文本嵌入语义相似度权重
+        public var textEmbWeight: Double
 
-        /// 默认权重：语义优先
-        public static let `default` = SearchWeights(ftsWeight: 0.4, vectorWeight: 0.6)
+        /// 向后兼容：旧 vectorWeight 映射到 textEmbWeight
+        public var vectorWeight: Double { textEmbWeight }
+
+        public init(clipWeight: Double, ftsWeight: Double, textEmbWeight: Double) {
+            self.clipWeight = clipWeight
+            self.ftsWeight = ftsWeight
+            self.textEmbWeight = textEmbWeight
+        }
+
+        /// 向后兼容的二路构造器（clipWeight = 0）
+        public init(ftsWeight: Double, vectorWeight: Double) {
+            self.clipWeight = 0.0
+            self.ftsWeight = ftsWeight
+            self.textEmbWeight = vectorWeight
+        }
+
+        /// 默认三路权重: CLIP 主导 + FTS5 + 文本嵌入
+        public static let `default` = SearchWeights(clipWeight: 0.5, ftsWeight: 0.2, textEmbWeight: 0.3)
         /// 精确匹配优先（引号搜索）
-        public static let exactMatch = SearchWeights(ftsWeight: 0.9, vectorWeight: 0.1)
+        public static let exactMatch = SearchWeights(clipWeight: 0.1, ftsWeight: 0.8, textEmbWeight: 0.1)
         /// 语义主导（长描述性查询）
-        public static let semantic = SearchWeights(ftsWeight: 0.2, vectorWeight: 0.8)
+        public static let semantic = SearchWeights(clipWeight: 0.6, ftsWeight: 0.1, textEmbWeight: 0.3)
+
+        /// 仅 CLIP（以图搜视频）
+        public static let clipOnly = SearchWeights(clipWeight: 1.0, ftsWeight: 0.0, textEmbWeight: 0.0)
+        /// 仅 FTS5（纯关键词）
+        public static let ftsOnly = SearchWeights(clipWeight: 0.0, ftsWeight: 1.0, textEmbWeight: 0.0)
+        /// 仅文本嵌入
+        public static let textEmbOnly = SearchWeights(clipWeight: 0.0, ftsWeight: 0.0, textEmbWeight: 1.0)
+
+        /// 二路回退: 无 CLIP 时 (FTS5 + TextEmb)
+        public static let twoWayNoClip = SearchWeights(clipWeight: 0.0, ftsWeight: 0.4, textEmbWeight: 0.6)
+        /// 二路回退: 无 TextEmb 时 (CLIP + FTS5)
+        public static let twoWayNoTextEmb = SearchWeights(clipWeight: 0.7, ftsWeight: 0.3, textEmbWeight: 0.0)
     }
 
     // MARK: - 搜索结果
@@ -240,6 +273,315 @@ public enum SearchEngine {
         )
     }
 
+    // MARK: - 三路融合搜索
+
+    /// 三路融合搜索入口
+    ///
+    /// 结合 CLIP 视觉搜索、FTS5 关键词搜索、文本嵌入语义搜索，
+    /// 通过加权融合排序返回最相关结果。
+    ///
+    /// 调用方负责:
+    /// 1. 用 QueryParser 解析查询
+    /// 2. 用 CLIP text encoder 编码 → 搜索 USearch clip 索引 → clipResults
+    /// 3. 用 text embedding 编码 → 搜索 USearch text 索引 → textEmbResults
+    /// 4. 传入本方法做融合
+    ///
+    /// - Parameters:
+    ///   - db: 全局库数据库连接
+    ///   - query: 解析后的查询
+    ///   - clipResults: CLIP 向量搜索结果（nil = 无 CLIP 层）
+    ///   - textEmbResults: 文本嵌入向量搜索结果（nil = 无文本嵌入层）
+    ///   - weights: 三路融合权重
+    ///   - folderPaths: 文件夹过滤
+    ///   - pathPrefixFilter: 路径前缀过滤
+    ///   - limit: 最大返回条数
+    /// - Returns: 按融合得分排序的搜索结果
+    public static func threeWaySearch(
+        _ db: Database,
+        query: ParsedQuery,
+        clipResults: [VectorSearchResult]? = nil,
+        textEmbResults: [VectorSearchResult]? = nil,
+        weights: SearchWeights,
+        folderPaths: Set<String>? = nil,
+        pathPrefixFilter: String? = nil,
+        limit: Int = 50
+    ) throws -> [SearchResult] {
+        // 空文本 + 无向量结果 → 空
+        let hasVectorResults = (clipResults != nil && !clipResults!.isEmpty)
+            || (textEmbResults != nil && !textEmbResults!.isEmpty)
+        guard !query.isEmpty || hasVectorResults else { return [] }
+
+        // 收集各路分数
+        var clipScores: [Int64: Double] = [:]
+        var ftsScores: [Int64: Double] = [:]
+        var textEmbScores: [Int64: Double] = [:]
+        var resultData: [Int64: SearchResult] = [:]
+
+        // 1. CLIP 向量搜索结果
+        if let clipResults, weights.clipWeight > 0 {
+            let clipMetadata = try fetchMetadata(
+                db, clipIds: clipResults.map { $0.clipId },
+                folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter
+            )
+            for vr in clipResults {
+                let clipId = vr.clipId
+                clipScores[clipId] = Double(vr.similarity)
+                if let meta = clipMetadata[clipId] {
+                    resultData[clipId] = meta
+                }
+            }
+        }
+
+        // 2. FTS5 关键词搜索
+        if weights.ftsWeight > 0 && !query.positiveText.isEmpty {
+            let ftsResults = try search(
+                db, query: query.ftsQuery,
+                folderPaths: folderPaths,
+                pathPrefixFilter: pathPrefixFilter,
+                limit: limit * 2
+            )
+            for result in ftsResults {
+                ftsScores[result.clipId] = result.rank
+                if resultData[result.clipId] == nil {
+                    resultData[result.clipId] = result
+                }
+            }
+        }
+
+        // 3. 文本嵌入搜索结果
+        if let textEmbResults, weights.textEmbWeight > 0 {
+            let textMetadata = try fetchMetadata(
+                db, clipIds: textEmbResults.map { $0.clipId },
+                folderPaths: folderPaths, pathPrefixFilter: pathPrefixFilter
+            )
+            for vr in textEmbResults {
+                let clipId = vr.clipId
+                textEmbScores[clipId] = Double(vr.similarity)
+                if resultData[clipId] == nil, let meta = textMetadata[clipId] {
+                    resultData[clipId] = meta
+                }
+            }
+        }
+
+        // 4. 如果三路都没有结果，返回空
+        if resultData.isEmpty { return [] }
+
+        // 5. 归一化各路分数
+        let normClip = normalizeScores(clipScores, isNegatedRank: false)
+        let normFTS = normalizeScores(ftsScores, isNegatedRank: true)
+        let normTextEmb = normalizeScores(textEmbScores, isNegatedRank: false)
+
+        // 6. 融合排序
+        let allClipIds = Set(clipScores.keys)
+            .union(ftsScores.keys)
+            .union(textEmbScores.keys)
+
+        var fusedResults: [(SearchResult, Double)] = []
+
+        for clipId in allClipIds {
+            guard let data = resultData[clipId] else { continue }
+
+            let cScore = normClip[clipId] ?? 0.0
+            let fScore = normFTS[clipId] ?? 0.0
+            let tScore = normTextEmb[clipId] ?? 0.0
+
+            let finalScore = weights.clipWeight * cScore
+                + weights.ftsWeight * fScore
+                + weights.textEmbWeight * tScore
+
+            // 取最高的向量相似度作为 similarity 字段
+            let bestSimilarity = max(
+                clipScores[clipId] ?? 0.0,
+                textEmbScores[clipId] ?? 0.0
+            )
+
+            let merged = SearchResult(
+                clipId: data.clipId,
+                sourceFolder: data.sourceFolder,
+                sourceClipId: data.sourceClipId,
+                videoId: data.videoId,
+                filePath: data.filePath,
+                fileName: data.fileName,
+                startTime: data.startTime,
+                endTime: data.endTime,
+                scene: data.scene,
+                clipDescription: data.clipDescription,
+                subjects: data.subjects,
+                actions: data.actions,
+                objects: data.objects,
+                tags: data.tags,
+                transcript: data.transcript,
+                thumbnailPath: data.thumbnailPath,
+                userTags: data.userTags,
+                rating: data.rating,
+                colorLabel: data.colorLabel,
+                shotType: data.shotType,
+                mood: data.mood,
+                lighting: data.lighting,
+                colors: data.colors,
+                rank: ftsScores[clipId] ?? 0.0,
+                similarity: bestSimilarity > 0 ? bestSimilarity : nil,
+                finalScore: finalScore
+            )
+            fusedResults.append((merged, finalScore))
+        }
+
+        fusedResults.sort { $0.1 > $1.1 || ($0.1 == $1.1 && $0.0.clipId < $1.0.clipId) }
+        return Array(fusedResults.prefix(limit).map { $0.0 })
+    }
+
+    // MARK: - 以图搜视频
+
+    /// 以图搜视频（纯 CLIP 向量搜索）
+    ///
+    /// 使用 CLIP image embedding 在 USearch 索引中搜索相似片段，
+    /// 然后从数据库补全元数据。权重固定为 clipOnly (1.0/0.0/0.0)。
+    ///
+    /// 调用方负责:
+    /// 1. 用 CLIPEmbeddingProvider.encodeImage(data:) 编码图片 → [Float]
+    /// 2. 用 USearchVectorIndex.searchSimilarity(query:count:) 搜索 → [VectorSearchResult]
+    /// 3. 传入本方法补全元数据并返回
+    ///
+    /// - Parameters:
+    ///   - db: 全局库数据库连接
+    ///   - clipResults: USearch CLIP 索引搜索结果
+    ///   - folderPaths: 文件夹过滤
+    ///   - pathPrefixFilter: 路径前缀过滤
+    ///   - limit: 最大返回条数
+    /// - Returns: 按 CLIP 相似度降序排列的搜索结果
+    public static func imageSearch(
+        _ db: Database,
+        clipResults: [VectorSearchResult],
+        folderPaths: Set<String>? = nil,
+        pathPrefixFilter: String? = nil,
+        limit: Int = 50
+    ) throws -> [SearchResult] {
+        let emptyQuery = ParsedQuery(
+            positiveText: "",
+            negativeTerms: [],
+            hasQuotedPhrase: false,
+            rawQuery: ""
+        )
+        return try threeWaySearch(
+            db,
+            query: emptyQuery,
+            clipResults: clipResults,
+            textEmbResults: nil,
+            weights: .clipOnly,
+            folderPaths: folderPaths,
+            pathPrefixFilter: pathPrefixFilter,
+            limit: limit
+        )
+    }
+
+    // MARK: - 元数据批量查询
+
+    /// 从数据库批量查询 clip 元数据
+    ///
+    /// 用于 USearch 搜索结果（只有 clipId + similarity）补全展示信息。
+    static func fetchMetadata(
+        _ db: Database,
+        clipIds: [Int64],
+        folderPaths: Set<String>? = nil,
+        pathPrefixFilter: String? = nil
+    ) throws -> [Int64: SearchResult] {
+        guard !clipIds.isEmpty else { return [:] }
+
+        let candidateIds = Array(clipIds.prefix(900))
+        let placeholders = candidateIds.map { _ in "?" }.joined(separator: ", ")
+        let filterSQL = folderFilterSQL(folderPaths: folderPaths)
+        let prefixSQL = pathPrefixFilterSQL(pathPrefixFilter)
+        var args = StatementArguments()
+        for id in candidateIds { args += [id] }
+        appendFolderArgs(&args, folderPaths: folderPaths)
+        appendPrefixArgs(&args, pathPrefixFilter: pathPrefixFilter)
+
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
+                   v.file_path, v.file_name,
+                   c.start_time, c.end_time, c.scene, c.description,
+                   c.subjects, c.actions, c.objects,
+                   c.tags, c.transcript, c.thumbnail_path, c.user_tags,
+                   c.rating, c.color_label, c.shot_type, c.mood,
+                   c.lighting, c.colors
+            FROM clips c
+            LEFT JOIN videos v ON v.video_id = c.video_id
+            WHERE c.clip_id IN (\(placeholders))\(filterSQL)\(prefixSQL)
+            """, arguments: args)
+
+        var result: [Int64: SearchResult] = [:]
+        for row in rows {
+            let clipId: Int64 = row["clip_id"]
+            result[clipId] = SearchResult(
+                clipId: clipId,
+                sourceFolder: row["source_folder"],
+                sourceClipId: row["source_clip_id"],
+                videoId: row["video_id"],
+                filePath: row["file_path"],
+                fileName: row["file_name"],
+                startTime: row["start_time"],
+                endTime: row["end_time"],
+                scene: row["scene"],
+                clipDescription: row["description"],
+                subjects: row["subjects"],
+                actions: row["actions"],
+                objects: row["objects"],
+                tags: row["tags"],
+                transcript: row["transcript"],
+                thumbnailPath: row["thumbnail_path"],
+                userTags: row["user_tags"],
+                rating: row["rating"] ?? 0,
+                colorLabel: row["color_label"],
+                shotType: row["shot_type"],
+                mood: row["mood"],
+                lighting: row["lighting"],
+                colors: row["colors"],
+                rank: 0.0,
+                similarity: nil,
+                finalScore: nil
+            )
+        }
+        return result
+    }
+
+    // MARK: - 分数归一化
+
+    /// Min-Max 归一化分数映射
+    ///
+    /// - Parameters:
+    ///   - scores: clipId → 原始分数
+    ///   - isNegatedRank: 若为 true，取反后再归一化（FTS5 rank 是负数）
+    /// - Returns: clipId → 归一化后分数 [0, 1]
+    static func normalizeScores(
+        _ scores: [Int64: Double],
+        isNegatedRank: Bool
+    ) -> [Int64: Double] {
+        guard !scores.isEmpty else { return [:] }
+
+        if isNegatedRank {
+            // FTS5 rank 是负数（越小越好），取反后做 min-max
+            guard let rawMax = scores.values.max(),
+                  let rawMin = scores.values.min() else { return [:] }
+            let negatedMin = -rawMax
+            let negatedMax = -rawMin
+            let range = negatedMax - negatedMin
+            if range > 0 {
+                return scores.mapValues { (-$0 - negatedMin) / range }
+            } else {
+                return scores.mapValues { _ in 0.0 }
+            }
+        } else {
+            guard let minVal = scores.values.min(),
+                  let maxVal = scores.values.max() else { return [:] }
+            let range = maxVal - minVal
+            if range > 0 {
+                return scores.mapValues { ($0 - minVal) / range }
+            } else {
+                return scores.mapValues { _ in 0.0 }
+            }
+        }
+    }
+
     // MARK: - 向量搜索
 
     /// 纯向量搜索
@@ -444,34 +786,9 @@ public enum SearchEngine {
             }
         }
 
-        // 4. 归一化（直接对 key-value 就地计算，不依赖 Dictionary 迭代顺序）
-        // FTS5 rank 是负数（越小越好），取反后做 min-max 归一化
-        let normalizedFTSMap: [Int64: Double]
-        if let rawMax = ftsScores.values.max(), let rawMin = ftsScores.values.min() {
-            let negatedMin = -rawMax  // 取反后最小值
-            let negatedMax = -rawMin  // 取反后最大值
-            let range = negatedMax - negatedMin
-            if range > 0 {
-                normalizedFTSMap = ftsScores.mapValues { (-$0 - negatedMin) / range }
-            } else {
-                normalizedFTSMap = ftsScores.mapValues { _ in 0.0 }
-            }
-        } else {
-            normalizedFTSMap = [:]
-        }
-
-        // 向量相似度已在 [0, 1] 范围，但仍归一化以确保一致性
-        let normalizedVecMap: [Int64: Double]
-        if let vecMin = vectorScores.values.min(), let vecMax = vectorScores.values.max() {
-            let range = vecMax - vecMin
-            if range > 0 {
-                normalizedVecMap = vectorScores.mapValues { ($0 - vecMin) / range }
-            } else {
-                normalizedVecMap = vectorScores.mapValues { _ in 0.0 }
-            }
-        } else {
-            normalizedVecMap = [:]
-        }
+        // 4. 归一化（复用公共 normalizeScores 方法）
+        let normalizedFTSMap = normalizeScores(ftsScores, isNegatedRank: true)
+        let normalizedVecMap = normalizeScores(vectorScores, isNegatedRank: false)
 
         // 5. 融合排序
         let allClipIds = Set(ftsScores.keys).union(vectorScores.keys)
@@ -522,35 +839,101 @@ public enum SearchEngine {
 
     // MARK: - 权重解析
 
-    /// 根据搜索模式和查询内容解析权重
+    /// 根据搜索模式和查询内容解析权重（向后兼容）
     ///
-    /// 自适应规则（PRODUCT_SPEC 4.3）：
-    /// - 带引号：α=0.9, β=0.1（精确匹配优先）
-    /// - 长句（CJK >5字 / 其他 >10字）：α=0.2, β=0.8（语义主导）
-    /// - 默认：α=0.4, β=0.6（语义优先）
+    /// 内部委托给 `resolveThreeWayWeights`。
     static func resolveWeights(query: String, mode: SearchMode, hasEmbedding: Bool) -> SearchWeights {
+        resolveThreeWayWeights(
+            query: query,
+            mode: mode,
+            hasCLIP: true,        // 默认假设 CLIP 可用
+            hasTextEmb: hasEmbedding
+        )
+    }
+
+    /// 数据层感知的三路自适应权重策略
+    ///
+    /// 根据可用的数据层和查询特征自动选择最优权重：
+    ///
+    /// | 场景 | CLIP | FTS5 | TextEmb |
+    /// |------|------|------|---------|
+    /// | 默认三路 | 0.5 | 0.2 | 0.3 |
+    /// | 引号精确 | 0.1 | 0.8 | 0.1 |
+    /// | 长句语义 | 0.6 | 0.1 | 0.3 |
+    /// | 无 CLIP | 0.0 | 0.4 | 0.6 |
+    /// | 无 TextEmb | 0.7 | 0.3 | 0.0 |
+    /// | 仅 FTS5 | 0.0 | 1.0 | 0.0 |
+    /// | 以图搜 | 1.0 | 0.0 | 0.0 |
+    ///
+    /// - Parameters:
+    ///   - query: 查询文本
+    ///   - mode: 搜索模式（auto 时使用自适应逻辑）
+    ///   - hasCLIP: CLIP 索引是否可用
+    ///   - hasTextEmb: 文本嵌入是否可用
+    ///   - isImageQuery: 是否为以图搜视频
+    /// - Returns: 三路融合权重
+    public static func resolveThreeWayWeights(
+        query: String,
+        mode: SearchMode = .auto,
+        hasCLIP: Bool,
+        hasTextEmb: Bool,
+        isImageQuery: Bool = false
+    ) -> SearchWeights {
+        // 以图搜视频: 100% CLIP
+        if isImageQuery {
+            return .clipOnly
+        }
+
+        // 显式模式覆盖
         switch mode {
         case .fts:
-            return SearchWeights(ftsWeight: 1.0, vectorWeight: 0.0)
+            return .ftsOnly
         case .vector:
-            return SearchWeights(ftsWeight: 0.0, vectorWeight: 1.0)
+            // vector 模式: 优先 CLIP，回退 TextEmb
+            if hasCLIP { return .clipOnly }
+            if hasTextEmb { return .textEmbOnly }
+            return .ftsOnly
         case .hybrid:
-            return .default
+            // hybrid 使用默认三路（根据可用层调整）
+            break
         case .auto:
-            if !hasEmbedding {
-                return SearchWeights(ftsWeight: 1.0, vectorWeight: 0.0)
-            }
-            // 引号精确搜索
-            if query.contains("\"") {
-                return .exactMatch
-            }
-            // 长描述性语句：CJK 字符语义密度高，用较低阈值
+            break
+        }
+
+        // 根据可用层降级
+        if !hasCLIP && !hasTextEmb {
+            return .ftsOnly
+        }
+
+        // 查询特征分析
+        let isQuoted = query.contains("\"")
+        let isLong: Bool = {
             let threshold = containsCJK(query) ? 5 : 10
-            if query.count > threshold {
-                return .semantic
-            }
+            return query.count > threshold
+        }()
+
+        // 三路都可用
+        if hasCLIP && hasTextEmb {
+            if isQuoted { return .exactMatch }
+            if isLong { return .semantic }
             return .default
         }
+
+        // 无 CLIP，有 TextEmb
+        if !hasCLIP && hasTextEmb {
+            if isQuoted { return SearchWeights(clipWeight: 0.0, ftsWeight: 0.8, textEmbWeight: 0.2) }
+            if isLong { return SearchWeights(clipWeight: 0.0, ftsWeight: 0.2, textEmbWeight: 0.8) }
+            return .twoWayNoClip
+        }
+
+        // 有 CLIP，无 TextEmb
+        if hasCLIP && !hasTextEmb {
+            if isQuoted { return SearchWeights(clipWeight: 0.1, ftsWeight: 0.9, textEmbWeight: 0.0) }
+            if isLong { return SearchWeights(clipWeight: 0.8, ftsWeight: 0.2, textEmbWeight: 0.0) }
+            return .twoWayNoTextEmb
+        }
+
+        return .default
     }
 
     /// 检测字符串是否包含 CJK（中日韩）字符

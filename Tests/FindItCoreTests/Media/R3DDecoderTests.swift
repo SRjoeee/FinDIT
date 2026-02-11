@@ -10,8 +10,10 @@ final class R3DDecoderTests: XCTestCase {
 
         XCTAssertEqual(decoder.capability.name, "REDR3D")
         XCTAssertEqual(decoder.capability.priority, 140)
-        XCTAssertEqual(decoder.capability.fileExtensions, ["r3d"])
+        XCTAssertTrue(decoder.capability.fileExtensions.contains("r3d"))
+        XCTAssertTrue(decoder.capability.fileExtensions.contains("nev"))
         XCTAssertTrue(decoder.capability.utTypes.contains("com.red.r3d"))
+        XCTAssertTrue(decoder.capability.utTypes.contains("com.nikon.nraw"))
     }
 
     func testPriorityBetweenBRAWAndAVFoundation() {
@@ -58,6 +60,26 @@ final class R3DDecoderTests: XCTestCase {
         let decoder = R3DDecoder()
         let result = try await decoder.probe(filePath: "/nonexistent/video.r3d")
         XCTAssertEqual(result.score, 0, "文件不存在时应返回 score=0")
+    }
+
+    // MARK: - N-RAW (.nev) Probe
+
+    func testProbeNEVReturnsUnsupportedWhenToolMissing() async throws {
+        let decoder = R3DDecoder(toolPath: "/nonexistent/r3d-tool")
+        let result = try await decoder.probe(filePath: "/test/video.nev")
+        XCTAssertEqual(result.score, 0, ".nev + r3d-tool 缺失时应返回 score=0")
+    }
+
+    func testProbeNEVReturnsUnsupportedWhenFileDoesNotExist() async throws {
+        let decoder = R3DDecoder()
+        let result = try await decoder.probe(filePath: "/nonexistent/video.nev")
+        XCTAssertEqual(result.score, 0, ".nev 文件不存在时应返回 score=0")
+    }
+
+    func testProbeNEVRejectsNonNEVExtension() async throws {
+        let decoder = R3DDecoder()
+        let result = try await decoder.probe(filePath: "/test/video.mp4")
+        XCTAssertEqual(result.score, 0, ".mp4 不应被 R3D/N-RAW 解码器处理")
     }
 
     // MARK: - Not SceneDetectable
@@ -132,9 +154,33 @@ final class R3DDecoderTests: XCTestCase {
         )
     }
 
+    func testNEVExtensionInFileScanner() {
+        XCTAssertTrue(
+            FileScanner.supportedExtensions.contains("nev"),
+            "FileScanner 应包含 nev 扩展名"
+        )
+    }
+
     func testR3DMediaType() {
         let mediaType = FileScanner.mediaType(for: "/test/video.r3d")
         XCTAssertEqual(mediaType, .video, ".r3d 应识别为 video 类型")
+    }
+
+    func testNEVMediaType() {
+        let mediaType = FileScanner.mediaType(for: "/test/video.nev")
+        XCTAssertEqual(mediaType, .video, ".nev 应识别为 video 类型")
+    }
+
+    func testNEVRoutesFallbackWhenToolMissing() async throws {
+        let service = CompositeMediaService()
+        let r3d = R3DDecoder(toolPath: "/nonexistent/r3d-tool")
+        let ffmpeg = MockFFmpegForR3D()
+
+        service.register(r3d)       // P:140, score=0 (tool missing)
+        service.register(ffmpeg)    // P:50, score=70
+
+        let decoder = try await service.bestDecoder(for: "/test/video.nev")
+        XCTAssertEqual(decoder.capability.name, "MockFFmpeg", ".nev r3d-tool 缺失时应 fallback")
     }
 }
 
@@ -143,7 +189,7 @@ final class R3DDecoderTests: XCTestCase {
 /// Mock FFmpeg decoder for fallback testing
 private final class MockFFmpegForR3D: MediaDecoder, @unchecked Sendable {
     let capability = MediaCapability(
-        fileExtensions: ["mp4", "mov", "mkv", "r3d"],
+        fileExtensions: ["mp4", "mov", "mkv", "r3d", "nev"],
         name: "MockFFmpeg",
         priority: 50
     )

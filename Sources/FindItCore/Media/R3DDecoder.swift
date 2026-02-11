@@ -1,10 +1,11 @@
 import Foundation
 import os
 
-/// RED R3D 解码器
+/// RED R3D / Nikon N-RAW 解码器
 ///
-/// 通过外部 CLI 工具 `r3d-tool` 解码 .r3d 文件。
+/// 通过外部 CLI 工具 `r3d-tool` 解码 .r3d 和 .nev 文件。
 /// `r3d-tool` 链接 RED SDK (R3DSDK v9.x)，需要用户自行编译安装。
+/// RED SDK 原生支持 Nikon N-RAW 格式。
 ///
 /// 当 `r3d-tool` 不存在时，`probe()` 返回 score=0，
 /// `CompositeMediaService` 会自动降级到下一个解码器。
@@ -14,9 +15,12 @@ public final class R3DDecoder: MediaDecoder, @unchecked Sendable {
 
     private static let logger = Logger(subsystem: "com.findit.core", category: "R3DDecoder")
 
+    /// 支持的扩展名集合（用于 probe 扩展名检查）
+    private static let supportedExtensions: Set<String> = ["r3d", "nev"]
+
     public let capability = MediaCapability(
-        fileExtensions: ["r3d"],
-        utTypes: ["com.red.r3d"],
+        fileExtensions: ["r3d", "nev"],
+        utTypes: ["com.red.r3d", "com.nikon.nraw"],
         name: "REDR3D",
         priority: 140
     )
@@ -39,7 +43,7 @@ public final class R3DDecoder: MediaDecoder, @unchecked Sendable {
 
     public func probe(filePath: String) async throws -> ProbeResult {
         let ext = (filePath as NSString).pathExtension.lowercased()
-        guard ext == "r3d" else { return .unsupported() }
+        guard Self.supportedExtensions.contains(ext) else { return .unsupported() }
         guard FileManager.default.fileExists(atPath: toolPath) else {
             Self.logger.debug("r3d-tool not found at \(self.toolPath)")
             return .unsupported()
@@ -65,7 +69,7 @@ public final class R3DDecoder: MediaDecoder, @unchecked Sendable {
         return ProbeResult(
             score: 90,
             mediaType: .video,
-            containerFormat: "r3d",
+            containerFormat: ext,
             codec: codec,
             duration: duration,
             resolution: (width: width, height: height),

@@ -363,7 +363,7 @@ final class CompositeMediaServiceTests: XCTestCase {
 
     func testMakeDefault() {
         let service = CompositeMediaService.makeDefault()
-        // 应注册了 2 个 decoder
+        // 应注册了 3 个 decoder (BRAW P:150 + AVF P:80 + FFmpeg P:50)
         // 无法直接访问 decoders，通过功能验证
         XCTAssertNotNil(service)
     }

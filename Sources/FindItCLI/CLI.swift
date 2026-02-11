@@ -1142,31 +1142,38 @@ struct IndexCommand: AsyncParsableCommand {
             sttSkippedNoAudioCount = await counter.sttSkippedNoAudio
 
         } else {
-            // 串行模式：原有逻辑
+            // 串行模式：使用分层索引器（支持 BRAW 等非 FFmpeg 格式）
+            var skipLayers = Set<LayeredIndexer.Layer>()
+            if skipStt { skipLayers.insert(.stt) }
+            if skipVision { skipLayers.insert(.textDescription) }
+
+            let mediaService = CompositeMediaService.makeDefault()
+            let layeredConfig = LayeredIndexer.Config(
+                mediaService: mediaService,
+                whisperKit: whisperKit,
+                embeddingProvider: embeddingProvider,
+                apiKey: resolvedApiKey,
+                rateLimiter: rateLimiter,
+                skipLayers: skipLayers
+            )
+
             for (i, videoPath) in filteredPaths.enumerated() {
                 let fileName = (videoPath as NSString).lastPathComponent
                 print("[\(i + 1)/\(filteredPaths.count)] 处理: \(fileName)")
 
                 do {
-                    let result = try await PipelineManager.processVideo(
+                    let result = try await PipelineManager.processVideoLayered(
                         videoPath: videoPath,
                         folderPath: folderPath,
                         folderDB: folderDB,
                         globalDB: globalDB,
-                        apiKey: resolvedApiKey,
-                        rateLimiter: rateLimiter,
-                        whisperKit: whisperKit,
-                        embeddingProvider: embeddingProvider,
-                        skipStt: skipStt,
+                        config: layeredConfig,
                         onProgress: { msg in print("  \(msg)") }
                     )
 
                     totalClips += result.clipsCreated
                     totalAnalyzed += result.clipsAnalyzed
                     processedCount += 1
-                    if result.sttSkippedNoAudio {
-                        sttSkippedNoAudioCount += 1
-                    }
 
                     if let srt = result.srtPath {
                         print("  ✓ SRT: \(srt)")

@@ -156,8 +156,9 @@ public final class CompositeMediaService: MediaService, SceneDetectable, @unchec
     /// 注册 AVFoundationDecoder (P:80) + FFmpegDecoder (P:50)
     public static func makeDefault(ffmpegConfig: FFmpegConfig = .default) -> CompositeMediaService {
         let service = CompositeMediaService()
-        service.register(AVFoundationDecoder())
-        service.register(FFmpegDecoder(config: ffmpegConfig))
+        service.register(BRAWDecoder(ffmpegConfig: ffmpegConfig))  // P:150
+        service.register(AVFoundationDecoder())  // P:80
+        service.register(FFmpegDecoder(config: ffmpegConfig))  // P:50
         return service
     }
 

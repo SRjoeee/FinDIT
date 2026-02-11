@@ -278,27 +278,50 @@ public enum LayeredIndexer {
                         .appendingPathComponent("video_\(videoId).wav")
                 }
 
-                let detection: SceneDetector.CombinedDetectionResult
-                if let sceneDetector = config.mediaService as? SceneDetectable {
-                    detection = try await sceneDetector.detectScenesOptimized(
-                        filePath: videoPath,
-                        audioOutputPath: audioOutputPath,
-                        config: .default
-                    )
-                } else {
-                    detection = try await SceneDetector.detectScenesOptimizedAsync(
-                        inputPath: videoPath,
-                        audioOutputPath: audioOutputPath,
-                        ffmpegConfig: config.ffmpegConfig
-                    )
+                // 场景检测（BRAW 等格式可能失败，用 try? 捕获后走 fallback）
+                let detection: SceneDetector.CombinedDetectionResult?
+                do {
+                    if let sceneDetector = config.mediaService as? SceneDetectable {
+                        detection = try await sceneDetector.detectScenesOptimized(
+                            filePath: videoPath,
+                            audioOutputPath: audioOutputPath,
+                            config: .default
+                        )
+                    } else {
+                        detection = try await SceneDetector.detectScenesOptimizedAsync(
+                            inputPath: videoPath,
+                            audioOutputPath: audioOutputPath,
+                            ffmpegConfig: config.ffmpegConfig
+                        )
+                    }
+                } catch {
+                    // 场景检测失败（BRAW 等格式 FFmpeg 无法读取）
+                    progress("[L1] 场景检测失败: \(error.localizedDescription)")
+                    detection = nil
                 }
                 try Task.checkCancellation()
 
-                let duration = detection.duration
-                sceneSegments = detection.scenes
-                extractedAudioPath = detection.audioExtracted ? audioOutputPath : nil
-                if needsAudio && !detection.audioExtracted {
-                    skipSttBecauseNoAudio = true
+                var duration: Double = 0
+                if let det = detection {
+                    duration = det.duration
+                    sceneSegments = det.scenes
+                    extractedAudioPath = det.audioExtracted ? audioOutputPath : nil
+                    if needsAudio && !det.audioExtracted {
+                        skipSttBecauseNoAudio = true
+                    }
+                } else {
+                    // Fallback: 从 probe 获取 duration
+                    if let ms = config.mediaService {
+                        let probeResult = try await ms.probe(filePath: videoPath)
+                        duration = probeResult.duration ?? 0
+                    }
+                    // 音频稍后由 extractAudio 单独提取
+                }
+
+                // 固定间隔 fallback（BRAW 等无法场景检测的格式）
+                if sceneSegments.isEmpty && duration > 0 {
+                    sceneSegments = Self.fixedIntervalSegments(duration: duration)
+                    progress("[L1] 固定间隔采样: \(sceneSegments.count) segments (10s)")
                 }
 
                 try PipelineManager.updateVideoDuration(
@@ -811,6 +834,28 @@ public enum LayeredIndexer {
             syncResult: syncResult,
             sttSkippedNoAudio: skipSttBecauseNoAudio
         )
+    }
+
+    // MARK: - 固定间隔采样
+
+    /// 生成固定间隔的场景分段
+    ///
+    /// 当场景检测不可用时（如 BRAW 等格式），按固定时间间隔切分视频。
+    /// - Parameters:
+    ///   - duration: 视频总时长（秒）
+    ///   - interval: 每段时长（秒），默认 10
+    /// - Returns: 场景分段数组，duration ≤ 0 时返回空数组
+    public static func fixedIntervalSegments(
+        duration: Double,
+        interval: Double = 10.0
+    ) -> [SceneSegment] {
+        guard duration > 0, interval > 0 else { return [] }
+        let count = max(1, Int(ceil(duration / interval)))
+        return (0..<count).map { i in
+            let start = Double(i) * interval
+            let end = min(start + interval, duration)
+            return SceneSegment(startTime: start, endTime: end)
+        }
     }
 
     // MARK: - 内部辅助

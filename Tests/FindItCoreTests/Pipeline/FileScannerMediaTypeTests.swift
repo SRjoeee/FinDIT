@@ -6,7 +6,7 @@ final class FileScannerMediaTypeTests: XCTestCase {
     // MARK: - Video 扩展名
 
     func testVideoExtensions() {
-        let videoExts = ["mp4", "mov", "mkv", "avi", "mxf", "webm", "m4v", "ts", "mts"]
+        let videoExts = ["mp4", "mov", "mkv", "avi", "mxf", "webm", "m4v", "ts", "mts", "braw"]
         for ext in videoExts {
             let result = FileScanner.mediaType(for: "/test/file.\(ext)")
             XCTAssertEqual(result, .video, "扩展名 .\(ext) 应该识别为 video")
@@ -55,8 +55,8 @@ final class FileScannerMediaTypeTests: XCTestCase {
 
     func testAllSupportedExtensionsCoverage() {
         let all = FileScanner.allSupportedExtensions
-        // video (9) + photo (8) + audio (6) = 23
-        XCTAssertEqual(all.count, 23)
+        // video (10) + photo (8) + audio (6) = 24
+        XCTAssertEqual(all.count, 24)
         XCTAssertTrue(all.isSuperset(of: FileScanner.supportedExtensions))
         XCTAssertTrue(all.isSuperset(of: FileScanner.photoExtensions))
         XCTAssertTrue(all.isSuperset(of: FileScanner.audioExtensions))

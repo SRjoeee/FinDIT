@@ -80,6 +80,15 @@ let package = Package(
             name: "FindItCoreTests",
             dependencies: ["FindItCore"]
         ),
+        .testTarget(
+            name: "FindItMCPServerTests",
+            dependencies: [
+                "FindItMCPServer",
+                "FindItCore",
+                .product(name: "GRDB", package: "GRDB.swift"),
+                .product(name: "MCP", package: "swift-sdk"),
+            ]
+        ),
     ],
     swiftLanguageModes: [.v5]
 )

@@ -42,9 +42,19 @@ enum GetVideoDetailTool {
             let startTime: Double
             let endTime: Double
             let scene: String?
+            let description: String?
+            let subjects: [String]?
+            let actions: [String]?
+            let objects: [String]?
             let transcript: String?
             let tags: [String]
+            let userTags: [String]
+            let mood: String?
+            let shotType: String?
+            let lighting: String?
+            let colors: [String]?
             let rating: Int
+            let colorLabel: String?
         }
 
         guard let video: Video = try folderDB.read({ db in
@@ -78,15 +88,35 @@ enum GetVideoDetailTool {
                     startTime: $0.startTime,
                     endTime: $0.endTime,
                     scene: $0.scene,
+                    description: $0.clipDescription,
+                    subjects: parseJSONArray($0.subjects),
+                    actions: parseJSONArray($0.actions),
+                    objects: parseJSONArray($0.objects),
                     transcript: $0.transcript,
                     tags: $0.tagsArray,
-                    rating: $0.rating
+                    userTags: $0.userTagsArray,
+                    mood: $0.mood,
+                    shotType: $0.shotType,
+                    lighting: $0.lighting,
+                    colors: parseJSONArray($0.colors),
+                    rating: $0.rating,
+                    colorLabel: $0.colorLabel
                 )
             }
         )
 
         let json = try ParamHelpers.toJSON(output)
         return CallTool.Result(content: [.text(json)])
+    }
+
+    /// 解析 JSON 数组字符串为 [String]?
+    private static func parseJSONArray(_ str: String?) -> [String]? {
+        guard let str, !str.isEmpty,
+              let data = str.data(using: .utf8),
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [String] else {
+            return nil
+        }
+        return arr.isEmpty ? nil : arr
     }
 
     /// 从视频路径自动检测文件夹库路径

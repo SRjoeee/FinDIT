@@ -60,6 +60,12 @@ public enum SearchEngine {
         public let scene: String?
         /// 自然语言描述
         public let clipDescription: String?
+        /// 主体（JSON 数组字符串）
+        public let subjects: String?
+        /// 动作（JSON 数组字符串）
+        public let actions: String?
+        /// 物体（JSON 数组字符串）
+        public let objects: String?
         /// 标签
         public let tags: String?
         /// 转录文本
@@ -76,6 +82,10 @@ public enum SearchEngine {
         public let shotType: String?
         /// 情绪/氛围
         public let mood: String?
+        /// 光线条件
+        public let lighting: String?
+        /// 主色调（JSON 数组字符串）
+        public let colors: String?
         /// FTS5 BM25 排名分数（越小越相关，负数）
         public let rank: Double
         /// 向量余弦相似度（0-1，越大越相似）
@@ -112,18 +122,23 @@ public enum SearchEngine {
         appendPrefixArgs(&args, pathPrefixFilter: pathPrefixFilter)
         args += [limit]
 
+        // bm25() 列权重（对应 FTS5 列顺序）:
+        //   tags(10), description(5), transcript(3), user_tags(8),
+        //   scene(4), subjects(3), actions(3), objects(2), mood(2), shot_type(1)
         let rows = try Row.fetchAll(db, sql: """
             SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
                    v.file_path, v.file_name,
                    c.start_time, c.end_time, c.scene, c.description,
+                   c.subjects, c.actions, c.objects,
                    c.tags, c.transcript, c.thumbnail_path, c.user_tags,
                    c.rating, c.color_label, c.shot_type, c.mood,
-                   clips_fts.rank
+                   c.lighting, c.colors,
+                   bm25(clips_fts, 10, 5, 3, 8, 4, 3, 3, 2, 2, 1) AS rank
             FROM clips_fts
             JOIN clips c ON c.clip_id = clips_fts.rowid
             LEFT JOIN videos v ON v.video_id = c.video_id
             WHERE clips_fts MATCH ?\(filterSQL)\(prefixSQL)
-            ORDER BY clips_fts.rank
+            ORDER BY bm25(clips_fts, 10, 5, 3, 8, 4, 3, 3, 2, 2, 1)
             LIMIT ?
             """, arguments: args)
 
@@ -139,6 +154,9 @@ public enum SearchEngine {
                 endTime: row["end_time"],
                 scene: row["scene"],
                 clipDescription: row["description"],
+                subjects: row["subjects"],
+                actions: row["actions"],
+                objects: row["objects"],
                 tags: row["tags"],
                 transcript: row["transcript"],
                 thumbnailPath: row["thumbnail_path"],
@@ -147,6 +165,8 @@ public enum SearchEngine {
                 colorLabel: row["color_label"],
                 shotType: row["shot_type"],
                 mood: row["mood"],
+                lighting: row["lighting"],
+                colors: row["colors"],
                 rank: row["rank"],
                 similarity: nil,
                 finalScore: nil
@@ -244,8 +264,10 @@ public enum SearchEngine {
             SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
                    v.file_path, v.file_name,
                    c.start_time, c.end_time, c.scene, c.description,
+                   c.subjects, c.actions, c.objects,
                    c.tags, c.transcript, c.thumbnail_path, c.user_tags,
                    c.rating, c.color_label, c.shot_type, c.mood,
+                   c.lighting, c.colors,
                    c.embedding
             FROM clips c
             LEFT JOIN videos v ON v.video_id = c.video_id
@@ -270,6 +292,9 @@ public enum SearchEngine {
                 endTime: row["end_time"],
                 scene: row["scene"],
                 clipDescription: row["description"],
+                subjects: row["subjects"],
+                actions: row["actions"],
+                objects: row["objects"],
                 tags: row["tags"],
                 transcript: row["transcript"],
                 thumbnailPath: row["thumbnail_path"],
@@ -278,6 +303,8 @@ public enum SearchEngine {
                 colorLabel: row["color_label"],
                 shotType: row["shot_type"],
                 mood: row["mood"],
+                lighting: row["lighting"],
+                colors: row["colors"],
                 rank: 0.0,
                 similarity: similarity,
                 finalScore: similarity
@@ -322,8 +349,10 @@ public enum SearchEngine {
             SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
                    v.file_path, v.file_name,
                    c.start_time, c.end_time, c.scene, c.description,
+                   c.subjects, c.actions, c.objects,
                    c.tags, c.transcript, c.thumbnail_path, c.user_tags,
-                   c.rating, c.color_label, c.shot_type, c.mood
+                   c.rating, c.color_label, c.shot_type, c.mood,
+                   c.lighting, c.colors
             FROM clips c
             LEFT JOIN videos v ON v.video_id = c.video_id
             WHERE c.clip_id IN (\(placeholders))\(filterSQL)\(prefixSQL)
@@ -345,6 +374,9 @@ public enum SearchEngine {
                 endTime: row["end_time"],
                 scene: row["scene"],
                 clipDescription: row["description"],
+                subjects: row["subjects"],
+                actions: row["actions"],
+                objects: row["objects"],
                 tags: row["tags"],
                 transcript: row["transcript"],
                 thumbnailPath: row["thumbnail_path"],
@@ -353,6 +385,8 @@ public enum SearchEngine {
                 colorLabel: row["color_label"],
                 shotType: row["shot_type"],
                 mood: row["mood"],
+                lighting: row["lighting"],
+                colors: row["colors"],
                 rank: 0.0,
                 similarity: sim,
                 finalScore: sim
@@ -461,6 +495,9 @@ public enum SearchEngine {
                 endTime: data.endTime,
                 scene: data.scene,
                 clipDescription: data.clipDescription,
+                subjects: data.subjects,
+                actions: data.actions,
+                objects: data.objects,
                 tags: data.tags,
                 transcript: data.transcript,
                 thumbnailPath: data.thumbnailPath,
@@ -469,6 +506,8 @@ public enum SearchEngine {
                 colorLabel: data.colorLabel,
                 shotType: data.shotType,
                 mood: data.mood,
+                lighting: data.lighting,
+                colors: data.colors,
                 rank: ftsScores[clipId] ?? 0.0,
                 similarity: vectorScores[clipId],
                 finalScore: finalScore

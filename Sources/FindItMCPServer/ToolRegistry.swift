@@ -23,7 +23,7 @@ enum ToolRegistry {
 
     // MARK: - Tool 定义
 
-    private static func buildToolDefinitions() -> [Tool] {
+    static func buildToolDefinitions() -> [Tool] {
         [
             Tool(
                 name: "search",
@@ -43,6 +43,14 @@ enum ToolRegistry {
                         "limit": .object([
                             "type": .string("integer"),
                             "description": .string("最大结果数 (默认: 20)"),
+                        ]),
+                        "offset": .object([
+                            "type": .string("integer"),
+                            "description": .string("跳过前 N 条结果，用于分页 (默认: 0)"),
+                        ]),
+                        "folder": .object([
+                            "type": .string("string"),
+                            "description": .string("限定搜索的素材文件夹路径"),
                         ]),
                         "min_rating": .object([
                             "type": .string("integer"),
@@ -70,6 +78,51 @@ enum ToolRegistry {
                         ]),
                     ]),
                     "required": .array([.string("query")]),
+                ])
+            ),
+            Tool(
+                name: "browse_all_clips",
+                description: "浏览所有视频片段（支持分页、过滤、排序），适合了解素材库全貌",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "folder": .object([
+                            "type": .string("string"),
+                            "description": .string("限定浏览的素材文件夹路径"),
+                        ]),
+                        "offset": .object([
+                            "type": .string("integer"),
+                            "description": .string("跳过前 N 条结果 (默认: 0)"),
+                        ]),
+                        "limit": .object([
+                            "type": .string("integer"),
+                            "description": .string("最大结果数 (默认: 50, 上限: 500)"),
+                        ]),
+                        "sort_by": .object([
+                            "type": .string("string"),
+                            "enum": .array([.string("clip_id"), .string("start_time"), .string("rating")]),
+                            "description": .string("排序方式 (默认: clip_id)"),
+                        ]),
+                        "min_rating": .object([
+                            "type": .string("integer"),
+                            "description": .string("最低评分过滤 (1-5)"),
+                        ]),
+                        "color_labels": .object([
+                            "type": .string("array"),
+                            "items": .object(["type": .string("string")]),
+                            "description": .string("颜色标签过滤"),
+                        ]),
+                        "shot_types": .object([
+                            "type": .string("array"),
+                            "items": .object(["type": .string("string")]),
+                            "description": .string("镜头类型过滤"),
+                        ]),
+                        "moods": .object([
+                            "type": .string("array"),
+                            "items": .object(["type": .string("string")]),
+                            "description": .string("氛围过滤"),
+                        ]),
+                    ]),
                 ])
             ),
             Tool(
@@ -142,101 +195,6 @@ enum ToolRegistry {
                     "properties": .object([:]),
                 ])
             ),
-            Tool(
-                name: "add_tags",
-                description: "给视频片段添加用户标签",
-                inputSchema: .object([
-                    "type": .string("object"),
-                    "properties": .object([
-                        "clip_id": .object([
-                            "type": .string("integer"),
-                            "description": .string("片段 ID"),
-                        ]),
-                        "folder": .object([
-                            "type": .string("string"),
-                            "description": .string("素材文件夹路径"),
-                        ]),
-                        "tags": .object([
-                            "type": .string("array"),
-                            "items": .object(["type": .string("string")]),
-                            "description": .string("要添加的标签列表"),
-                        ]),
-                    ]),
-                    "required": .array([.string("clip_id"), .string("folder"), .string("tags")]),
-                ])
-            ),
-            Tool(
-                name: "remove_tags",
-                description: "移除视频片段的指定用户标签",
-                inputSchema: .object([
-                    "type": .string("object"),
-                    "properties": .object([
-                        "clip_id": .object([
-                            "type": .string("integer"),
-                            "description": .string("片段 ID"),
-                        ]),
-                        "folder": .object([
-                            "type": .string("string"),
-                            "description": .string("素材文件夹路径"),
-                        ]),
-                        "tags": .object([
-                            "type": .string("array"),
-                            "items": .object(["type": .string("string")]),
-                            "description": .string("要移除的标签列表"),
-                        ]),
-                    ]),
-                    "required": .array([.string("clip_id"), .string("folder"), .string("tags")]),
-                ])
-            ),
-            Tool(
-                name: "set_rating",
-                description: "设置视频片段的星级评分",
-                inputSchema: .object([
-                    "type": .string("object"),
-                    "properties": .object([
-                        "clip_id": .object([
-                            "type": .string("integer"),
-                            "description": .string("片段 ID"),
-                        ]),
-                        "folder": .object([
-                            "type": .string("string"),
-                            "description": .string("素材文件夹路径"),
-                        ]),
-                        "rating": .object([
-                            "type": .string("integer"),
-                            "description": .string("评分 (0-5, 0=清除评分)"),
-                        ]),
-                    ]),
-                    "required": .array([.string("clip_id"), .string("folder"), .string("rating")]),
-                ])
-            ),
-            Tool(
-                name: "set_color_label",
-                description: "设置视频片段的颜色标签",
-                inputSchema: .object([
-                    "type": .string("object"),
-                    "properties": .object([
-                        "clip_id": .object([
-                            "type": .string("integer"),
-                            "description": .string("片段 ID"),
-                        ]),
-                        "folder": .object([
-                            "type": .string("string"),
-                            "description": .string("素材文件夹路径"),
-                        ]),
-                        "color": .object([
-                            "type": .string("string"),
-                            "enum": .array([
-                                .string("red"), .string("orange"), .string("yellow"),
-                                .string("green"), .string("blue"), .string("purple"),
-                                .string("gray"), .string("none"),
-                            ]),
-                            "description": .string("颜色标签 (none=清除)"),
-                        ]),
-                    ]),
-                    "required": .array([.string("clip_id"), .string("folder"), .string("color")]),
-                ])
-            ),
         ]
     }
 
@@ -249,6 +207,8 @@ enum ToolRegistry {
         switch params.name {
         case "search":
             return try await SearchTool.execute(params: params, context: context)
+        case "browse_all_clips":
+            return try await BrowseAllClipsTool.execute(params: params, context: context)
         case "list_folders":
             return try ListFoldersTool.execute(params: params, context: context)
         case "list_videos":
@@ -259,14 +219,6 @@ enum ToolRegistry {
             return try GetVideoDetailTool.execute(params: params, context: context)
         case "get_stats":
             return try GetStatsTool.execute(params: params, context: context)
-        case "add_tags":
-            return try AddTagsTool.execute(params: params, context: context)
-        case "remove_tags":
-            return try RemoveTagsTool.execute(params: params, context: context)
-        case "set_rating":
-            return try SetRatingTool.execute(params: params, context: context)
-        case "set_color_label":
-            return try SetColorLabelTool.execute(params: params, context: context)
         default:
             throw MCPError.invalidRequest("Unknown tool: \(params.name)")
         }

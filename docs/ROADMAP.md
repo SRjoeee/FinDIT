@@ -302,12 +302,11 @@ E2E 测试暴露的 4 个管线 bug 修复：
 
 ### 待实现
 
-- 筛选栏（匹配类型 + 来源文件夹）+ 排序
 - NLE 导出（EDL + FCPXML，单个/批量）
 - 拖拽到 NLE（NSItemProvider）
 - 全局快捷键 ⌘⇧F（后台唤起）
-- 外接硬盘监听（DiskArbitration）
-- 系统通知（索引完成/失败/硬盘恢复）
+- 批量多选操作
+- Smart Folders / 保存的搜索
 - 设置页：API Key 管理、当日 API 额度显示
 - 热门标签展示（从 clips.tags 统计 TOP N）
 
@@ -316,4 +315,45 @@ E2E 测试暴露的 4 个管线 bug 修复：
 - 完整的用户流程可走通
 - 搜索体验流畅，无明显卡顿
 - 离线硬盘素材仍可搜索（不可预览/导出）
+
+---
+
+## 重构: 向量搜索引擎升级 ✓
+
+**已完成** — 940 tests
+
+分层搜索架构重构，引入 CLIP 跨模态搜索 + HNSW 近似最近邻 + 本地文本嵌入。
+
+### R2a: SigLIP2 CLIP 视觉嵌入引擎 ✓
+
+- SigLIP2ImageEncoder + SigLIP2TextEncoder: ONNX FP16 combined 模型
+- 768d 跨模态嵌入 (文字搜图片)
+- CLIPModelManager + CLIPEmbeddingProvider 协议封装
+- CLI `siglip` 命令组
+- 821 个测试通过
+
+### R2b: USearch HNSW 双向量索引 ✓
+
+- HNSWIndex actor: USearch 封装 + 自动扩容
+- VectorIndexManager: 双索引 (clip.usearch + text.usearch)
+- SearchEngine 集成: HNSW 近似搜索替代暴力 cosine
+- CLI `hnsw` 命令组
+- 855 个测试通过
+
+### R2c: 三路搜索融合 + EmbeddingGemma ✓
+
+- QueryAnalyzer: 查询意图解析 (5 种 intent)
+- ThreeWayFusionEngine: CLIP + TextEmbedding + FTS5 三路融合
+- 自适应权重: 根据 QueryIntent + 可用索引动态调整
+- EmbeddingGemma-300M: ONNX Q8 本地文本嵌入 (768d, 离线)
+- 三级回退: Gemini → EmbeddingGemma → nil (FTS5 + CLIP only)
+- CLI `gemma` 命令组
+- 940 个测试通过
+
+**验收标准：** 全部通过 ✓
+
+- CLIP 跨模态搜索: 文本查询 → 图片向量匹配
+- 三路融合: 多维度搜索信号自适应加权
+- 离线完全可用: CLIP + EmbeddingGemma + FTS5 无需网络
+- HNSW 近似搜索: 100K+ 向量 sub-10ms
 

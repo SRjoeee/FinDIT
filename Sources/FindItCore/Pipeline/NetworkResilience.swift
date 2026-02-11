@@ -103,11 +103,11 @@ public actor NetworkResilience {
                 group.cancelAll()
             } catch is NetworkResilienceError {
                 // 超时：移除 waiter 后抛出
-                await self.removeWaiter(id: id)
+                self.removeWaiter(id: id)
                 group.cancelAll()
                 throw NetworkResilienceError.timeout
             } catch {
-                await self.removeWaiter(id: id)
+                self.removeWaiter(id: id)
                 group.cancelAll()
                 throw error
             }

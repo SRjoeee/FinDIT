@@ -117,12 +117,10 @@ public final class SigLIP2TextEncoder: CLIPTextEncoder, @unchecked Sendable {
             throw CLIPError.modelNotFound(path: modelPath)
         }
 
-        let env = try ORTEnv(loggingLevel: .warning)
-        let options = try ORTSessionOptions()
-        // FP16 模型必须禁用图优化
-        try options.setGraphOptimizationLevel(.none)
-
-        let session = try ORTSession(env: env, modelPath: modelPath, sessionOptions: options)
+        let (env, session) = try ORTSessionHelper.createSession(
+            modelPath: modelPath,
+            graphOptimizationLevel: .none  // FP16 模型必须禁用图优化
+        )
         _env = env
         _session = session
         return session

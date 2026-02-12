@@ -138,12 +138,10 @@ public final class EmbeddingGemmaEncoder: @unchecked Sendable {
             throw EmbeddingError.providerNotAvailable(name: "embedding-gemma")
         }
 
-        let env = try ORTEnv(loggingLevel: .warning)
-        let options = try ORTSessionOptions()
-        // Q8 模型可安全启用图优化（无 FP16 bug）
-        try options.setGraphOptimizationLevel(.all)
-
-        let session = try ORTSession(env: env, modelPath: modelPath, sessionOptions: options)
+        let (env, session) = try ORTSessionHelper.createSession(
+            modelPath: modelPath,
+            graphOptimizationLevel: .all  // Q8 模型可安全启用图优化
+        )
         _env = env
         _session = session
         return session

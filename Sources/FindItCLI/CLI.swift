@@ -333,8 +333,9 @@ struct SearchCommand: AsyncParsableCommand {
 
         if searchMode != .fts {
             // 尝试 Gemini embedding
-            if let apiKey = try? APIKeyManager.resolveAPIKey(override: apiKey) {
-                let provider = GeminiEmbeddingProvider(apiKey: apiKey)
+            let providerConfig = ProviderConfig.load()
+            if let apiKey = try? APIKeyManager.resolveAPIKey(override: apiKey, provider: providerConfig.provider) {
+                let provider = GeminiEmbeddingProvider(apiKey: apiKey, config: providerConfig.toEmbeddingConfig())
                 if provider.isAvailable() {
                     do {
                         queryEmbedding = try await provider.embed(text: query)
@@ -347,18 +348,6 @@ struct SearchCommand: AsyncParsableCommand {
                 }
             }
 
-            // Gemini 不可用则尝试 NLEmbedding
-            if queryEmbedding == nil {
-                let nlProvider = NLEmbeddingProvider()
-                if nlProvider.isAvailable() {
-                    do {
-                        queryEmbedding = try await nlProvider.embed(text: query)
-                        embeddingModel = nlProvider.name
-                    } catch {
-                        // NLEmbedding 也失败，退化为纯 FTS
-                    }
-                }
-            }
         }
 
         let finalQueryEmbedding = queryEmbedding
@@ -811,15 +800,16 @@ struct AnalyzeCommand: AsyncParsableCommand {
 
     func run() async throws {
         // 1. 解析 API Key
+        let providerConfig = ProviderConfig.load()
         let resolvedKey: String
         do {
-            resolvedKey = try APIKeyManager.resolveAPIKey(override: apiKey)
+            resolvedKey = try APIKeyManager.resolveAPIKey(override: apiKey, provider: providerConfig.provider)
         } catch {
             print("错误: \(error.localizedDescription)")
             print()
             print("设置 API Key 的方法:")
             print("  1. mkdir -p ~/.config/findit")
-            print("  2. 将 Key 写入 ~/.config/findit/gemini-api-key.txt")
+            print("  2. 将 Key 写入 \(providerConfig.provider.keyFilePath)")
             print("  或使用 --api-key <key> 参数")
             throw ExitCode.failure
         }
@@ -833,7 +823,8 @@ struct AnalyzeCommand: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        let config = VisionAnalyzer.Config(model: model)
+        var config = providerConfig.toVisionConfig()
+        config.model = model
         print("分析 \(sceneGroups.count) 个场景 (模型: \(config.model))")
         print("视频: \(input)")
         print()
@@ -1039,26 +1030,28 @@ struct IndexCommand: AsyncParsableCommand {
         }
 
         // 5. 解析 API Key（如需 Vision）
+        let providerConfig = ProviderConfig.load()
         var resolvedApiKey: String? = nil
         if !skipVision {
             do {
-                resolvedApiKey = try APIKeyManager.resolveAPIKey(override: apiKey)
-                print("✓ Gemini API Key 已就绪")
+                resolvedApiKey = try APIKeyManager.resolveAPIKey(override: apiKey, provider: providerConfig.provider)
+                print("✓ \(providerConfig.provider.displayName) API Key 已就绪")
             } catch {
                 print("警告: \(error.localizedDescription)")
-                print("  将跳过视觉分析 (可用 --api-key 或 ~/.config/findit/gemini-api-key.txt)")
+                print("  将跳过视觉分析 (可用 --api-key 或 \(providerConfig.provider.keyFilePath))")
             }
         }
 
         // 6. 创建限速器 + 嵌入 provider
-        let rateLimiter: GeminiRateLimiter? = resolvedApiKey != nil ? GeminiRateLimiter() : nil
+        let rateLimiter: GeminiRateLimiter? = resolvedApiKey != nil
+            ? GeminiRateLimiter(config: providerConfig.toRateLimiterConfig())
+            : nil
 
         let embeddingProvider: (any EmbeddingProvider)?
         if let key = resolvedApiKey {
-            embeddingProvider = GeminiEmbeddingProvider(apiKey: key)
+            embeddingProvider = GeminiEmbeddingProvider(apiKey: key, config: providerConfig.toEmbeddingConfig())
         } else {
-            let nlProvider = NLEmbeddingProvider()
-            embeddingProvider = nlProvider.isAvailable() ? nlProvider : nil
+            embeddingProvider = nil
         }
         if let ep = embeddingProvider {
             print("✓ 嵌入 provider: \(ep.name)")
@@ -1103,15 +1096,26 @@ struct IndexCommand: AsyncParsableCommand {
             // 线程安全计数器（使用 actor）
             let counter = VideoCounter()
 
-            _ = await scheduler.processVideos(
+            var skipLayers = Set<LayeredIndexer.Layer>()
+            if skipStt { skipLayers.insert(.stt) }
+            if skipVision { skipLayers.insert(.textDescription) }
+
+            let mediaService = CompositeMediaService.makeDefault()
+            let parallelConfig = LayeredIndexer.Config(
+                mediaService: mediaService,
+                whisperKit: whisperKit,
+                embeddingProvider: embeddingProvider,
+                apiKey: resolvedApiKey,
+                rateLimiter: rateLimiter,
+                skipLayers: skipLayers
+            )
+
+            _ = await scheduler.processVideosLayered(
                 filteredPaths,
                 folderPath: folderPath,
                 folderDB: folderDB,
                 globalDB: globalDB,
-                apiKey: resolvedApiKey,
-                rateLimiter: rateLimiter,
-                embeddingProvider: embeddingProvider,
-                skipStt: skipStt,
+                config: parallelConfig,
                 onProgress: { progress in
                     print("  [\(progress.fileName)] \(progress.stage)")
                 },
@@ -1266,25 +1270,19 @@ struct EmbedCommand: AsyncParsableCommand {
 
         // 选择 provider
         let embProvider: EmbeddingProvider
-        switch provider.lowercased() {
-        case "nl":
-            let p = NLEmbeddingProvider()
-            guard p.isAvailable() else {
-                print("错误: NLEmbedding 不可用（缺少语言模型）")
-                throw ExitCode.failure
-            }
-            embProvider = p
-            print("使用 NLEmbedding (512 维, 离线)")
-        default:
-            let key = try APIKeyManager.resolveAPIKey(override: apiKey)
-            let p = GeminiEmbeddingProvider(apiKey: key)
-            guard p.isAvailable() else {
-                print("错误: Gemini API Key 无效")
-                throw ExitCode.failure
-            }
-            embProvider = p
-            print("使用 Gemini text-embedding-004 (768 维)")
+        if provider.lowercased() == "nl" {
+            print("错误: NLEmbedding 已废弃（512d 与 768d 索引不兼容）。请使用 gemini provider。")
+            throw ExitCode.failure
         }
+        let providerConfig = ProviderConfig.load()
+        let key = try APIKeyManager.resolveAPIKey(override: apiKey, provider: providerConfig.provider)
+        let p = GeminiEmbeddingProvider(apiKey: key, config: providerConfig.toEmbeddingConfig())
+        guard p.isAvailable() else {
+            print("错误: API Key 无效")
+            throw ExitCode.failure
+        }
+        embProvider = p
+        print("使用 \(providerConfig.embeddingModel) (\(providerConfig.embeddingDimensions) 维)")
 
         // 查找需要计算嵌入的 clips
         let clips = try await folderDB.read { db -> [Clip] in

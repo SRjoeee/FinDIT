@@ -526,7 +526,7 @@ final class ToolIntegrationTests: XCTestCase {
         let globalDB = try! DatabaseManager.makeGlobalInMemoryDatabase()
         let context = DatabaseContext(globalDB: globalDB)
 
-        // 没有 API key 配置，getEmbeddingProvider 可能返回 NLEmbeddingProvider 或 nil
+        // 没有 API key 配置，getEmbeddingProvider 返回 nil
         // 不做严格断言，仅验证不崩溃
         let _ = context.getEmbeddingProvider()
     }

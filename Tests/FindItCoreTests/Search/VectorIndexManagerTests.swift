@@ -12,11 +12,21 @@ final class VectorIndexManagerTests: XCTestCase {
         return db
     }
 
+    /// 创建使用临时路径的 manager（隔离真实索引文件）
+    private func makeManager(db: DatabaseQueue) -> VectorIndexManager {
+        let id = UUID().uuidString
+        return VectorIndexManager(
+            globalDB: db,
+            clipIndexPath: NSTemporaryDirectory() + "test_clip_\(id).usearch",
+            textIndexPath: NSTemporaryDirectory() + "test_text_\(id).usearch"
+        )
+    }
+
     // MARK: - 基本生命周期
 
     func testGetClipIndexReturnsNilWhenNoVectors() async throws {
         let db = try makeGlobalDB()
-        let manager = VectorIndexManager(globalDB: db)
+        let manager = makeManager(db: db)
 
         let index = try await manager.getClipIndex()
         XCTAssertNil(index, "无 CLIP 向量时应返回 nil")
@@ -24,7 +34,7 @@ final class VectorIndexManagerTests: XCTestCase {
 
     func testGetTextIndexReturnsNilWhenNoVectors() async throws {
         let db = try makeGlobalDB()
-        let manager = VectorIndexManager(globalDB: db)
+        let manager = makeManager(db: db)
 
         let index = try await manager.getTextIndex()
         XCTAssertNil(index, "无文本嵌入向量时应返回 nil")
@@ -32,7 +42,7 @@ final class VectorIndexManagerTests: XCTestCase {
 
     func testInvalidateClipIndex() async throws {
         let db = try makeGlobalDB()
-        let manager = VectorIndexManager(globalDB: db)
+        let manager = makeManager(db: db)
 
         // 获取 nil（无向量）
         let _ = try await manager.getClipIndex()
@@ -45,7 +55,7 @@ final class VectorIndexManagerTests: XCTestCase {
 
     func testInvalidateAll() async throws {
         let db = try makeGlobalDB()
-        let manager = VectorIndexManager(globalDB: db)
+        let manager = makeManager(db: db)
 
         await manager.invalidateAll()
         let clip = try await manager.getClipIndex()

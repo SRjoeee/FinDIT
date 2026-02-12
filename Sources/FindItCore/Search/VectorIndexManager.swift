@@ -17,8 +17,24 @@ public actor VectorIndexManager {
     /// 全局搜索索引数据库（只读，用于重建）
     private let globalDB: DatabaseReader
 
-    public init(globalDB: DatabaseReader) {
+    /// 索引文件路径（可注入，便于测试隔离）
+    private let clipIndexPath: String
+    private let textIndexPath: String
+
+    /// 创建索引管理器
+    ///
+    /// - Parameters:
+    ///   - globalDB: 全局搜索索引数据库
+    ///   - clipIndexPath: CLIP 索引文件路径（默认使用标准路径）
+    ///   - textIndexPath: 文本嵌入索引文件路径（默认使用标准路径）
+    public init(
+        globalDB: DatabaseReader,
+        clipIndexPath: String = USearchVectorIndex.IndexPath.clipIndex,
+        textIndexPath: String = USearchVectorIndex.IndexPath.textIndex
+    ) {
         self.globalDB = globalDB
+        self.clipIndexPath = clipIndexPath
+        self.textIndexPath = textIndexPath
     }
 
     // MARK: - CLIP Index
@@ -34,12 +50,11 @@ public actor VectorIndexManager {
             return existing
         }
 
-        let path = USearchVectorIndex.IndexPath.clipIndex
         let config = USearchVectorIndex.Config.clip768
 
-        if USearchVectorIndex.indexFileExists(at: path) {
+        if USearchVectorIndex.indexFileExists(at: clipIndexPath) {
             let index = try USearchVectorIndex(config: config)
-            try index.view(from: path)
+            try index.view(from: clipIndexPath)
             clipIndex = index
             return index
         }
@@ -57,12 +72,12 @@ public actor VectorIndexManager {
             from: globalDB,
             modelName: clipModelName,
             config: config,
-            savePath: path
+            savePath: clipIndexPath
         )
 
         // 重建后用 mmap 模式加载（保持只读一致性）
         let index = try USearchVectorIndex(config: config)
-        try index.view(from: path)
+        try index.view(from: clipIndexPath)
         clipIndex = index
         _ = result // suppress unused warning
         return index
@@ -79,12 +94,11 @@ public actor VectorIndexManager {
             return existing
         }
 
-        let path = USearchVectorIndex.IndexPath.textIndex
         let config = USearchVectorIndex.Config.textEmb768
 
-        if USearchVectorIndex.indexFileExists(at: path) {
+        if USearchVectorIndex.indexFileExists(at: textIndexPath) {
             let index = try USearchVectorIndex(config: config)
-            try index.view(from: path)
+            try index.view(from: textIndexPath)
             textIndex = index
             return index
         }
@@ -116,11 +130,11 @@ public actor VectorIndexManager {
             from: globalDB,
             modelName: primaryModel,
             config: config,
-            savePath: path
+            savePath: textIndexPath
         )
 
         let index = try USearchVectorIndex(config: config)
-        try index.view(from: path)
+        try index.view(from: textIndexPath)
         textIndex = index
         _ = result
         return index

@@ -19,13 +19,13 @@ import GRDB
 ///    Pipeline Pipeline Pipeline         Pipeline
 /// ```
 ///
-/// 每个视频通过 `PipelineManager.processVideo()` 处理，
+/// 每个视频通过 `LayeredIndexer.indexVideo()` 处理，
 /// 并发数由 ResourceMonitor 根据热量/内存/电源动态调整。
 ///
 /// 使用示例:
 /// ```swift
 /// let scheduler = IndexingScheduler(mode: .balanced)
-/// await scheduler.processVideos(
+/// await scheduler.processVideosLayered(
 ///     videoFiles, folderPath: path,
 ///     folderDB: db,
 ///     onProgress: { print($0.fileName, $0.stage) },
@@ -127,150 +127,6 @@ public final class IndexingScheduler: @unchecked Sendable {
 
     /// 并行处理视频列表
     ///
-    /// 在 TaskGroup 中并行处理视频，并发数由 ResourceMonitor 动态控制。
-    /// 函数在所有视频处理完成（或被取消）后返回。
-    ///
-    /// - Parameters:
-    ///   - videos: 视频文件路径列表
-    ///   - folderPath: 素材文件夹路径
-    ///   - folderDB: 文件夹级数据库
-    ///   - globalDB: 全局搜索索引（nil = 不同步）
-    ///   - apiKey: Gemini API Key（nil = 跳过 Gemini 分析）
-    ///   - rateLimiter: Gemini 限速器
-    ///   - embeddingProvider: 嵌入 provider
-    ///   - skipStt: 跳过所有语音转录
-    ///   - onProgress: 视频进度回调（从并发 Task 调用，非 MainActor）
-    ///   - onComplete: 单视频完成回调（从并发 Task 调用，非 MainActor）
-    /// - Returns: 最终同步结果（globalDB 为 nil 时返回 nil）
-    public func processVideos(
-        _ videos: [String],
-        folderPath: String,
-        folderDB: DatabaseWriter,
-        globalDB: DatabaseWriter? = nil,
-        apiKey: String? = nil,
-        rateLimiter: GeminiRateLimiter? = nil,
-        embeddingProvider: (any EmbeddingProvider)? = nil,
-        skipStt: Bool = false,
-        mediaService: (any MediaService)? = nil,
-        onProgress: @Sendable @escaping (VideoProgress) -> Void = { _ in },
-        onComplete: @Sendable @escaping (VideoOutcome) -> Void = { _ in }
-    ) async -> SyncEngine.SyncResult? {
-        guard !videos.isEmpty else { return nil }
-
-        let sem = videoSemaphore
-        let monitor = resourceMonitor
-        var requiresForceSync = false
-
-        // 启动资源监控，动态调整信号量
-        await monitor.startMonitoring { recommended in
-            Task { await sem.setMaxPermits(recommended) }
-        }
-
-        await withTaskGroup(of: Bool.self) { group in
-            for videoPath in videos {
-                // 协作式取消检查
-                guard !Task.isCancelled else { break }
-
-                // 获取信号量许可（如果 slots 满，挂起等待）
-                await sem.acquire()
-
-                // 等待期间可能被取消
-                guard !Task.isCancelled else {
-                    await sem.release()
-                    break
-                }
-
-                let fileName = (videoPath as NSString).lastPathComponent
-
-                group.addTask {
-                    onProgress(VideoProgress(
-                        videoPath: videoPath, fileName: fileName, stage: "准备中"
-                    ))
-
-                    do {
-                        let result = try await PipelineManager.processVideo(
-                            videoPath: videoPath,
-                            folderPath: folderPath,
-                            folderDB: folderDB,
-                            globalDB: globalDB,
-                            apiKey: apiKey,
-                            rateLimiter: rateLimiter,
-                            embeddingProvider: embeddingProvider,
-                            skipStt: skipStt,
-                            skipSync: true,
-                            mediaService: mediaService,
-                            onProgress: { stage in
-                                onProgress(VideoProgress(
-                                    videoPath: videoPath,
-                                    fileName: fileName,
-                                    stage: stage
-                                ))
-                            }
-                        )
-
-                        await sem.release()
-
-                        onComplete(.success(
-                            videoPath: videoPath,
-                            clipsCreated: result.clipsCreated,
-                            clipsAnalyzed: result.clipsAnalyzed,
-                            clipsEmbedded: result.clipsEmbedded,
-                            sttSkippedNoAudio: result.sttSkippedNoAudio
-                        ))
-                        return result.requiresForceSync
-
-                    } catch is CancellationError {
-                        await sem.release()
-                        onComplete(.skipped(videoPath: videoPath))
-                        return false
-
-                    } catch {
-                        await sem.release()
-                        onComplete(.failure(
-                            videoPath: videoPath,
-                            error: error.localizedDescription
-                        ))
-                        return false
-                    }
-                }
-            }
-            // withTaskGroup 自动等待所有 child tasks 完成
-            for await childRequiresForceSync in group {
-                requiresForceSync = requiresForceSync || childRequiresForceSync
-            }
-        }
-
-        await monitor.stopMonitoring()
-
-        // 统一同步到全局索引（避免并行 per-video sync 导致游标竞争）
-        if let globalDB = globalDB {
-            do {
-                let sr = try SyncEngine.sync(
-                    folderPath: folderPath,
-                    folderDB: folderDB,
-                    globalDB: globalDB,
-                    force: requiresForceSync
-                )
-                if sr.syncedClips > 0 || sr.syncedVideos > 0 {
-                    onProgress(VideoProgress(
-                        videoPath: folderPath,
-                        fileName: "",
-                        stage: "同步完成: \(sr.syncedVideos) 视频, \(sr.syncedClips) 片段"
-                    ))
-                }
-                return sr
-            } catch {
-                onProgress(VideoProgress(
-                    videoPath: folderPath,
-                    fileName: "",
-                    stage: "同步失败: \(error.localizedDescription)"
-                ))
-                return nil
-            }
-        }
-        return nil
-    }
-
     // MARK: - 分层索引
 
     /// 并行处理视频列表（分层索引）

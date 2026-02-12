@@ -1,8 +1,71 @@
 import Foundation
 
+// MARK: - APIProvider
+
+/// API 提供者类型
+///
+/// 封装不同 API 提供者的 base URL、认证方式等差异。
+/// 切换提供者只需改配置，无需改业务代码。
+public enum APIProvider: String, Codable, Sendable, CaseIterable, Identifiable {
+    case gemini
+    case openRouter
+
+    public var id: String { rawValue }
+
+    /// 默认 base URL
+    public var defaultBaseURL: String {
+        switch self {
+        case .gemini: return "https://generativelanguage.googleapis.com/v1beta"
+        case .openRouter: return "https://openrouter.ai/api/v1"
+        }
+    }
+
+    /// Auth header 名称
+    public var authHeaderName: String {
+        switch self {
+        case .gemini: return "x-goog-api-key"
+        case .openRouter: return "Authorization"
+        }
+    }
+
+    /// 根据 API key 生成 auth header 值
+    public func authHeaderValue(apiKey: String) -> String {
+        switch self {
+        case .gemini: return apiKey
+        case .openRouter: return "Bearer \(apiKey)"
+        }
+    }
+
+    /// 显示名称（Settings UI 用）
+    public var displayName: String {
+        switch self {
+        case .gemini: return "Google Gemini"
+        case .openRouter: return "OpenRouter"
+        }
+    }
+
+    /// API Key 配置文件路径
+    public var keyFilePath: String {
+        switch self {
+        case .gemini: return "~/.config/findit/gemini-api-key.txt"
+        case .openRouter: return "~/.config/findit/openrouter-api-key.txt"
+        }
+    }
+
+    /// API Key 环境变量名
+    public var envVarName: String {
+        switch self {
+        case .gemini: return "GEMINI_API_KEY"
+        case .openRouter: return "OPENROUTER_API_KEY"
+        }
+    }
+}
+
+// MARK: - ProviderConfig
+
 /// 外部 API 提供者配置
 ///
-/// 集中管理所有 Gemini API 模型名称、端点参数和默认配置。
+/// 集中管理 API 提供者、模型名称、端点参数和默认配置。
 /// Settings 页面读写此配置，运行时各模块从此处获取参数。
 ///
 /// 持久化使用 UserDefaults（macOS Settings 原生支持）。
@@ -11,9 +74,22 @@ import Foundation
 /// API Key 不在此处管理（存储在 `~/.config/findit/`，保持 CLI 兼容）。
 public struct ProviderConfig: Codable, Sendable, Equatable {
 
-    // MARK: - Gemini Vision
+    // MARK: - Provider
 
-    /// Gemini 视觉分析模型名称
+    /// API 提供者
+    public var provider: APIProvider
+
+    /// 自定义 base URL（nil = 使用 provider 默认值）
+    public var baseURL: String?
+
+    /// 实际使用的 base URL（自定义 > provider 默认）
+    public var effectiveBaseURL: String {
+        baseURL ?? provider.defaultBaseURL
+    }
+
+    // MARK: - Vision
+
+    /// 视觉分析模型名称
     public var visionModel: String
 
     /// 每请求最大图片数
@@ -25,9 +101,9 @@ public struct ProviderConfig: Codable, Sendable, Equatable {
     /// 最大重试次数（429/503/500）
     public var visionMaxRetries: Int
 
-    // MARK: - Gemini Embedding
+    // MARK: - Embedding
 
-    /// Gemini 嵌入模型名称
+    /// 嵌入模型名称
     public var embeddingModel: String
 
     /// 输出向量维度
@@ -41,6 +117,7 @@ public struct ProviderConfig: Codable, Sendable, Equatable {
     // MARK: - 默认值
 
     public static let `default` = ProviderConfig(
+        provider: .gemini,
         visionModel: "gemini-2.5-flash",
         visionMaxImages: 10,
         visionTimeout: 60.0,
@@ -51,6 +128,8 @@ public struct ProviderConfig: Codable, Sendable, Equatable {
     )
 
     public init(
+        provider: APIProvider = .gemini,
+        baseURL: String? = nil,
         visionModel: String = "gemini-2.5-flash",
         visionMaxImages: Int = 10,
         visionTimeout: Double = 60.0,
@@ -59,6 +138,8 @@ public struct ProviderConfig: Codable, Sendable, Equatable {
         embeddingDimensions: Int = 768,
         rateLimitRPM: Int = 9
     ) {
+        self.provider = provider
+        self.baseURL = baseURL
         self.visionModel = visionModel
         self.visionMaxImages = visionMaxImages
         self.visionTimeout = visionTimeout
@@ -76,7 +157,9 @@ public struct ProviderConfig: Codable, Sendable, Equatable {
             model: visionModel,
             maxImagesPerRequest: visionMaxImages,
             requestTimeoutSeconds: visionTimeout,
-            maxRetries: visionMaxRetries
+            maxRetries: visionMaxRetries,
+            provider: provider,
+            baseURL: effectiveBaseURL
         )
     }
 
@@ -84,7 +167,9 @@ public struct ProviderConfig: Codable, Sendable, Equatable {
     public func toEmbeddingConfig() -> GeminiEmbedding.Config {
         GeminiEmbedding.Config(
             model: embeddingModel,
-            outputDimensionality: embeddingDimensions
+            outputDimensionality: embeddingDimensions,
+            provider: provider,
+            baseURL: effectiveBaseURL
         )
     }
 

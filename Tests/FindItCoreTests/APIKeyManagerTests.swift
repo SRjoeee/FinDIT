@@ -110,4 +110,48 @@ final class APIKeyManagerTests: XCTestCase {
         XCTAssertNotNil(saveFailed.errorDescription)
         XCTAssertTrue(saveFailed.errorDescription?.contains("test error") ?? false)
     }
+
+    // MARK: - 多 Provider
+
+    func testResolveAPIKeyFromOverrideWithProvider() throws {
+        // override 优先级高于 provider，无论哪个 provider 都应返回 override
+        let key = try APIKeyManager.resolveAPIKey(
+            override: "sk-or-test1234567890",
+            provider: .openRouter
+        )
+        XCTAssertEqual(key, "sk-or-test1234567890")
+    }
+
+    func testResolveAPIKeyDefaultProviderIsGemini() throws {
+        // 默认 provider 应该是 .gemini（与现有行为兼容）
+        let key = try APIKeyManager.resolveAPIKey(override: "AIzaSyD1234567890abcdefghij")
+        XCTAssertEqual(key, "AIzaSyD1234567890abcdefghij")
+    }
+
+    func testSaveAndReadAPIKeyOpenRouter() throws {
+        let tmpDir = NSTemporaryDirectory()
+        let keyPath = (tmpDir as NSString).appendingPathComponent("openrouter-api-key.txt")
+        defer { try? FileManager.default.removeItem(atPath: keyPath) }
+
+        let testKey = "sk-or-test-key-1234567890"
+        try testKey.write(toFile: keyPath, atomically: true, encoding: .utf8)
+
+        let readBack = APIKeyManager.readAPIKeyFromFile(keyPath)
+        XCTAssertEqual(readBack, testKey)
+    }
+
+    func testProviderKeyFilePathDiffers() {
+        // gemini 和 openRouter 的 key 文件路径不同
+        XCTAssertNotEqual(
+            APIProvider.gemini.keyFilePath,
+            APIProvider.openRouter.keyFilePath
+        )
+    }
+
+    func testProviderEnvVarNameDiffers() {
+        XCTAssertNotEqual(
+            APIProvider.gemini.envVarName,
+            APIProvider.openRouter.envVarName
+        )
+    }
 }

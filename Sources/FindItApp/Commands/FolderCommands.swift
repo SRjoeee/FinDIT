@@ -17,6 +17,13 @@ struct FolderCommands: Commands {
             .keyboardShortcut("m", modifiers: [.command, .shift])
         }
 
+        CommandGroup(after: .importExport) {
+            Button("导出到 NLE...") {
+                NotificationCenter.default.post(name: .exportToNLE, object: nil)
+            }
+            .keyboardShortcut("e", modifiers: [.command, .shift])
+        }
+
         // ⌘F 聚焦搜索框（添加到 Edit 菜单尾部，不替换系统项）
         CommandGroup(after: .textEditing) {
             Button("搜索素材") {
@@ -31,4 +38,5 @@ extension Notification.Name {
     static let addFolder = Notification.Name("FindIt.addFolder")
     static let manageFolder = Notification.Name("FindIt.manageFolder")
     static let focusSearch = Notification.Name("FindIt.focusSearch")
+    static let exportToNLE = Notification.Name("FindIt.exportToNLE")
 }

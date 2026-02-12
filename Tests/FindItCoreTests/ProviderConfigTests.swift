@@ -117,4 +117,94 @@ final class ProviderConfigTests: XCTestCase {
         c.visionModel = "different"
         XCTAssertNotEqual(a, c)
     }
+
+    // MARK: - APIProvider
+
+    func testDefaultProviderIsGemini() {
+        let config = ProviderConfig.default
+        XCTAssertEqual(config.provider, .gemini)
+        XCTAssertNil(config.baseURL)
+    }
+
+    func testProviderDisplayNames() {
+        XCTAssertEqual(APIProvider.gemini.displayName, "Google Gemini")
+        XCTAssertEqual(APIProvider.openRouter.displayName, "OpenRouter")
+    }
+
+    func testProviderDefaultBaseURLs() {
+        XCTAssertTrue(APIProvider.gemini.defaultBaseURL.contains("googleapis.com"))
+        XCTAssertTrue(APIProvider.openRouter.defaultBaseURL.contains("openrouter.ai"))
+    }
+
+    func testProviderAuthHeaders() {
+        XCTAssertEqual(APIProvider.gemini.authHeaderName, "x-goog-api-key")
+        XCTAssertEqual(APIProvider.openRouter.authHeaderName, "Authorization")
+
+        XCTAssertEqual(APIProvider.gemini.authHeaderValue(apiKey: "key123"), "key123")
+        XCTAssertEqual(APIProvider.openRouter.authHeaderValue(apiKey: "key123"), "Bearer key123")
+    }
+
+    func testProviderKeyFilePaths() {
+        XCTAssertTrue(APIProvider.gemini.keyFilePath.hasSuffix("gemini-api-key.txt"))
+        XCTAssertTrue(APIProvider.openRouter.keyFilePath.hasSuffix("openrouter-api-key.txt"))
+    }
+
+    func testProviderEnvVarNames() {
+        XCTAssertEqual(APIProvider.gemini.envVarName, "GEMINI_API_KEY")
+        XCTAssertEqual(APIProvider.openRouter.envVarName, "OPENROUTER_API_KEY")
+    }
+
+    func testEffectiveBaseURLUsesDefault() {
+        let config = ProviderConfig(provider: .openRouter)
+        XCTAssertEqual(config.effectiveBaseURL, APIProvider.openRouter.defaultBaseURL)
+    }
+
+    func testEffectiveBaseURLUsesCustom() {
+        let config = ProviderConfig(provider: .gemini, baseURL: "https://custom.api.com/v1")
+        XCTAssertEqual(config.effectiveBaseURL, "https://custom.api.com/v1")
+    }
+
+    func testCodableWithProvider() throws {
+        let original = ProviderConfig(
+            provider: .openRouter,
+            baseURL: "https://custom.api.com",
+            visionModel: "qwen-vl",
+            embeddingModel: "text-embedding-3-small"
+        )
+
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(ProviderConfig.self, from: data)
+        XCTAssertEqual(decoded.provider, .openRouter)
+        XCTAssertEqual(decoded.baseURL, "https://custom.api.com")
+        XCTAssertEqual(decoded.visionModel, "qwen-vl")
+    }
+
+    func testToVisionConfigPassesProvider() {
+        let config = ProviderConfig(provider: .openRouter)
+        let visionConfig = config.toVisionConfig()
+        XCTAssertEqual(visionConfig.provider, .openRouter)
+        XCTAssertEqual(visionConfig.baseURL, APIProvider.openRouter.defaultBaseURL)
+    }
+
+    func testToEmbeddingConfigPassesProvider() {
+        let config = ProviderConfig(provider: .openRouter)
+        let embConfig = config.toEmbeddingConfig()
+        XCTAssertEqual(embConfig.provider, .openRouter)
+        XCTAssertEqual(embConfig.baseURL, APIProvider.openRouter.defaultBaseURL)
+    }
+
+    func testSaveAndLoadWithProvider() {
+        var config = ProviderConfig(provider: .openRouter, baseURL: "https://custom.url")
+        config.save()
+
+        let loaded = ProviderConfig.load()
+        XCTAssertEqual(loaded.provider, .openRouter)
+        XCTAssertEqual(loaded.baseURL, "https://custom.url")
+    }
+
+    func testAllCases() {
+        XCTAssertEqual(APIProvider.allCases.count, 2)
+        XCTAssertTrue(APIProvider.allCases.contains(.gemini))
+        XCTAssertTrue(APIProvider.allCases.contains(.openRouter))
+    }
 }

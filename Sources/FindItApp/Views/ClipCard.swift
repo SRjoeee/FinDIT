@@ -98,15 +98,23 @@ struct ClipCard: View {
         )
         .contentShape(RoundedRectangle(cornerRadius: 8))
         .overlay {
-            ClickCaptureView { modifiers, clickCount in
-                if clickCount == 2 {
-                    // 双击 → 打开视频
-                    guard let path = result.filePath else { return }
-                    NSWorkspace.shared.open(URL(fileURLWithPath: path))
-                } else {
-                    onSelect(modifiers)
+            ClickCaptureView(
+                onClick: { modifiers, clickCount in
+                    if clickCount == 2 {
+                        // 双击 → 打开视频
+                        guard let path = result.filePath else { return }
+                        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                    } else {
+                        onSelect(modifiers)
+                    }
+                },
+                dragDataProvider: {
+                    let clips = isSelected && selectedResults.count > 1 ? selectedResults : [result]
+                    let content = FCPXMLExporter.generate(clips: clips, options: .init())
+                    guard let data = content.data(using: .utf8) else { return nil }
+                    return (data, "FindIt_Export.fcpxml")
                 }
-            }
+            )
         }
         .onHover { hovering in
             isHovering = hovering
@@ -175,6 +183,16 @@ struct ClipCard: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(path, forType: .string)
             }
+        }
+
+        Divider()
+
+        Button(isBatch ? "导出 \(targets.count) 个片段到 NLE..." : "导出到 NLE...") {
+            NotificationCenter.default.post(
+                name: .exportToNLE,
+                object: nil,
+                userInfo: ["clips": targets]
+            )
         }
 
         Divider()
@@ -323,28 +341,65 @@ struct ClipCard: View {
 
 // MARK: - Click Capture (AppKit Bridge)
 
-/// NSView 桥接：捕获鼠标点击事件的修饰键和点击次数
+/// NSView 桥接：捕获鼠标点击事件的修饰键和点击次数，支持拖拽到 NLE
 ///
 /// SwiftUI 的 `onTapGesture` 不提供修饰键信息，
 /// 使用 NSViewRepresentable 直接访问 NSEvent。
+/// 鼠标按下后拖动超过 3px 触发拖拽会话（生成临时 FCPXML 文件）。
 struct ClickCaptureView: NSViewRepresentable {
     let onClick: (NSEvent.ModifierFlags, Int) -> Void
+    var dragDataProvider: (() -> (data: Data, fileName: String)?)? = nil
 
     func makeNSView(context: Context) -> ClickCaptureNSView {
         let view = ClickCaptureNSView()
         view.onClick = onClick
+        view.dragDataProvider = dragDataProvider
         return view
     }
 
     func updateNSView(_ nsView: ClickCaptureNSView, context: Context) {
         nsView.onClick = onClick
+        nsView.dragDataProvider = dragDataProvider
     }
 }
 
-class ClickCaptureNSView: NSView {
+class ClickCaptureNSView: NSView, NSDraggingSource {
     var onClick: ((NSEvent.ModifierFlags, Int) -> Void)?
+    var dragDataProvider: (() -> (data: Data, fileName: String)?)?
+
+    private var mouseDownLocation: NSPoint?
+    private var mouseDownEvent: NSEvent?
+    private var didInitiateDrag = false
 
     override func mouseDown(with event: NSEvent) {
+        mouseDownLocation = event.locationInWindow
+        mouseDownEvent = event
+        didInitiateDrag = false
         onClick?(event.modifierFlags, event.clickCount)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard !didInitiateDrag, let start = mouseDownLocation else { return }
+        let loc = event.locationInWindow
+        guard hypot(loc.x - start.x, loc.y - start.y) > 3 else { return }
+
+        didInitiateDrag = true
+        guard let (data, fileName) = dragDataProvider?() else { return }
+
+        // 写临时文件
+        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(fileName)
+        try? data.write(to: tempURL)
+
+        let dragItem = NSDraggingItem(pasteboardWriter: tempURL as NSURL)
+        dragItem.setDraggingFrame(bounds, contents: nil as NSImage?)
+        beginDraggingSession(with: [dragItem], event: mouseDownEvent ?? event, source: self)
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor context: NSDraggingContext
+    ) -> NSDragOperation {
+        .copy
     }
 }

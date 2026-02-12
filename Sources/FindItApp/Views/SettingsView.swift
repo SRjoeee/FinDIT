@@ -24,7 +24,10 @@ private struct GeneralTab: View {
     @State private var apiKey: String = ""
     @State private var apiKeyStatus: APIKeyStatus = .unknown
     @State private var options = IndexingOptions.load()
+    @State private var config = ProviderConfig.load()
     @AppStorage("FindIt.showOfflineFiles") private var showOfflineFiles = false
+
+    private var provider: APIProvider { config.provider }
 
     var body: some View {
         Form {
@@ -41,7 +44,7 @@ private struct GeneralTab: View {
     @ViewBuilder
     private var apiKeySection: some View {
         Section {
-            SecureField("Gemini API Key", text: $apiKey)
+            SecureField("\(provider.displayName) API Key", text: $apiKey)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { saveAPIKey() }
 
@@ -54,7 +57,7 @@ private struct GeneralTab: View {
         } header: {
             Text("API Key")
         } footer: {
-            Text("用于 Gemini 视觉分析和向量嵌入。存储在 ~/.config/findit/gemini-api-key.txt")
+            Text("用于视觉分析和向量嵌入。存储在 \(provider.keyFilePath)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -83,10 +86,13 @@ private struct GeneralTab: View {
     }
 
     private func checkAPIKeyStatus() {
-        if let key = try? APIKeyManager.resolveAPIKey() {
+        // 重新加载 config 以获取最新 provider
+        config = ProviderConfig.load()
+        if let key = try? APIKeyManager.resolveAPIKey(provider: provider) {
             apiKey = key
             apiKeyStatus = APIKeyManager.validateAPIKey(key) ? .valid : .invalid
         } else {
+            apiKey = ""
             apiKeyStatus = .missing
         }
     }
@@ -96,7 +102,7 @@ private struct GeneralTab: View {
         guard !trimmed.isEmpty else { return }
 
         do {
-            try APIKeyManager.saveAPIKey(trimmed)
+            try APIKeyManager.saveAPIKey(trimmed, provider: provider)
             apiKeyStatus = APIKeyManager.validateAPIKey(trimmed) ? .valid : .invalid
         } catch {
             apiKeyStatus = .invalid
@@ -164,14 +170,64 @@ private struct GeneralTab: View {
 private struct AdvancedTab: View {
     @State private var config = ProviderConfig.load()
 
+    /// 自定义 Base URL 绑定
+    private var useCustomURL: Binding<Bool> {
+        Binding(
+            get: { config.baseURL != nil },
+            set: { newValue in
+                if newValue {
+                    config.baseURL = config.provider.defaultBaseURL
+                } else {
+                    config.baseURL = nil
+                }
+                config.save()
+            }
+        )
+    }
+
+    private var customBaseURL: Binding<String> {
+        Binding(
+            get: { config.baseURL ?? config.provider.defaultBaseURL },
+            set: { config.baseURL = $0; config.save() }
+        )
+    }
+
     var body: some View {
         Form {
+            providerSection
             visionSection
             embeddingSection
             rateLimitSection
             resetSection
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: Provider
+
+    @ViewBuilder
+    private var providerSection: some View {
+        Section {
+            Picker("API 提供者", selection: $config.provider) {
+                ForEach(APIProvider.allCases) { p in
+                    Text(p.displayName).tag(p)
+                }
+            }
+            .onChange(of: config.provider) { config.save() }
+
+            Toggle("自定义 Base URL", isOn: useCustomURL)
+
+            if config.baseURL != nil {
+                TextField("Base URL", text: customBaseURL)
+                    .textFieldStyle(.roundedBorder)
+            }
+        } header: {
+            Text("API 提供者")
+        } footer: {
+            Text("切换提供者后需在「通用」页面重新配置对应的 API Key。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder
@@ -217,7 +273,9 @@ private struct AdvancedTab: View {
         } header: {
             Text("速率限制")
         } footer: {
-            Text("Gemini 免费额度约 10 RPM。设置过高可能导致 429 限流。")
+            Text(config.provider == .gemini
+                 ? "Gemini 免费额度约 10 RPM。设置过高可能导致 429 限流。"
+                 : "根据 OpenRouter 套餐调整。设置过高可能导致限流。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

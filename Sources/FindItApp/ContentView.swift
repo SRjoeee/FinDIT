@@ -18,9 +18,48 @@ struct ContentView: View {
     @State private var scrollOnSelect = false
     @State private var sidebarSelection: SidebarSelection = .all
     @State private var folderErrorMessage: String?
+    @State private var showExportSheet = false
+    @State private var exportClips: [SearchEngine.SearchResult] = []
     @AppStorage("FindIt.showOfflineFiles") private var showOfflineFiles = false
 
     var body: some View {
+        mainContent
+            .onReceive(NotificationCenter.default.publisher(for: .addFolder)) { _ in
+                addFolder()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .manageFolder)) { _ in
+                showFolderSheet = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .navigateClip)) { notification in
+                guard let direction = notification.userInfo?["direction"] as? NavigationDirection else { return }
+                let modifiers = notification.userInfo?["modifiers"] as? NSEvent.ModifierFlags ?? []
+                handleArrowKey(direction, modifiers: modifiers)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .toggleQuickLook)) { _ in
+                handleSpaceKey()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .selectAllClips)) { _ in
+                handleSelectAll()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .deselectAllClips)) { _ in
+                handleDeselectAll()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .exportToNLE)) { notification in
+                if let clips = notification.userInfo?["clips"] as? [SearchEngine.SearchResult], !clips.isEmpty {
+                    exportClips = clips
+                } else if !selectedResults.isEmpty {
+                    exportClips = selectedResults
+                } else {
+                    return
+                }
+                showExportSheet = true
+            }
+    }
+
+    // MARK: - Main Content
+
+    @ViewBuilder
+    private var mainContent: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SidebarView(
                 appState: appState,
@@ -43,11 +82,24 @@ struct ContentView: View {
                 )
                 .frame(minWidth: 160, maxWidth: 320)
             }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    exportClips = selectedResults
+                    showExportSheet = true
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .help("导出到 NLE (⇧⌘E)")
+                .disabled(selectedClipIds.isEmpty)
+            }
         }
         .toolbarBackground(.hidden, for: .windowToolbar)
         .frame(minWidth: 680, minHeight: 460)
         .sheet(isPresented: $showFolderSheet) {
             FolderManagementSheet(appState: appState, indexingManager: indexingManager)
+        }
+        .sheet(isPresented: $showExportSheet) {
+            ExportSheet(clips: exportClips)
         }
         .alert("无法添加文件夹", isPresented: Binding(
             get: { folderErrorMessage != nil },
@@ -151,26 +203,6 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             // App 从后台切回时立即检查（用户可能在 Finder 中操作了文件夹）
             appState.checkFolderHealth()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .addFolder)) { _ in
-            addFolder()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .manageFolder)) { _ in
-            showFolderSheet = true
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .navigateClip)) { notification in
-            guard let direction = notification.userInfo?["direction"] as? NavigationDirection else { return }
-            let modifiers = notification.userInfo?["modifiers"] as? NSEvent.ModifierFlags ?? []
-            handleArrowKey(direction, modifiers: modifiers)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .toggleQuickLook)) { _ in
-            handleSpaceKey()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .selectAllClips)) { _ in
-            handleSelectAll()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .deselectAllClips)) { _ in
-            handleDeselectAll()
         }
     }
 
@@ -295,6 +327,11 @@ struct ContentView: View {
     }
 
     // MARK: - Helpers
+
+    /// 当前选中的搜索结果
+    private var selectedResults: [SearchEngine.SearchResult] {
+        searchState.visibleResults.filter { selectedClipIds.contains($0.clipId) }
+    }
 
     /// 离线文件夹路径集合
     private var offlineFolderPaths: Set<String> {

@@ -255,15 +255,15 @@ extension AnalysisResult {
 
 // MARK: - VisionAnalyzer
 
-/// Gemini Flash 视觉分析器
+/// 视觉分析器
 ///
-/// 将关键帧图片发送到 Gemini 2.5 Flash，获取结构化 JSON 描述。
+/// 将关键帧图片发送到 API（Gemini / OpenRouter），获取结构化 JSON 描述。
 /// 所有方法为 static，遵循项目 enum + static 模式。
 public enum VisionAnalyzer {
 
     /// 视觉分析配置
     public struct Config: Sendable {
-        /// Gemini 模型名称
+        /// 模型名称
         public var model: String
         /// 每请求最大图片数
         public var maxImagesPerRequest: Int
@@ -271,24 +271,34 @@ public enum VisionAnalyzer {
         public var requestTimeoutSeconds: Double
         /// 最大重试次数（针对 429/503）
         public var maxRetries: Int
+        /// API 提供者
+        public var provider: APIProvider
+        /// API base URL
+        public var baseURL: String
 
         public static let `default` = Config(
             model: "gemini-2.5-flash",
             maxImagesPerRequest: 10,
             requestTimeoutSeconds: 60.0,
-            maxRetries: 3
+            maxRetries: 3,
+            provider: .gemini,
+            baseURL: APIProvider.gemini.defaultBaseURL
         )
 
         public init(
             model: String = "gemini-2.5-flash",
             maxImagesPerRequest: Int = 10,
             requestTimeoutSeconds: Double = 60.0,
-            maxRetries: Int = 3
+            maxRetries: Int = 3,
+            provider: APIProvider = .gemini,
+            baseURL: String = APIProvider.gemini.defaultBaseURL
         ) {
             self.model = model
             self.maxImagesPerRequest = maxImagesPerRequest
             self.requestTimeoutSeconds = requestTimeoutSeconds
             self.maxRetries = maxRetries
+            self.provider = provider
+            self.baseURL = baseURL
         }
     }
 
@@ -328,7 +338,7 @@ public enum VisionAnalyzer {
 
     // MARK: - 请求构建
 
-    /// 构建 Gemini API 请求体
+    /// 构建 API 请求体（按 provider 分支）
     ///
     /// - Parameters:
     ///   - imageBase64List: base64 编码的图片数组
@@ -338,9 +348,18 @@ public enum VisionAnalyzer {
         imageBase64List: [String],
         config: Config = .default
     ) throws -> Data {
+        switch config.provider {
+        case .gemini:
+            return try buildGeminiRequestBody(imageBase64List: imageBase64List)
+        case .openRouter:
+            return try buildOpenRouterRequestBody(imageBase64List: imageBase64List, config: config)
+        }
+    }
+
+    /// Gemini 格式请求体
+    private static func buildGeminiRequestBody(imageBase64List: [String]) throws -> Data {
         var parts: [[String: Any]] = []
 
-        // 图片 parts
         for base64 in imageBase64List {
             parts.append([
                 "inline_data": [
@@ -350,7 +369,6 @@ public enum VisionAnalyzer {
             ])
         }
 
-        // 文本 prompt
         parts.append(["text": formatPrompt()])
 
         let body: [String: Any] = [
@@ -366,23 +384,57 @@ public enum VisionAnalyzer {
         return try JSONSerialization.data(withJSONObject: body)
     }
 
+    /// OpenRouter (OpenAI 兼容) 格式请求体
+    private static func buildOpenRouterRequestBody(
+        imageBase64List: [String],
+        config: Config
+    ) throws -> Data {
+        var contentParts: [[String: Any]] = []
+
+        for base64 in imageBase64List {
+            contentParts.append([
+                "type": "image_url",
+                "image_url": ["url": "data:image/jpeg;base64,\(base64)"]
+            ])
+        }
+
+        let schemaJSON = buildResponseSchema()
+        let prompt = formatPrompt() + "\n\nReturn ONLY valid JSON matching the required schema, no markdown."
+        contentParts.append([
+            "type": "text",
+            "text": prompt
+        ])
+
+        let body: [String: Any] = [
+            "model": config.model,
+            "messages": [
+                [
+                    "role": "user",
+                    "content": contentParts
+                ]
+            ],
+            "response_format": [
+                "type": "json_schema",
+                "json_schema": [
+                    "name": "vision_analysis",
+                    "schema": schemaJSON
+                ]
+            ],
+        ]
+
+        return try JSONSerialization.data(withJSONObject: body)
+    }
+
     // MARK: - 响应解析
 
-    /// 解析 Gemini API 成功响应
-    ///
-    /// 响应格式:
-    /// ```json
-    /// { "candidates": [{ "content": { "parts": [{ "text": "{...}" }] } }] }
-    /// ```
-    static func parseResponse(_ responseData: Data) throws -> AnalysisResult {
-        guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-              let candidates = json["candidates"] as? [[String: Any]],
-              let first = candidates.first,
-              let content = first["content"] as? [String: Any],
-              let parts = content["parts"] as? [[String: Any]],
-              let textPart = parts.first,
-              let text = textPart["text"] as? String else {
-            throw VisionAnalyzerError.invalidResponse(detail: "无法提取 candidates[0].content.parts[0].text")
+    /// 解析 API 成功响应（按 provider 分支）
+    static func parseResponse(_ responseData: Data, provider: APIProvider = .gemini) throws -> AnalysisResult {
+        let text: String
+        switch provider {
+        case .gemini:
+            text = try parseGeminiResponseText(responseData)
+        case .openRouter:
+            text = try parseOpenRouterResponseText(responseData)
         }
 
         guard let textData = text.data(using: .utf8) else {
@@ -396,16 +448,51 @@ public enum VisionAnalyzer {
         }
     }
 
-    /// 解析 Gemini API 错误响应
+    /// 提取 Gemini 响应中的文本
     ///
-    /// 错误格式:
-    /// ```json
-    /// { "error": { "code": 429, "message": "...", "status": "RESOURCE_EXHAUSTED" } }
-    /// ```
+    /// 格式: `candidates[0].content.parts[0].text`
+    private static func parseGeminiResponseText(_ data: Data) throws -> String {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let candidates = json["candidates"] as? [[String: Any]],
+              let first = candidates.first,
+              let content = first["content"] as? [String: Any],
+              let parts = content["parts"] as? [[String: Any]],
+              let textPart = parts.first,
+              let text = textPart["text"] as? String else {
+            throw VisionAnalyzerError.invalidResponse(detail: "无法提取 candidates[0].content.parts[0].text")
+        }
+        return text
+    }
+
+    /// 提取 OpenRouter (OpenAI) 响应中的文本
+    ///
+    /// 格式: `choices[0].message.content`
+    private static func parseOpenRouterResponseText(_ data: Data) throws -> String {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let first = choices.first,
+              let message = first["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            throw VisionAnalyzerError.invalidResponse(detail: "无法提取 choices[0].message.content")
+        }
+        return content
+    }
+
+    /// 解析 API 错误响应
+    ///
+    /// Gemini 和 OpenRouter 错误格式相同: `{ "error": { "code": N, "message": "..." } }`
     static func parseErrorResponse(_ responseData: Data) -> (code: Int, message: String)? {
         guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-              let error = json["error"] as? [String: Any],
-              let code = error["code"] as? Int else {
+              let error = json["error"] as? [String: Any] else {
+            return nil
+        }
+        // Gemini: error.code 是 Int; OpenRouter: 可能是 String 或 Int
+        let code: Int
+        if let intCode = error["code"] as? Int {
+            code = intCode
+        } else if let strCode = error["code"] as? String, let parsed = Int(strCode) {
+            code = parsed
+        } else {
             return nil
         }
         let message = error["message"] as? String ?? "未知错误"
@@ -414,20 +501,32 @@ public enum VisionAnalyzer {
 
     // MARK: - HTTP 请求
 
-    /// 构建 URLRequest
+    /// 构建 URLRequest（按 provider 构建 URL 和 auth）
     static func buildURLRequest(
         body: Data,
         apiKey: String,
         config: Config
     ) throws -> URLRequest {
-        let urlString = "https://generativelanguage.googleapis.com/v1beta/models/\(config.model):generateContent"
+        let urlString: String
+        switch config.provider {
+        case .gemini:
+            urlString = "\(config.baseURL)/models/\(config.model):generateContent"
+        case .openRouter:
+            urlString = "\(config.baseURL)/chat/completions"
+        }
         guard let url = URL(string: urlString) else {
             throw VisionAnalyzerError.invalidConfig("无效的模型名: \(config.model)")
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+        request.setValue(
+            config.provider.authHeaderValue(apiKey: apiKey),
+            forHTTPHeaderField: config.provider.authHeaderName
+        )
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if config.provider == .openRouter {
+            request.setValue("FindIt", forHTTPHeaderField: "X-Title")
+        }
         request.timeoutInterval = config.requestTimeoutSeconds
         request.httpBody = body
         return request
@@ -497,12 +596,13 @@ public enum VisionAnalyzer {
 
     /// 分析单个场景的关键帧
     ///
-    /// 将多张关键帧图片编码为 base64，发送到 Gemini API，解析结构化 JSON 结果。
+    /// 将多张关键帧图片编码为 base64，发送到 API，解析结构化 JSON 结果。
+    /// 支持 Gemini 和 OpenRouter (OpenAI 兼容) 两种 provider。
     ///
     /// - Parameters:
     ///   - imagePaths: 关键帧图片路径数组
-    ///   - apiKey: Gemini API Key
-    ///   - config: 分析配置
+    ///   - apiKey: API Key
+    ///   - config: 分析配置（含 provider 和 baseURL）
     /// - Returns: 分析结果
     public static func analyzeScene(
         imagePaths: [String],
@@ -524,6 +624,6 @@ public enum VisionAnalyzer {
         let responseData = try await sendRequest(body: body, apiKey: apiKey, config: config)
 
         // 解析响应
-        return try parseResponse(responseData)
+        return try parseResponse(responseData, provider: config.provider)
     }
 }

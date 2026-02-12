@@ -352,4 +352,135 @@ final class VisionAnalyzerTests: XCTestCase {
         XCTAssertEqual(config.model, "gemini-2.5-flash-lite")
         XCTAssertEqual(config.maxImagesPerRequest, 5)
     }
+
+    // MARK: - OpenRouter 请求构建
+
+    func testBuildRequestBodyOpenRouterStructure() throws {
+        let config = VisionAnalyzer.Config(
+            model: "qwen/qwen-2.5-vl-72b",
+            provider: .openRouter,
+            baseURL: APIProvider.openRouter.defaultBaseURL
+        )
+        let body = try VisionAnalyzer.buildRequestBody(
+            imageBase64List: ["base64img1"],
+            config: config
+        )
+        let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        XCTAssertNotNil(json)
+
+        // model 字段
+        XCTAssertEqual(json?["model"] as? String, "qwen/qwen-2.5-vl-72b")
+
+        // messages 结构
+        let messages = json?["messages"] as? [[String: Any]]
+        XCTAssertEqual(messages?.count, 1)
+        XCTAssertEqual(messages?.first?["role"] as? String, "user")
+
+        let content = messages?.first?["content"] as? [[String: Any]]
+        // 1 image + 1 text = 2 parts
+        XCTAssertEqual(content?.count, 2)
+
+        // 图片 part 是 image_url 格式
+        let imgPart = content?.first
+        XCTAssertEqual(imgPart?["type"] as? String, "image_url")
+
+        // response_format 字段
+        let responseFormat = json?["response_format"] as? [String: Any]
+        XCTAssertEqual(responseFormat?["type"] as? String, "json_schema")
+    }
+
+    // MARK: - OpenRouter 响应解析
+
+    func testParseResponseOpenRouter() throws {
+        let innerJSON = """
+        {
+            "scene": "城市街景",
+            "subjects": ["行人"],
+            "actions": ["行走"],
+            "objects": ["路灯"],
+            "mood": "繁忙",
+            "shot_type": "全景",
+            "lighting": "夜间",
+            "colors": "暖色调",
+            "description": "城市夜晚的街景。"
+        }
+        """
+
+        let response: [String: Any] = [
+            "choices": [[
+                "message": [
+                    "role": "assistant",
+                    "content": innerJSON,
+                ],
+                "finish_reason": "stop",
+            ]],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: response)
+        let result = try VisionAnalyzer.parseResponse(data, provider: .openRouter)
+
+        XCTAssertEqual(result.scene, "城市街景")
+        XCTAssertEqual(result.subjects, ["行人"])
+        XCTAssertEqual(result.mood, "繁忙")
+    }
+
+    func testParseResponseOpenRouterInvalidStructure() {
+        let badData = "not json".data(using: .utf8)!
+        XCTAssertThrowsError(try VisionAnalyzer.parseResponse(badData, provider: .openRouter))
+    }
+
+    func testParseResponseOpenRouterNoChoices() throws {
+        let response: [String: Any] = ["choices": []]
+        let data = try JSONSerialization.data(withJSONObject: response)
+        XCTAssertThrowsError(try VisionAnalyzer.parseResponse(data, provider: .openRouter))
+    }
+
+    // MARK: - OpenRouter URL 构建
+
+    func testBuildURLRequestOpenRouter() throws {
+        let body = "test".data(using: .utf8)!
+        let config = VisionAnalyzer.Config(
+            model: "qwen/qwen-2.5-vl-72b",
+            provider: .openRouter,
+            baseURL: APIProvider.openRouter.defaultBaseURL
+        )
+        let request = try VisionAnalyzer.buildURLRequest(
+            body: body,
+            apiKey: "sk-or-test-key12345678",
+            config: config
+        )
+
+        XCTAssertEqual(request.httpMethod, "POST")
+        // auth: Bearer
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer sk-or-test-key12345678")
+        // URL 包含 /chat/completions
+        XCTAssertTrue(request.url?.absoluteString.contains("chat/completions") ?? false)
+        XCTAssertTrue(request.url?.absoluteString.contains("openrouter.ai") ?? false)
+        // X-Title header
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Title"), "FindIt")
+        // 不应有 x-goog-api-key
+        XCTAssertNil(request.value(forHTTPHeaderField: "x-goog-api-key"))
+    }
+
+    // MARK: - Config provider 默认值
+
+    func testConfigDefaultProvider() {
+        let config = VisionAnalyzer.Config.default
+        XCTAssertEqual(config.provider, .gemini)
+        XCTAssertEqual(config.baseURL, APIProvider.gemini.defaultBaseURL)
+    }
+
+    // MARK: - 错误响应解析（OpenRouter 格式）
+
+    func testParseErrorResponseOpenRouterStringCode() throws {
+        let errorJSON: [String: Any] = [
+            "error": [
+                "code": "429",
+                "message": "Rate limit exceeded",
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: errorJSON)
+        let result = VisionAnalyzer.parseErrorResponse(data)
+        XCTAssertEqual(result?.code, 429)
+        XCTAssertTrue(result?.message.contains("Rate limit") ?? false)
+    }
 }

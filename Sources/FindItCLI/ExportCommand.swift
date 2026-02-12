@@ -94,13 +94,14 @@ struct ExportCommand: AsyncParsableCommand {
             try EDLExporter.export(clips: results, to: output, options: options)
 
         case .fcpxml:
+            let videoFormats = await FCPXMLExporter.probeVideoFormats(clips: results)
             let options = FCPXMLExporter.Options(
                 projectName: title,
                 fps: fps,
                 includeKeywords: !noComments,
                 includeNotes: !noComments
             )
-            try FCPXMLExporter.export(clips: results, to: output, options: options)
+            try FCPXMLExporter.export(clips: results, to: output, options: options, videoFormats: videoFormats)
         }
 
         print("已导出 \(results.count) 个片段到 \(output)")

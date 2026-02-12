@@ -185,6 +185,97 @@ final class GeminiEmbeddingTests: XCTestCase {
         let provider = GeminiEmbeddingProvider(apiKey: "short")
         XCTAssertFalse(provider.isAvailable())
     }
+
+    // MARK: - OpenRouter 请求构建
+
+    func testBuildEmbedRequestBodyOpenRouter() throws {
+        let config = GeminiEmbedding.Config(
+            model: "text-embedding-3-small",
+            provider: .openRouter,
+            baseURL: APIProvider.openRouter.defaultBaseURL
+        )
+        let data = try GeminiEmbedding.buildEmbedRequestBody(text: "测试文本", config: config)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        XCTAssertNotNil(json)
+        XCTAssertEqual(json?["model"] as? String, "text-embedding-3-small")
+        // 单文本时 input 为 String
+        XCTAssertEqual(json?["input"] as? String, "测试文本")
+        XCTAssertEqual(json?["dimensions"] as? Int, 768)
+        // 不应有 Gemini 的 content/parts 结构
+        XCTAssertNil(json?["content"])
+    }
+
+    func testBuildBatchRequestBodyOpenRouter() throws {
+        let config = GeminiEmbedding.Config(
+            model: "text-embedding-3-small",
+            provider: .openRouter,
+            baseURL: APIProvider.openRouter.defaultBaseURL
+        )
+        let data = try GeminiEmbedding.buildBatchRequestBody(texts: ["文本A", "文本B"], config: config)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        XCTAssertNotNil(json)
+        XCTAssertEqual(json?["model"] as? String, "text-embedding-3-small")
+        // 多文本时 input 为 Array
+        let input = json?["input"] as? [String]
+        XCTAssertEqual(input, ["文本A", "文本B"])
+        // 不应有 Gemini 的 requests 结构
+        XCTAssertNil(json?["requests"])
+    }
+
+    // MARK: - OpenRouter 响应解析
+
+    func testParseEmbedResponseOpenRouter() throws {
+        let responseJSON: [String: Any] = [
+            "data": [[
+                "embedding": [0.1, 0.2, 0.3],
+                "index": 0
+            ]]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: responseJSON)
+        let vector = try GeminiEmbedding.parseEmbedResponse(data, provider: .openRouter)
+
+        XCTAssertEqual(vector.count, 3)
+        XCTAssertEqual(vector[0], 0.1, accuracy: 1e-5)
+    }
+
+    func testParseBatchResponseOpenRouter() throws {
+        let responseJSON: [String: Any] = [
+            "data": [
+                ["embedding": [0.1, 0.2], "index": 0],
+                ["embedding": [0.3, 0.4], "index": 1],
+            ]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: responseJSON)
+        let vectors = try GeminiEmbedding.parseBatchResponse(data, provider: .openRouter)
+
+        XCTAssertEqual(vectors.count, 2)
+        XCTAssertEqual(vectors[0], [Float(0.1), Float(0.2)], accuracy: 1e-5)
+    }
+
+    func testParseEmbedResponseOpenRouterEmpty() throws {
+        let responseJSON: [String: Any] = ["data": []]
+        let data = try JSONSerialization.data(withJSONObject: responseJSON)
+        XCTAssertThrowsError(try GeminiEmbedding.parseEmbedResponse(data, provider: .openRouter))
+    }
+
+    // MARK: - Config provider 默认值
+
+    func testConfigDefaultProvider() {
+        let config = GeminiEmbedding.Config.default
+        XCTAssertEqual(config.provider, .gemini)
+        XCTAssertEqual(config.baseURL, APIProvider.gemini.defaultBaseURL)
+    }
+
+    func testConfigOpenRouterProvider() {
+        let config = GeminiEmbedding.Config(
+            model: "text-embedding-3-small",
+            provider: .openRouter,
+            baseURL: APIProvider.openRouter.defaultBaseURL
+        )
+        XCTAssertEqual(config.provider, .openRouter)
+    }
 }
 
 // MARK: - Helper

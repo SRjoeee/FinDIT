@@ -44,6 +44,8 @@ struct FindItCLI: AsyncParsableCommand {
             GemmaCommand.self,
             // Backfill commands
             CLIPBackfillCommand.self,
+            // Export commands
+            ExportCommand.self,
         ]
     )
 }

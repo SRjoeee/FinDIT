@@ -915,6 +915,45 @@ public enum SearchEngine {
         public let clipCount: Int
     }
 
+    /// 获取所有片段（用于导出全部）
+    ///
+    /// 按文件路径和起始时间排序，支持文件夹路径过滤。
+    ///
+    /// - Parameters:
+    ///   - db: 全局搜索索引数据库连接
+    ///   - folder: 限制文件夹路径（nil = 不过滤）
+    ///   - limit: 最大返回条数
+    /// - Returns: 按 file_path + start_time 排序的片段列表
+    public static func allClips(
+        _ db: Database,
+        folder: String? = nil,
+        limit: Int = 999
+    ) throws -> [SearchResult] {
+        var sql = """
+            SELECT c.clip_id, c.source_folder, c.source_clip_id, c.video_id,
+                   v.file_path, v.file_name,
+                   c.start_time, c.end_time, c.scene, c.description,
+                   c.subjects, c.actions, c.objects,
+                   c.tags, c.transcript, c.thumbnail_path, c.user_tags,
+                   c.rating, c.color_label, c.shot_type, c.mood,
+                   c.lighting, c.colors
+            FROM clips c
+            LEFT JOIN videos v ON v.video_id = c.video_id
+            """
+        var args: [any DatabaseValueConvertible] = []
+
+        if let folder = folder {
+            sql += " WHERE c.source_folder = ?"
+            args.append(folder)
+        }
+
+        sql += " ORDER BY v.file_path, c.start_time LIMIT ?"
+        args.append(limit)
+
+        let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+        return rows.map { SearchResult.from(row: $0) }
+    }
+
     /// 查询指定文件夹在全局库中的视频和片段统计
     ///
     /// - Parameters:

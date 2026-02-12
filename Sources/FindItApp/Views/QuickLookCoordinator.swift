@@ -88,12 +88,25 @@ final class QuickLookCoordinator: NSObject, @preconcurrency QLPreviewPanelDataSo
                 return event
             }
 
+            // ⌘A → 全选
+            if event.keyCode == 0 && event.modifierFlags.contains(.command) {
+                Self.postSelectAll()
+                return nil
+            }
+
+            // Escape → 清空选中
+            if event.keyCode == 53 {
+                Self.postDeselectAll()
+                return nil
+            }
+
+            let mods = event.modifierFlags
             switch event.keyCode {
-            case 123: Self.postNavigate(.left); return nil   // ←
-            case 124: Self.postNavigate(.right); return nil  // →
-            case 125: Self.postNavigate(.down); return nil   // ↓
-            case 126: Self.postNavigate(.up); return nil     // ↑
-            case 49:  Self.postToggleQL(); return nil        // space
+            case 123: Self.postNavigate(.left, modifiers: mods); return nil   // ←
+            case 124: Self.postNavigate(.right, modifiers: mods); return nil  // →
+            case 125: Self.postNavigate(.down, modifiers: mods); return nil   // ↓
+            case 126: Self.postNavigate(.up, modifiers: mods); return nil     // ↑
+            case 49:  Self.postToggleQL(); return nil                         // space
             default:  return event
             }
         }
@@ -106,20 +119,30 @@ final class QuickLookCoordinator: NSObject, @preconcurrency QLPreviewPanelDataSo
         }
     }
 
-    private static func postNavigate(_ direction: NavigationDirection) {
+    private static func postNavigate(_ direction: NavigationDirection, modifiers: NSEvent.ModifierFlags) {
         NotificationCenter.default.post(
             name: .navigateClip,
             object: nil,
-            userInfo: ["direction": direction]
+            userInfo: ["direction": direction, "modifiers": modifiers]
         )
     }
 
     private static func postToggleQL() {
         NotificationCenter.default.post(name: .toggleQuickLook, object: nil)
     }
+
+    private static func postSelectAll() {
+        NotificationCenter.default.post(name: .selectAllClips, object: nil)
+    }
+
+    private static func postDeselectAll() {
+        NotificationCenter.default.post(name: .deselectAllClips, object: nil)
+    }
 }
 
 extension Notification.Name {
     static let navigateClip = Notification.Name("FindIt.navigateClip")
     static let toggleQuickLook = Notification.Name("FindIt.toggleQuickLook")
+    static let selectAllClips = Notification.Name("FindIt.selectAllClips")
+    static let deselectAllClips = Notification.Name("FindIt.deselectAllClips")
 }

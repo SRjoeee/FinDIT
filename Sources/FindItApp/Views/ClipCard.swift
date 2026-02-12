@@ -6,18 +6,20 @@ import FindItCore
 /// 搜索结果卡片
 ///
 /// 显示缩略图、描述摘要、文件名和时间码。
-/// 点击选中，悬停 700ms 显示悬浮信息卡。
+/// 支持单击选中、⌘+Click 多选、⇧+Click 范围选、双击打开。
+/// 悬停 700ms 显示悬浮信息卡。
 struct ClipCard: View {
     let result: SearchEngine.SearchResult
     let isSelected: Bool
+    var multiSelectCount: Int = 0
     var isOffline: Bool = false
     var globalDB: DatabasePool?
-    var onSelect: () -> Void = {}
+    var onSelect: (NSEvent.ModifierFlags) -> Void = { _ in }
+    var selectedResults: [SearchEngine.SearchResult] = []
 
     @State private var isHovering = false
     @State private var showHoverCard = false
     @State private var hoverTask: Task<Void, Never>?
-    @State private var lastClickTime: Date?
     @State private var showTagEditor = false
     @Environment(SearchState.self) private var searchState
 
@@ -34,6 +36,25 @@ struct ClipCard: View {
                         Image(systemName: "icloud.slash")
                             .font(.title2)
                             .foregroundStyle(.white.opacity(0.8))
+                    }
+                }
+
+                // 多选勾选角标
+                if isSelected && multiSelectCount > 1 {
+                    VStack {
+                        HStack {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.white)
+                                .background(
+                                    Circle()
+                                        .fill(Color.accentColor)
+                                        .frame(width: 16, height: 16)
+                                )
+                                .padding(5)
+                            Spacer()
+                        }
+                        Spacer()
                     }
                 }
 
@@ -76,18 +97,15 @@ struct ClipCard: View {
                 )
         )
         .contentShape(RoundedRectangle(cornerRadius: 8))
-        .onTapGesture {
-            let now = Date()
-            if let last = lastClickTime,
-               now.timeIntervalSince(last) < NSEvent.doubleClickInterval {
-                // 双击 → 打开视频
-                lastClickTime = nil
-                guard let path = result.filePath else { return }
-                NSWorkspace.shared.open(URL(fileURLWithPath: path))
-            } else {
-                // 单击 → 选中
-                lastClickTime = now
-                onSelect()
+        .overlay {
+            ClickCaptureView { modifiers, clickCount in
+                if clickCount == 2 {
+                    // 双击 → 打开视频
+                    guard let path = result.filePath else { return }
+                    NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                } else {
+                    onSelect(modifiers)
+                }
             }
         }
         .onHover { hovering in
@@ -122,19 +140,37 @@ struct ClipCard: View {
 
     @ViewBuilder
     private var contextMenuItems: some View {
-        if let path = result.filePath {
+        let isBatch = isSelected && selectedResults.count > 1
+        let targets = isBatch ? selectedResults : [result]
+
+        if isBatch {
+            let urls = targets.compactMap { $0.filePath.map { URL(fileURLWithPath: $0) } }
+            if !urls.isEmpty {
+                Button("在 Finder 中显示 \(urls.count) 个文件") {
+                    NSWorkspace.shared.activateFileViewerSelecting(urls)
+                }
+            }
+        } else if let path = result.filePath {
             Button("在 Finder 中显示") {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
             }
         }
 
-        Button("复制时间码") {
-            let timecode = formatTimecode(result.startTime)
+        Button(isBatch ? "复制 \(targets.count) 个时间码" : "复制时间码") {
+            let timecodes = targets.map { formatTimecode($0.startTime) }
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(timecode, forType: .string)
+            NSPasteboard.general.setString(timecodes.joined(separator: "\n"), forType: .string)
         }
 
-        if let path = result.filePath {
+        if isBatch {
+            let paths = targets.compactMap(\.filePath)
+            if !paths.isEmpty {
+                Button("复制 \(paths.count) 个文件路径") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(paths.joined(separator: "\n"), forType: .string)
+                }
+            }
+        } else if let path = result.filePath {
             Button("复制文件路径") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(path, forType: .string)
@@ -143,38 +179,40 @@ struct ClipCard: View {
 
         Divider()
 
-        Button("管理标签…") {
-            showTagEditor = true
-        }
+        if !isBatch {
+            Button("管理标签…") {
+                showTagEditor = true
+            }
 
-        // 评分子菜单
-        Menu("评分") {
-            ForEach(0...5, id: \.self) { stars in
-                Button {
-                    setRating(stars)
-                } label: {
-                    if stars == 0 {
-                        Text("无评分")
-                    } else {
-                        Text(String(repeating: "★", count: stars) + String(repeating: "☆", count: 5 - stars))
+            // 评分子菜单
+            Menu("评分") {
+                ForEach(0...5, id: \.self) { stars in
+                    Button {
+                        setRating(stars)
+                    } label: {
+                        if stars == 0 {
+                            Text("无评分")
+                        } else {
+                            Text(String(repeating: "★", count: stars) + String(repeating: "☆", count: 5 - stars))
+                        }
                     }
                 }
             }
-        }
 
-        // 颜色标签子菜单
-        Menu("颜色标签") {
-            Button("无") { setColorLabel(nil) }
-            Divider()
-            ForEach(ColorLabel.allCases, id: \.rawValue) { label in
-                Button {
-                    setColorLabel(label)
-                } label: {
-                    HStack {
-                        Circle()
-                            .fill(Color(red: label.rgb.r, green: label.rgb.g, blue: label.rgb.b))
-                            .frame(width: 10, height: 10)
-                        Text(label.displayName)
+            // 颜色标签子菜单
+            Menu("颜色标签") {
+                Button("无") { setColorLabel(nil) }
+                Divider()
+                ForEach(ColorLabel.allCases, id: \.rawValue) { label in
+                    Button {
+                        setColorLabel(label)
+                    } label: {
+                        HStack {
+                            Circle()
+                                .fill(Color(red: label.rgb.r, green: label.rgb.g, blue: label.rgb.b))
+                                .frame(width: 10, height: 10)
+                            Text(label.displayName)
+                        }
                     }
                 }
             }
@@ -185,7 +223,6 @@ struct ClipCard: View {
 
     private func setRating(_ rating: Int) {
         let oldRating = result.rating
-        // 同步更新 UI（已在 @MainActor，无需额外 Task 包装）
         searchState.updateClipRating(clipId: result.clipId, rating: rating)
 
         Task.detached(priority: .userInitiated) { [result, globalDB, searchState] in
@@ -237,7 +274,6 @@ struct ClipCard: View {
             if label != nil {
                 try ClipLabel.syncFinderTag(filePath: filePath, label: label)
             } else {
-                // 清除时检查同视频其他片段是否仍有颜色
                 let effectiveLabel: ColorLabel?
                 if let videoId = result.videoId, let db = globalDB {
                     effectiveLabel = try db.read { dbConn in
@@ -282,5 +318,33 @@ struct ClipCard: View {
         let m = total / 60
         let s = total % 60
         return String(format: "%02d:%02d", m, s)
+    }
+}
+
+// MARK: - Click Capture (AppKit Bridge)
+
+/// NSView 桥接：捕获鼠标点击事件的修饰键和点击次数
+///
+/// SwiftUI 的 `onTapGesture` 不提供修饰键信息，
+/// 使用 NSViewRepresentable 直接访问 NSEvent。
+struct ClickCaptureView: NSViewRepresentable {
+    let onClick: (NSEvent.ModifierFlags, Int) -> Void
+
+    func makeNSView(context: Context) -> ClickCaptureNSView {
+        let view = ClickCaptureNSView()
+        view.onClick = onClick
+        return view
+    }
+
+    func updateNSView(_ nsView: ClickCaptureNSView, context: Context) {
+        nsView.onClick = onClick
+    }
+}
+
+class ClickCaptureNSView: NSView {
+    var onClick: ((NSEvent.ModifierFlags, Int) -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        onClick?(event.modifierFlags, event.clickCount)
     }
 }

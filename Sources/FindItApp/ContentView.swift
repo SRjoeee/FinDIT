@@ -8,7 +8,9 @@ struct ContentView: View {
     @State private var indexingManager = IndexingManager()
     @State private var columnVisibility: NavigationSplitViewVisibility = .detailOnly
     @State private var showFolderSheet = false
-    @State private var selectedClipId: Int64?
+    @State private var selectedClipIds: Set<Int64> = []
+    @State private var focusedClipId: Int64?
+    @State private var selectionAnchorId: Int64?
     @State private var qlCoordinator = QuickLookCoordinator()
     @State private var volumeMonitor = VolumeMonitor()
     @State private var fileWatcherManager = FileWatcherManager()
@@ -57,20 +59,26 @@ struct ContentView: View {
                 Text(msg)
             }
         }
-        .onChange(of: selectedClipId) {
+        .onChange(of: focusedClipId) {
             // 点击卡片时让搜索框失焦，event monitor 可处理后续键盘事件
-            if selectedClipId != nil {
+            if focusedClipId != nil {
                 let window = NSApp.keyWindow
                 if window?.firstResponder is NSTextView {
                     window?.makeFirstResponder(nil)
                 }
             }
-            // QL 面板已打开时，选中变更自动更新预览
-            guard let clipId = selectedClipId,
+            // QL 面板已打开时，焦点变更自动更新预览
+            guard let clipId = focusedClipId,
                   let result = searchState.visibleResults.first(where: { $0.clipId == clipId }),
                   let path = result.filePath,
                   FileManager.default.fileExists(atPath: path) else { return }
             qlCoordinator.updateIfVisible(url: URL(fileURLWithPath: path))
+        }
+        .onChange(of: searchState.query) {
+            // 搜索词变更时清空选中
+            selectedClipIds = []
+            focusedClipId = nil
+            selectionAnchorId = nil
         }
         .onChange(of: sidebarSelection) {
             switch sidebarSelection {
@@ -152,10 +160,17 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .navigateClip)) { notification in
             guard let direction = notification.userInfo?["direction"] as? NavigationDirection else { return }
-            handleArrowKey(direction)
+            let modifiers = notification.userInfo?["modifiers"] as? NSEvent.ModifierFlags ?? []
+            handleArrowKey(direction, modifiers: modifiers)
         }
         .onReceive(NotificationCenter.default.publisher(for: .toggleQuickLook)) { _ in
             handleSpaceKey()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .selectAllClips)) { _ in
+            handleSelectAll()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .deselectAllClips)) { _ in
+            handleDeselectAll()
         }
     }
 
@@ -193,7 +208,9 @@ struct ContentView: View {
                         resultCount: visible.count,
                         offlineFolders: offlineFolderPaths,
                         globalDB: appState.globalDB,
-                        selectedClipId: $selectedClipId,
+                        selectedClipIds: $selectedClipIds,
+                        focusedClipId: $focusedClipId,
+                        selectionAnchorId: $selectionAnchorId,
                         columnsPerRow: $columnsPerRow,
                         scrollOnSelect: $scrollOnSelect
                     )
@@ -204,9 +221,9 @@ struct ContentView: View {
 
     // MARK: - Keyboard Actions
 
-    /// 空格键：切换 Quick Look 预览
+    /// 空格键：切换 Quick Look 预览（使用焦点 clip）
     private func handleSpaceKey() {
-        guard let clipId = selectedClipId,
+        guard let clipId = focusedClipId,
               let result = searchState.visibleResults.first(where: { $0.clipId == clipId }),
               let path = result.filePath,
               FileManager.default.fileExists(atPath: path) else { return }
@@ -217,15 +234,19 @@ struct ContentView: View {
     ///
     /// 左/右移动 ±1，上/下按列数跳行。
     /// 无选中时按任意方向键选中第一项。
-    private func handleArrowKey(_ direction: NavigationDirection) {
+    /// Shift+方向键扩展选中范围。
+    private func handleArrowKey(_ direction: NavigationDirection, modifiers: NSEvent.ModifierFlags = []) {
         let results = searchState.visibleResults
         guard !results.isEmpty else { return }
 
-        // 无选中 → 选第一项
-        guard let currentId = selectedClipId,
+        // 无焦点 → 选第一项
+        guard let currentId = focusedClipId,
               let currentIndex = results.firstIndex(where: { $0.clipId == currentId }) else {
+            let firstId = results[0].clipId
             scrollOnSelect = true
-            selectedClipId = results[0].clipId
+            focusedClipId = firstId
+            selectedClipIds = [firstId]
+            selectionAnchorId = firstId
             return
         }
 
@@ -242,8 +263,35 @@ struct ContentView: View {
         }
 
         guard newIndex != currentIndex else { return }
+        let newId = results[newIndex].clipId
         scrollOnSelect = true
-        selectedClipId = results[newIndex].clipId
+        focusedClipId = newId
+
+        if modifiers.contains(.shift) {
+            // Shift+方向键：扩展选中
+            selectedClipIds.insert(newId)
+        } else {
+            // 普通方向键：单选
+            selectedClipIds = [newId]
+            selectionAnchorId = newId
+        }
+    }
+
+    /// ⌘A：全选当前可见结果
+    private func handleSelectAll() {
+        let results = searchState.visibleResults
+        guard !results.isEmpty else { return }
+        selectedClipIds = Set(results.map(\.clipId))
+        if focusedClipId == nil {
+            focusedClipId = results[0].clipId
+        }
+    }
+
+    /// Escape：清空选中
+    private func handleDeselectAll() {
+        selectedClipIds = []
+        focusedClipId = nil
+        selectionAnchorId = nil
     }
 
     // MARK: - Helpers

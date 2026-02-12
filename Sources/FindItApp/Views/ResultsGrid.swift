@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import GRDB
 import FindItCore
 
@@ -6,13 +7,15 @@ import FindItCore
 ///
 /// 使用 LazyVGrid 自适应布局展示搜索结果卡片。
 /// 列数随窗口宽度自动调整（最小卡片宽度 200px）。
-/// 支持键盘方向键导航，选中项自动滚动到可见区域。
+/// 支持键盘方向键导航和批量多选（⌘+Click / ⇧+Click）。
 struct ResultsGrid: View {
     let results: [SearchEngine.SearchResult]
     let resultCount: Int
     let offlineFolders: Set<String>
     var globalDB: DatabasePool?
-    @Binding var selectedClipId: Int64?
+    @Binding var selectedClipIds: Set<Int64>
+    @Binding var focusedClipId: Int64?
+    @Binding var selectionAnchorId: Int64?
     @Binding var columnsPerRow: Int
     @Binding var scrollOnSelect: Bool
 
@@ -27,17 +30,21 @@ struct ResultsGrid: View {
                     ForEach(results, id: \.clipId) { result in
                         ClipCard(
                             result: result,
-                            isSelected: result.clipId == selectedClipId,
+                            isSelected: selectedClipIds.contains(result.clipId),
+                            multiSelectCount: selectedClipIds.count,
                             isOffline: offlineFolders.contains(result.sourceFolder),
                             globalDB: globalDB,
-                            onSelect: { selectedClipId = result.clipId }
+                            onSelect: { modifiers in
+                                handleClick(clipId: result.clipId, modifiers: modifiers)
+                            },
+                            selectedResults: selectedResults
                         )
                         .id(result.clipId)
                     }
                 }
                 .padding(16)
-                .onChange(of: selectedClipId) {
-                    guard scrollOnSelect, let id = selectedClipId else { return }
+                .onChange(of: focusedClipId) {
+                    guard scrollOnSelect, let id = focusedClipId else { return }
                     scrollOnSelect = false
                     withAnimation(.easeInOut(duration: 0.15)) {
                         proxy.scrollTo(id, anchor: .center)
@@ -60,11 +67,61 @@ struct ResultsGrid: View {
                 Text("\(resultCount) 个片段")
                     .font(.caption2)
                     .foregroundStyle(.quaternary)
+
+                if selectedClipIds.count > 1 {
+                    Text("已选 \(selectedClipIds.count) 个")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
                 Spacer()
             }
             .padding(.horizontal, 16)
             .padding(.top, 4)
         }
+    }
+
+    // MARK: - Click Handling
+
+    /// Finder 风格的点击选中逻辑
+    private func handleClick(clipId: Int64, modifiers: NSEvent.ModifierFlags) {
+        if modifiers.contains(.command) {
+            // ⌘+Click: toggle
+            if selectedClipIds.contains(clipId) {
+                selectedClipIds.remove(clipId)
+                if focusedClipId == clipId {
+                    focusedClipId = selectedClipIds.first
+                }
+            } else {
+                selectedClipIds.insert(clipId)
+                focusedClipId = clipId
+            }
+            selectionAnchorId = clipId
+        } else if modifiers.contains(.shift), let anchorId = selectionAnchorId {
+            // ⇧+Click: 范围选中
+            guard let anchorIndex = results.firstIndex(where: { $0.clipId == anchorId }),
+                  let clickIndex = results.firstIndex(where: { $0.clipId == clipId }) else {
+                // Fallback: 单选
+                selectedClipIds = [clipId]
+                focusedClipId = clipId
+                selectionAnchorId = clipId
+                return
+            }
+            let range = min(anchorIndex, clickIndex)...max(anchorIndex, clickIndex)
+            selectedClipIds = Set(results[range].map(\.clipId))
+            focusedClipId = clipId
+            // Shift+Click 不更新 anchor (Finder 行为)
+        } else {
+            // 普通点击: 单选
+            selectedClipIds = [clipId]
+            focusedClipId = clipId
+            selectionAnchorId = clipId
+        }
+    }
+
+    /// 当前选中的 SearchResult 集合（供批量上下文菜单使用）
+    private var selectedResults: [SearchEngine.SearchResult] {
+        results.filter { selectedClipIds.contains($0.clipId) }
     }
 
     /// 根据容器宽度计算自适应列数

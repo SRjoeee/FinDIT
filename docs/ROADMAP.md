@@ -286,9 +286,16 @@ E2E 测试暴露的 4 个管线 bug 修复：
 
 ### 4e: 视频预览 + 键盘导航 ✓
 
-- ClipDetailPanel: AVPlayer 内嵌预览
+- VideoPreviewPanel: NSPanel + AVPlayerView 浮动预览窗口
+  - 帧精确 seek-to-timecode (toleranceBefore/After: .zero)
+  - 宽高比自适应 (异步 naturalSize + preferredTransform)
+  - 无变形 resize (隐藏→invisible resize→显示; 可见→smooth animate)
+  - 智能 seek 策略 (同文件不同片段→新 startTime; 同片段→恢复暂停位置)
+  - NSWindowDelegate 关闭行为 (pause + hide, player 进度保留)
+  - RAW 格式排除 (braw/r3d/nev)
+- QuickLookCoordinator: 统一路由 (视频→VideoPreviewPanel, 其他→QLPreviewPanel)
 - 统一键盘导航 (NSEvent.addLocalMonitorForEvents)
-- 空格键 Play/Pause，方向键网格导航
+- 空格键切换预览，方向键网格导航 + 自动更新预览
 
 ### 4f: 上下文菜单 ✓
 
@@ -302,10 +309,9 @@ E2E 测试暴露的 4 个管线 bug 修复：
 
 ### 待实现
 
-- NLE 导出（EDL + FCPXML，单个/批量）
 - 拖拽到 NLE（NSItemProvider）
 - 全局快捷键 ⌘⇧F（后台唤起）
-- 批量多选操作
+- 批量多选操作扩展
 - Smart Folders / 保存的搜索
 - 设置页：API Key 管理、当日 API 额度显示
 - 热门标签展示（从 clips.tags 统计 TOP N）

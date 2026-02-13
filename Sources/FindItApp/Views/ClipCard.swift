@@ -11,11 +11,11 @@ import FindItCore
 struct ClipCard: View {
     let result: SearchEngine.SearchResult
     let isSelected: Bool
-    var multiSelectCount: Int = 0
+    var isMultiSelect: Bool = false
     var isOffline: Bool = false
     var globalDB: DatabasePool?
     var onSelect: (NSEvent.ModifierFlags) -> Void = { _ in }
-    var selectedResults: [SearchEngine.SearchResult] = []
+    var selectedResultsProvider: () -> [SearchEngine.SearchResult] = { [] }
 
     @State private var isHovering = false
     @State private var showHoverCard = false
@@ -40,7 +40,7 @@ struct ClipCard: View {
                 }
 
                 // 多选勾选角标
-                if isSelected && multiSelectCount > 1 {
+                if isSelected && isMultiSelect {
                     VStack {
                         HStack {
                             Image(systemName: "checkmark.circle.fill")
@@ -108,8 +108,9 @@ struct ClipCard: View {
                         onSelect(modifiers)
                     }
                 },
-                dragDataProvider: {
-                    let clips = isSelected && selectedResults.count > 1 ? selectedResults : [result]
+                dragDataProvider: { [selectedResultsProvider] in
+                    let selected = selectedResultsProvider()
+                    let clips = isSelected && selected.count > 1 ? selected : [result]
                     let content = FCPXMLExporter.generate(clips: clips, options: .init())
                     guard let data = content.data(using: .utf8) else { return nil }
                     return (data, "FindIt_Export.fcpxml")
@@ -148,8 +149,9 @@ struct ClipCard: View {
 
     @ViewBuilder
     private var contextMenuItems: some View {
-        let isBatch = isSelected && selectedResults.count > 1
-        let targets = isBatch ? selectedResults : [result]
+        let selected = selectedResultsProvider()
+        let isBatch = isSelected && selected.count > 1
+        let targets = isBatch ? selected : [result]
 
         if isBatch {
             let urls = targets.compactMap { $0.filePath.map { URL(fileURLWithPath: $0) } }

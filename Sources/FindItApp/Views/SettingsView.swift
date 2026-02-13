@@ -134,6 +134,55 @@ private struct GeneralTab: View {
                 set: { options.skipStt = !$0; options.save() }
             ))
 
+            Picker("STT 引擎", selection: Binding(
+                get: { options.sttEngine },
+                set: { options.sttEngine = $0; options.save() }
+            )) {
+                ForEach(STTEngine.allCases, id: \.self) { engine in
+                    Text(engine.displayLabel).tag(engine)
+                }
+            }
+            .disabled(options.skipStt)
+
+            Picker("STT 语言", selection: Binding(
+                get: { options.sttLanguageHint ?? "auto" },
+                set: {
+                    options.sttLanguageHint = ($0 == "auto") ? nil : $0
+                    options.save()
+                }
+            )) {
+                Text("自动检测").tag("auto")
+                Divider()
+                Text("英语 (English)").tag("en")
+                Text("日语 (日本語)").tag("ja")
+                Text("中文 (中文)").tag("zh")
+                Text("韩语 (한국어)").tag("ko")
+                Text("法语 (Français)").tag("fr")
+                Text("德语 (Deutsch)").tag("de")
+                Text("西班牙语 (Español)").tag("es")
+            }
+            .disabled(options.skipStt)
+
+            Toggle("在 Finder 中隐藏 SRT 字幕文件", isOn: Binding(
+                get: { options.hideSrtFiles },
+                set: { newValue in
+                    let oldValue = options.hideSrtFiles
+                    options.hideSrtFiles = newValue
+                    options.save()
+                    if oldValue != newValue {
+                        NotificationCenter.default.post(
+                            name: .srtVisibilityChanged,
+                            object: nil,
+                            userInfo: ["hidden": newValue]
+                        )
+                    }
+                }
+            ))
+            .disabled(options.skipStt)
+            Text("SRT 始终生成用于搜索，此选项仅控制 Finder 中是否可见")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             Toggle("云端视觉分析 (Gemini)", isOn: Binding(
                 get: { !options.skipVision },
                 set: { options.skipVision = !$0; options.save() }

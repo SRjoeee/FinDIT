@@ -129,7 +129,8 @@ public enum SpeechAnalyzerBridge {
         }
 
         let attributedText = try await collectedText
-        return extractSegments(from: attributedText)
+        let rawSegments = extractSegments(from: attributedText)
+        return mergeFragmentedSegments(rawSegments)
     }
 
     /// 从 AttributedString 提取带时间戳的转录片段
@@ -163,5 +164,103 @@ public enum SpeechAnalyzerBridge {
         }
 
         return segments
+    }
+
+    // MARK: - Segment 合并
+
+    /// 句末标点符号集合（中日英通用）
+    private static let sentenceEndingPunctuation: Set<Character> = [
+        "。", "！", "？", ".", "!", "?", "…", "\n",
+    ]
+
+    /// 合并碎片化的 segments（日语等逐字输出的后处理）
+    ///
+    /// Apple SpeechAnalyzer 对 CJK 语言返回逐字级 runs，
+    /// 每个汉字/假名各成一个 segment（如 259 个 segment 对 2 分钟日语音频）。
+    /// 本方法将相邻碎片合并为句子级 segments，使 SRT 可用。
+    ///
+    /// 合并策略:
+    /// 1. 拼接相邻 segments 文本，直到遇到句末标点
+    /// 2. 相邻 segments 间隔 > maxGap 秒 → 强制断句（说话人停顿）
+    /// 3. 已合并段时长超过 maxDuration → 强制断句（防止超长段）
+    /// 4. 累积字符数超过 maxChars → 强制断句（CJK 无标点时的 fallback）
+    /// 5. 合并后重新编号 (1-based)
+    ///
+    /// 对英语无害: 英语 segments 本身是句子级，无逐字碎片，几乎不触发合并。
+    ///
+    /// - Parameters:
+    ///   - segments: 原始碎片 segments
+    ///   - maxGap: 允许合并的最大时间间隔（秒），默认 1.0
+    ///   - maxDuration: 单个合并 segment 的最大时长（秒），默认 15.0
+    ///   - maxChars: 单个合并 segment 的最大非空白字符数，默认 40（CJK ≈ 1 行字幕）
+    /// - Returns: 合并后的 segments
+    public static func mergeFragmentedSegments(
+        _ segments: [TranscriptSegment],
+        maxGap: Double = 1.0,
+        maxDuration: Double = 15.0,
+        maxChars: Int = 40
+    ) -> [TranscriptSegment] {
+        guard !segments.isEmpty else { return [] }
+
+        var merged: [TranscriptSegment] = []
+        var index = 1
+
+        // 当前正在积累的合并段
+        var currentStart = segments[0].startTime
+        var currentEnd = segments[0].endTime
+        var currentText = segments[0].text
+
+        for i in 1..<segments.count {
+            let seg = segments[i]
+            let gap = seg.startTime - currentEnd
+            let duration = seg.endTime - currentStart
+
+            // 判断是否应该断句
+            let charCount = currentText.unicodeScalars
+                .filter { !$0.properties.isWhitespace }.count
+            let shouldSplit =
+                gap > maxGap                                   // 时间间隔过大
+                || duration > maxDuration                      // 累积时长过长
+                || endsWithSentencePunctuation(currentText)    // 上一段以句末标点结尾
+                || charCount > maxChars                        // CJK 无标点时的字符数上限
+
+            if shouldSplit {
+                // 输出当前累积段
+                merged.append(TranscriptSegment(
+                    index: index,
+                    startTime: currentStart,
+                    endTime: currentEnd,
+                    text: currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+                ))
+                index += 1
+                // 重置
+                currentStart = seg.startTime
+                currentEnd = seg.endTime
+                currentText = seg.text
+            } else {
+                // 继续拼接
+                currentEnd = seg.endTime
+                currentText += seg.text
+            }
+        }
+
+        // 输出最后一段
+        let finalText = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !finalText.isEmpty {
+            merged.append(TranscriptSegment(
+                index: index,
+                startTime: currentStart,
+                endTime: currentEnd,
+                text: finalText
+            ))
+        }
+
+        return merged
+    }
+
+    /// 检查文本是否以句末标点结尾
+    private static func endsWithSentencePunctuation(_ text: String) -> Bool {
+        guard let last = text.last else { return false }
+        return sentenceEndingPunctuation.contains(last)
     }
 }

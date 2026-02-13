@@ -109,105 +109,67 @@ final class AppState {
 
         case .addAsParent(let existingChildren):
             // 添加父级：创建数据库，索引时排除已有子文件夹
-            let volumeInfo = VolumeResolver.resolve(path: path)
-            volumeInfoCache[path] = volumeInfo
-
-            try await Task.detached(priority: .userInitiated) {
-                let folderDB = try DatabaseManager.openFolderDatabase(at: path)
-
-                // 便携索引：检测并修复路径偏移（跨机器/路径变更）
-                let rebaseResult = try PathRebaser.rebaseIfNeeded(
-                    folderDB: folderDB,
-                    newPath: path
-                )
-
-                try folderDB.write { db in
-                    let existing = try WatchedFolder.fetchOne(db, sql:
-                        "SELECT * FROM watched_folders WHERE folder_path = ?",
-                        arguments: [path])
-                    if existing == nil {
-                        var folder = WatchedFolder(
-                            folderPath: path,
-                            volumeName: volumeInfo.name,
-                            volumeUuid: volumeInfo.uuid,
-                            lastSeenAt: Clip.sqliteDatetime()
-                        )
-                        try folder.insert(db)
-                    } else {
-                        // 重新添加：更新卷信息（跨机器时 volume 可能变了）
-                        try db.execute(sql: """
-                            UPDATE watched_folders SET volume_name = ?, volume_uuid = ?,
-                                is_available = 1, last_seen_at = ?
-                            WHERE folder_path = ?
-                            """, arguments: [volumeInfo.name, volumeInfo.uuid,
-                                             Clip.sqliteDatetime(), path])
-                    }
-                }
-
-                let _ = try SyncEngine.sync(
-                    folderPath: path,
-                    folderDB: folderDB,
-                    globalDB: globalDB,
-                    force: rebaseResult.didRebase
-                )
-            }.value
-
-            try reloadFolders()
-
-            // 通知 IndexingManager 索引时排除子文件夹
+            try await registerAndSyncFolder(path: path, globalDB: globalDB)
             indexingManager?.queueFolder(path, excluding: Set(existingChildren))
             fileWatcherManager?.watchFolder(path)
 
         case .addNormally:
             // 正常添加（无重叠）
-            let volumeInfo = VolumeResolver.resolve(path: path)
-            volumeInfoCache[path] = volumeInfo
-
-            try await Task.detached(priority: .userInitiated) {
-                let folderDB = try DatabaseManager.openFolderDatabase(at: path)
-
-                // 便携索引：检测并修复路径偏移（跨机器/路径变更）
-                let rebaseResult = try PathRebaser.rebaseIfNeeded(
-                    folderDB: folderDB,
-                    newPath: path
-                )
-
-                try folderDB.write { db in
-                    let existing = try WatchedFolder.fetchOne(db, sql:
-                        "SELECT * FROM watched_folders WHERE folder_path = ?",
-                        arguments: [path])
-                    if existing == nil {
-                        var folder = WatchedFolder(
-                            folderPath: path,
-                            volumeName: volumeInfo.name,
-                            volumeUuid: volumeInfo.uuid,
-                            lastSeenAt: Clip.sqliteDatetime()
-                        )
-                        try folder.insert(db)
-                    } else {
-                        // 重新添加：更新卷信息（跨机器时 volume 可能变了）
-                        try db.execute(sql: """
-                            UPDATE watched_folders SET volume_name = ?, volume_uuid = ?,
-                                is_available = 1, last_seen_at = ?
-                            WHERE folder_path = ?
-                            """, arguments: [volumeInfo.name, volumeInfo.uuid,
-                                             Clip.sqliteDatetime(), path])
-                    }
-                }
-
-                let _ = try SyncEngine.sync(
-                    folderPath: path,
-                    folderDB: folderDB,
-                    globalDB: globalDB,
-                    force: rebaseResult.didRebase
-                )
-            }.value
-
-            try reloadFolders()
-
+            try await registerAndSyncFolder(path: path, globalDB: globalDB)
             indexingManager?.queueFolder(path)
             fileWatcherManager?.watchFolder(path)
         }
+    }
+
+    /// 注册文件夹到数据库并同步到全局索引
+    ///
+    /// 共用逻辑：打开文件夹库 → rebase → upsert WatchedFolder → SyncEngine.sync。
+    /// addAsParent 和 addNormally 调用此方法后各自添加差异部分。
+    private func registerAndSyncFolder(path: String, globalDB: DatabasePool) async throws {
+        let volumeInfo = VolumeResolver.resolve(path: path)
+        volumeInfoCache[path] = volumeInfo
+
+        try await Task.detached(priority: .userInitiated) {
+            let folderDB = try DatabaseManager.openFolderDatabase(at: path)
+
+            // 便携索引：检测并修复路径偏移（跨机器/路径变更）
+            let rebaseResult = try PathRebaser.rebaseIfNeeded(
+                folderDB: folderDB,
+                newPath: path
+            )
+
+            try folderDB.write { db in
+                let existing = try WatchedFolder.fetchOne(db, sql:
+                    "SELECT * FROM watched_folders WHERE folder_path = ?",
+                    arguments: [path])
+                if existing == nil {
+                    var folder = WatchedFolder(
+                        folderPath: path,
+                        volumeName: volumeInfo.name,
+                        volumeUuid: volumeInfo.uuid,
+                        lastSeenAt: Clip.sqliteDatetime()
+                    )
+                    try folder.insert(db)
+                } else {
+                    // 重新添加：更新卷信息（跨机器时 volume 可能变了）
+                    try db.execute(sql: """
+                        UPDATE watched_folders SET volume_name = ?, volume_uuid = ?,
+                            is_available = 1, last_seen_at = ?
+                        WHERE folder_path = ?
+                        """, arguments: [volumeInfo.name, volumeInfo.uuid,
+                                         Clip.sqliteDatetime(), path])
+                }
+            }
+
+            let _ = try SyncEngine.sync(
+                folderPath: path,
+                folderDB: folderDB,
+                globalDB: globalDB,
+                force: rebaseResult.didRebase
+            )
+        }.value
+
+        try reloadFolders()
     }
 
     /// 移除文件夹

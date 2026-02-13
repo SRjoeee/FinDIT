@@ -19,6 +19,9 @@ struct ClipPreviewInfo {
 /// 使用 NSEvent local monitor 而非 SwiftUI `.onKeyPress`，
 /// 因为 `.onKeyPress` 无法与 NSViewRepresentable 的 AppKit 焦点系统协调——
 /// 搜索框聚焦时它仍会拦截空格键，而搜索框失焦后它又不触发。
+///
+/// event monitor 直接调用 SelectionManager 方法（类型安全），
+/// 不再通过 NotificationCenter 中转。
 @MainActor
 final class QuickLookCoordinator: NSObject, @preconcurrency QLPreviewPanelDataSource {
     /// 当前 QL 预览的文件 URL（仅用于非视频文件）
@@ -26,6 +29,9 @@ final class QuickLookCoordinator: NSObject, @preconcurrency QLPreviewPanelDataSo
 
     /// 键盘事件监听器（常驻，ContentView 启动时安装）
     private var eventMonitor: Any?
+
+    /// 选择管理器（.task 中注入，event monitor 直接调用其方法）
+    var selectionManager: SelectionManager?
 
     /// 任一预览面板是否可见
     var isPreviewVisible: Bool {
@@ -141,11 +147,11 @@ final class QuickLookCoordinator: NSObject, @preconcurrency QLPreviewPanelDataSo
     /// 启动键盘事件监听（ContentView 初始化时调用一次）
     ///
     /// 搜索框聚焦（firstResponder 是 NSTextView）时放行所有按键，
-    /// 否则拦截方向键和空格键并通过 Notification 转发给 ContentView。
+    /// 否则拦截方向键和空格键并直接调用 SelectionManager 方法。
     func startMonitoring() {
         guard eventMonitor == nil else { return }
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard self != nil else { return event }
+            guard let self else { return event }
 
             // 文本编辑中（搜索框等）→ 放行所有按键
             if NSApp.keyWindow?.firstResponder is NSTextView {
@@ -154,23 +160,23 @@ final class QuickLookCoordinator: NSObject, @preconcurrency QLPreviewPanelDataSo
 
             // ⌘A → 全选
             if event.keyCode == 0 && event.modifierFlags.contains(.command) {
-                Self.postSelectAll()
+                self.selectionManager?.handleSelectAll()
                 return nil
             }
 
             // Escape → 清空选中
             if event.keyCode == 53 {
-                Self.postDeselectAll()
+                self.selectionManager?.handleDeselectAll()
                 return nil
             }
 
             let mods = event.modifierFlags
             switch event.keyCode {
-            case 123: Self.postNavigate(.left, modifiers: mods); return nil   // ←
-            case 124: Self.postNavigate(.right, modifiers: mods); return nil  // →
-            case 125: Self.postNavigate(.down, modifiers: mods); return nil   // ↓
-            case 126: Self.postNavigate(.up, modifiers: mods); return nil     // ↑
-            case 49:  Self.postToggleQL(); return nil                         // space
+            case 123: self.selectionManager?.handleArrowKey(.left, modifiers: mods); return nil   // ←
+            case 124: self.selectionManager?.handleArrowKey(.right, modifiers: mods); return nil  // →
+            case 125: self.selectionManager?.handleArrowKey(.down, modifiers: mods); return nil   // ↓
+            case 126: self.selectionManager?.handleArrowKey(.up, modifiers: mods); return nil     // ↑
+            case 49:  self.selectionManager?.handleSpaceKey(); return nil                         // space
             default:  return event
             }
         }
@@ -183,30 +189,4 @@ final class QuickLookCoordinator: NSObject, @preconcurrency QLPreviewPanelDataSo
         }
     }
 
-    private static func postNavigate(_ direction: NavigationDirection, modifiers: NSEvent.ModifierFlags) {
-        NotificationCenter.default.post(
-            name: .navigateClip,
-            object: nil,
-            userInfo: ["direction": direction, "modifiers": modifiers]
-        )
-    }
-
-    private static func postToggleQL() {
-        NotificationCenter.default.post(name: .toggleQuickLook, object: nil)
-    }
-
-    private static func postSelectAll() {
-        NotificationCenter.default.post(name: .selectAllClips, object: nil)
-    }
-
-    private static func postDeselectAll() {
-        NotificationCenter.default.post(name: .deselectAllClips, object: nil)
-    }
-}
-
-extension Notification.Name {
-    static let navigateClip = Notification.Name("FindIt.navigateClip")
-    static let toggleQuickLook = Notification.Name("FindIt.toggleQuickLook")
-    static let selectAllClips = Notification.Name("FindIt.selectAllClips")
-    static let deselectAllClips = Notification.Name("FindIt.deselectAllClips")
 }

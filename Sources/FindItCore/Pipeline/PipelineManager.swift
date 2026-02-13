@@ -427,14 +427,29 @@ public enum PipelineManager {
 
     /// 检查是否有可用的 STT 引擎
     ///
-    /// macOS 26+: SpeechAnalyzer 可用则返回 true（即使 whisperKit 为 nil）
-    /// 较旧 macOS: 需要 whisperKit 不为 nil
-    static func isSttAvailable(whisperKit: WhisperKit?) async -> Bool {
-        if whisperKit != nil { return true }
-        if #available(macOS 26.0, *) {
-            return await SpeechAnalyzerBridge.isAvailable()
+    /// 根据 `sttEngine` 偏好检查可用性:
+    /// - `.whisperKitOnly`: 仅 WhisperKit 可用时返回 true
+    /// - `.speechAnalyzerOnly`: 仅 SpeechAnalyzer 可用时返回 true
+    /// - `.auto`: WhisperKit 或 SpeechAnalyzer 任一可用即返回 true
+    static func isSttAvailable(
+        whisperKit: WhisperKit?,
+        sttEngine: STTEngine = .auto
+    ) async -> Bool {
+        switch sttEngine {
+        case .whisperKitOnly:
+            return whisperKit != nil
+        case .speechAnalyzerOnly:
+            if #available(macOS 26.0, *) {
+                return await SpeechAnalyzerBridge.isAvailable()
+            }
+            return false
+        case .auto:
+            if whisperKit != nil { return true }
+            if #available(macOS 26.0, *) {
+                return await SpeechAnalyzerBridge.isAvailable()
+            }
+            return false
         }
-        return false
     }
 
     /// 从已有缩略图目录加载帧路径（恢复模式用）

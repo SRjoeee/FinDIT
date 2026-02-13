@@ -2,24 +2,25 @@ import SwiftUI
 import AppKit
 import FindItCore
 
+/// sheet(item:) 驱动导出的载荷
+struct ExportPayload: Identifiable {
+    let id = UUID()
+    let clips: [SearchEngine.SearchResult]
+}
+
 struct ContentView: View {
     @State private var appState = AppState()
     @State private var searchState = SearchState()
     @State private var indexingManager = IndexingManager()
     @State private var columnVisibility: NavigationSplitViewVisibility = .detailOnly
     @State private var showFolderSheet = false
-    @State private var selectedClipIds: Set<Int64> = []
-    @State private var focusedClipId: Int64?
-    @State private var selectionAnchorId: Int64?
+    @State private var selectionManager = SelectionManager()
     @State private var qlCoordinator = QuickLookCoordinator()
     @State private var volumeMonitor = VolumeMonitor()
     @State private var fileWatcherManager = FileWatcherManager()
-    @State private var columnsPerRow: Int = 3
-    @State private var scrollOnSelect = false
     @State private var sidebarSelection: SidebarSelection = .all
     @State private var folderErrorMessage: String?
-    @State private var showExportSheet = false
-    @State private var exportClips: [SearchEngine.SearchResult] = []
+    @State private var exportPayload: ExportPayload?
     @AppStorage("FindIt.showOfflineFiles") private var showOfflineFiles = false
 
     var body: some View {
@@ -30,29 +31,25 @@ struct ContentView: View {
             .onReceive(NotificationCenter.default.publisher(for: .manageFolder)) { _ in
                 showFolderSheet = true
             }
-            .onReceive(NotificationCenter.default.publisher(for: .navigateClip)) { notification in
-                guard let direction = notification.userInfo?["direction"] as? NavigationDirection else { return }
-                let modifiers = notification.userInfo?["modifiers"] as? NSEvent.ModifierFlags ?? []
-                handleArrowKey(direction, modifiers: modifiers)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .toggleQuickLook)) { _ in
-                handleSpaceKey()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .selectAllClips)) { _ in
-                handleSelectAll()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .deselectAllClips)) { _ in
-                handleDeselectAll()
-            }
             .onReceive(NotificationCenter.default.publisher(for: .exportToNLE)) { notification in
                 if let clips = notification.userInfo?["clips"] as? [SearchEngine.SearchResult], !clips.isEmpty {
-                    exportClips = clips
-                } else if !selectedResults.isEmpty {
-                    exportClips = selectedResults
-                } else {
-                    return
+                    exportPayload = ExportPayload(clips: clips)
+                } else if !selectionManager.selectedResults.isEmpty {
+                    exportPayload = ExportPayload(clips: selectionManager.selectedResults)
                 }
-                showExportSheet = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .srtVisibilityChanged)) { notification in
+                guard let hidden = notification.userInfo?["hidden"] as? Bool else { return }
+                let folderPaths = appState.folders.map(\.folderPath)
+                Task.detached(priority: .utility) {
+                    let result = await SRTVisibilityManager.batchSetVisibility(
+                        hidden: hidden,
+                        folderPaths: folderPaths
+                    )
+                    if result.processed > 0 || result.failed > 0 {
+                        print("[SRT] 批量\(hidden ? "隐藏" : "显示"): 成功 \(result.processed), 失败 \(result.failed)")
+                    }
+                }
             }
     }
 
@@ -84,13 +81,12 @@ struct ContentView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    exportClips = selectedResults
-                    showExportSheet = true
+                    exportPayload = ExportPayload(clips: selectionManager.selectedResults)
                 } label: {
                     Image(systemName: "square.and.arrow.up")
                 }
                 .help("导出到 NLE (⇧⌘E)")
-                .disabled(selectedClipIds.isEmpty)
+                .disabled(selectionManager.selectedClipIds.isEmpty)
             }
         }
         .toolbarBackground(.hidden, for: .windowToolbar)
@@ -98,8 +94,8 @@ struct ContentView: View {
         .sheet(isPresented: $showFolderSheet) {
             FolderManagementSheet(appState: appState, indexingManager: indexingManager)
         }
-        .sheet(isPresented: $showExportSheet) {
-            ExportSheet(clips: exportClips)
+        .sheet(item: $exportPayload) { payload in
+            ExportSheet(clips: payload.clips)
         }
         .alert("无法添加文件夹", isPresented: Binding(
             get: { folderErrorMessage != nil },
@@ -111,32 +107,11 @@ struct ContentView: View {
                 Text(msg)
             }
         }
-        .onChange(of: focusedClipId) {
-            // 点击卡片时让搜索框失焦，event monitor 可处理后续键盘事件
-            if focusedClipId != nil {
-                let window = NSApp.keyWindow
-                if window?.firstResponder is NSTextView {
-                    window?.makeFirstResponder(nil)
-                }
-            }
-            // 预览面板已打开时，焦点变更自动更新预览
-            guard let clipId = focusedClipId,
-                  let result = searchState.visibleResults.first(where: { $0.clipId == clipId }),
-                  let path = result.filePath,
-                  FileManager.default.fileExists(atPath: path) else { return }
-            let info = ClipPreviewInfo(
-                url: URL(fileURLWithPath: path),
-                startTime: result.startTime,
-                endTime: result.endTime,
-                isVideo: FileScanner.isVideoFile(path)
-            )
-            qlCoordinator.updateIfVisible(info: info)
+        .onChange(of: selectionManager.focusedClipId) {
+            selectionManager.updatePreviewIfNeeded()
         }
         .onChange(of: searchState.query) {
-            // 搜索词变更时清空选中
-            selectedClipIds = []
-            focusedClipId = nil
-            selectionAnchorId = nil
+            selectionManager.clearSelection()
         }
         .onChange(of: sidebarSelection) {
             switch sidebarSelection {
@@ -160,6 +135,9 @@ struct ContentView: View {
             }
         }
         .task {
+            selectionManager.searchState = searchState
+            selectionManager.qlCoordinator = qlCoordinator
+            qlCoordinator.selectionManager = selectionManager
             qlCoordinator.startMonitoring()
             searchState.appState = appState
             indexingManager.appState = appState
@@ -246,107 +224,14 @@ struct ContentView: View {
                         resultCount: visible.count,
                         offlineFolders: offlineFolderPaths,
                         globalDB: appState.globalDB,
-                        selectedClipIds: $selectedClipIds,
-                        focusedClipId: $focusedClipId,
-                        selectionAnchorId: $selectionAnchorId,
-                        columnsPerRow: $columnsPerRow,
-                        scrollOnSelect: $scrollOnSelect
+                        selectionManager: selectionManager
                     )
                 }
             }
         }
     }
 
-    // MARK: - Keyboard Actions
-
-    /// 空格键：切换预览（使用焦点 clip）
-    ///
-    /// 视频文件 → VideoPreviewPanel（seek 到 startTime），
-    /// 其他文件 → QLPreviewPanel。
-    private func handleSpaceKey() {
-        guard let clipId = focusedClipId,
-              let result = searchState.visibleResults.first(where: { $0.clipId == clipId }),
-              let path = result.filePath,
-              FileManager.default.fileExists(atPath: path) else { return }
-        let info = ClipPreviewInfo(
-            url: URL(fileURLWithPath: path),
-            startTime: result.startTime,
-            endTime: result.endTime,
-            isVideo: FileScanner.isVideoFile(path)
-        )
-        qlCoordinator.toggle(info: info)
-    }
-
-    /// 方向键：网格导航
-    ///
-    /// 左/右移动 ±1，上/下按列数跳行。
-    /// 无选中时按任意方向键选中第一项。
-    /// Shift+方向键扩展选中范围。
-    private func handleArrowKey(_ direction: NavigationDirection, modifiers: NSEvent.ModifierFlags = []) {
-        let results = searchState.visibleResults
-        guard !results.isEmpty else { return }
-
-        // 无焦点 → 选第一项
-        guard let currentId = focusedClipId,
-              let currentIndex = results.firstIndex(where: { $0.clipId == currentId }) else {
-            let firstId = results[0].clipId
-            scrollOnSelect = true
-            focusedClipId = firstId
-            selectedClipIds = [firstId]
-            selectionAnchorId = firstId
-            return
-        }
-
-        let newIndex: Int
-        switch direction {
-        case .left:
-            newIndex = max(0, currentIndex - 1)
-        case .right:
-            newIndex = min(results.count - 1, currentIndex + 1)
-        case .up:
-            newIndex = max(0, currentIndex - columnsPerRow)
-        case .down:
-            newIndex = min(results.count - 1, currentIndex + columnsPerRow)
-        }
-
-        guard newIndex != currentIndex else { return }
-        let newId = results[newIndex].clipId
-        scrollOnSelect = true
-        focusedClipId = newId
-
-        if modifiers.contains(.shift) {
-            // Shift+方向键：扩展选中
-            selectedClipIds.insert(newId)
-        } else {
-            // 普通方向键：单选
-            selectedClipIds = [newId]
-            selectionAnchorId = newId
-        }
-    }
-
-    /// ⌘A：全选当前可见结果
-    private func handleSelectAll() {
-        let results = searchState.visibleResults
-        guard !results.isEmpty else { return }
-        selectedClipIds = Set(results.map(\.clipId))
-        if focusedClipId == nil {
-            focusedClipId = results[0].clipId
-        }
-    }
-
-    /// Escape：清空选中
-    private func handleDeselectAll() {
-        selectedClipIds = []
-        focusedClipId = nil
-        selectionAnchorId = nil
-    }
-
     // MARK: - Helpers
-
-    /// 当前选中的搜索结果
-    private var selectedResults: [SearchEngine.SearchResult] {
-        searchState.visibleResults.filter { selectedClipIds.contains($0.clipId) }
-    }
 
     /// 离线文件夹路径集合
     private var offlineFolderPaths: Set<String> {

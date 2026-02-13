@@ -39,4 +39,5 @@ extension Notification.Name {
     static let manageFolder = Notification.Name("FindIt.manageFolder")
     static let focusSearch = Notification.Name("FindIt.focusSearch")
     static let exportToNLE = Notification.Name("FindIt.exportToNLE")
+    static let srtVisibilityChanged = Notification.Name("FindIt.srtVisibilityChanged")
 }

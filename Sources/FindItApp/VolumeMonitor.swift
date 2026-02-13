@@ -28,6 +28,15 @@ final class VolumeMonitor {
 
     // MARK: - 生命周期
 
+    deinit {
+        // 防御性安全网：确保 DiskArbitration 引用计数平衡
+        // deinit 是 nonisolated，需 assumeIsolated 访问 actor 属性
+        // （@State 属性的 deinit 在主线程执行，assumeIsolated 安全）
+        MainActor.assumeIsolated {
+            stopMonitoring()
+        }
+    }
+
     /// 开始监控卷挂载/卸载事件
     func startMonitoring() {
         guard !isMonitoring else { return }

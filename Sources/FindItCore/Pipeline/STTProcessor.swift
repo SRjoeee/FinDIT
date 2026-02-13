@@ -1,5 +1,4 @@
 import Foundation
-import NaturalLanguage
 import WhisperKit
 
 // MARK: - TranscriptSegment
@@ -293,38 +292,198 @@ public enum STTProcessor {
         )
     }
 
-    /// 使用 NLLanguageRecognizer 检测音频语言（无需 WhisperKit）
+    /// 多语言探测式语言检测（无需 WhisperKit）
     ///
-    /// macOS 26+ 专用：先用 SpeechAnalyzer + en_US 快速转录，
-    /// 再用 NLLanguageRecognizer 分析文本判断实际语言。
-    /// 如果检测到英语，返回的 segments 可直接复用，避免二次转录。
+    /// macOS 26+ 专用：先用 FFmpeg `silencedetect` 定位第一段有语音的位置，
+    /// 提取 15 秒音频样本，对多种候选语言分别用 SpeechAnalyzer 转录，
+    /// 选择产出最多有效文本的语言作为检测结果。
     ///
-    /// - Parameter audioPath: WAV 音频文件路径
-    /// - Returns: (language: ISO 639-1 代码, segments: 英语转录结果)
+    /// 对日语/中文等非英语音频准确率高，
+    /// 且通过固定 15 秒采样 + 并行探测降低了长视频的检测耗时。
+    ///
+    /// 默认候选语言列表（覆盖设置页所有选项）
+    public static let defaultCandidateLanguages = ["en", "ja", "zh", "ko", "fr", "de", "es"]
+
+    /// CJK 语言代码集合（中日韩：每字符 ≈ 1 语义单位）
+    private static let cjkLanguages: Set<String> = ["zh", "ja", "ko"]
+
+    /// 计算语言探测评分（信息密度归一化）
+    ///
+    /// CJK 语言按非空白字符数评分（每个汉字/假名 ≈ 1 词），
+    /// 空格分隔语言按词数评分。两种方式产出可比较的分数，
+    /// 避免英文字符多→得分高的 CJK 偏差。
+    ///
+    /// - Parameters:
+    ///   - text: 转录文本
+    ///   - language: ISO 639-1 语言代码
+    /// - Returns: 语义单位数（≥ 0）
+    public static func computeLIDScore(text: String, language: String) -> Int {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return 0 }
+
+        if cjkLanguages.contains(language) {
+            // CJK: 每个非空白字符 ≈ 1 语义单位
+            return trimmed.unicodeScalars
+                .filter { !$0.properties.isWhitespace }.count
+        }
+        // 空格分隔语言: 按词计数
+        return trimmed.split(whereSeparator: \.isWhitespace).count
+    }
+
+    /// - Parameters:
+    ///   - audioPath: 视频或音频文件路径
+    ///   - sampleDuration: 采样时长（秒），默认 15
+    ///   - candidateLanguages: 候选语言列表（ISO 639-1），默认覆盖设置页所有语言
+    ///   - ffmpegConfig: FFmpeg 配置
+    /// - Returns: (language: 检测到的语言代码, segments: 获胜语言的转录结果)
     @available(macOS 26.0, *)
-    public static func detectLanguageViaNL(
-        audioPath: String
+    public static func detectLanguageViaSpeechProbe(
+        audioPath: String,
+        sampleDuration: Double = 15.0,
+        candidateLanguages: [String] = defaultCandidateLanguages,
+        ffmpegConfig: FFmpegConfig = .default
     ) async -> (language: String?, segments: [TranscriptSegment]) {
+        // 1. 用 silencedetect 找到第一段有语音的位置
+        let speechStart = await detectFirstSpeechPosition(
+            audioPath: audioPath,
+            ffmpegConfig: ffmpegConfig
+        )
+
+        // 全片静音 → 纯音乐/无对白，跳过 STT
+        if speechStart == nil {
+            return (nil, [])
+        }
+
+        // 2. 提取样本音频
+        let tmpDir = NSTemporaryDirectory()
+        let samplePath = (tmpDir as NSString)
+            .appendingPathComponent("lang_probe_\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(atPath: samplePath) }
+
         do {
-            let segments = try await SpeechAnalyzerBridge.transcribe(
-                audioPath: audioPath,
-                language: "en"
+            try await AudioExtractor.extractAudioAsync(
+                inputPath: audioPath,
+                outputPath: samplePath,
+                startTime: speechStart,
+                duration: sampleDuration,
+                config: ffmpegConfig
             )
-            guard !segments.isEmpty else { return (nil, []) }
-
-            let text = segments.map(\.text).joined(separator: " ")
-            guard text.count > 10 else { return (nil, []) }
-
-            let recognizer = NLLanguageRecognizer()
-            recognizer.processString(text)
-            guard let dominant = recognizer.dominantLanguage else {
-                return (nil, segments)
-            }
-
-            return (dominant.rawValue, segments)
         } catch {
             return (nil, [])
         }
+
+        guard FileManager.default.fileExists(atPath: samplePath) else {
+            return (nil, [])
+        }
+
+        // 3. 对每种候选语言并行转录同一段样本
+        let probeResults = await withTaskGroup(
+            of: (String, Int, [TranscriptSegment]).self
+        ) { group in
+            for lang in candidateLanguages {
+                group.addTask {
+                    let available = await SpeechAnalyzerBridge.isAvailable(language: lang)
+                    guard available else { return (lang, 0, []) }
+                    do {
+                        let segments = try await SpeechAnalyzerBridge.transcribe(
+                            audioPath: samplePath,
+                            language: lang
+                        )
+                        let text = segments.map(\.text).joined()
+                        let score = computeLIDScore(text: text, language: lang)
+                        return (lang, score, segments)
+                    } catch {
+                        return (lang, 0, [])
+                    }
+                }
+            }
+
+            var results: [(String, Int, [TranscriptSegment])] = []
+            for await result in group {
+                results.append(result)
+            }
+            return results
+        }
+
+        // 选择得分最高的语言
+        guard let best = probeResults.max(by: { $0.1 < $1.1 }),
+              best.1 > 0 else {
+            return (nil, [])
+        }
+        return (best.0, best.2)
+    }
+
+    /// 用 FFmpeg `silencedetect` 定位第一段有语音的时间戳
+    ///
+    /// - Returns: 第一段语音的起始时间（秒），全片静音返回 nil，
+    ///   全片有语音（无静音检测输出）返回 0
+    static func detectFirstSpeechPosition(
+        audioPath: String,
+        ffmpegConfig: FFmpegConfig = .default
+    ) async -> Double? {
+        let args = [
+            "-t", "120",           // 只扫描前 2 分钟，足以定位第一段语音
+            "-i", audioPath,
+            "-af", "silencedetect=noise=-30dB:d=1.0",
+            "-f", "null", "-"
+        ]
+
+        let result: FFmpegBridge.ProcessResult
+        do {
+            result = try await FFmpegBridge.runAsync(
+                arguments: args, config: ffmpegConfig, timeout: 30
+            )
+        } catch {
+            // FFmpeg 失败 → 假定从头有语音
+            return 0
+        }
+
+        // 解析 stderr 中的 silence_end 行
+        // 格式: [silencedetect @ ...] silence_end: 20.500 | silence_duration: 20.500
+        let lines = result.stderr.components(separatedBy: "\n")
+        for line in lines {
+            if line.contains("silence_end:") {
+                let parts = line.components(separatedBy: "silence_end:")
+                if parts.count >= 2 {
+                    let valueStr = parts[1]
+                        .components(separatedBy: "|")[0]
+                        .trimmingCharacters(in: .whitespaces)
+                    if let value = Double(valueStr) {
+                        return value
+                    }
+                }
+            }
+        }
+
+        // 无 silence_end 输出
+        // 检查是否有 silence_start（解析第一个 silence_start 的时间戳）
+        var firstSilenceStart: Double?
+        for line in lines {
+            if line.contains("silence_start:") {
+                let parts = line.components(separatedBy: "silence_start:")
+                if parts.count >= 2 {
+                    let valueStr = parts[1]
+                        .trimmingCharacters(in: .whitespaces)
+                    if let value = Double(valueStr) {
+                        firstSilenceStart = value
+                        break
+                    }
+                }
+            }
+        }
+
+        if let silenceStart = firstSilenceStart {
+            if silenceStart < 0.5 {
+                // silence_start ≈ 0 且无 silence_end → 全片静音（静音从头持续到扫描窗口结束）
+                return nil
+            } else {
+                // silence_start > 0 且无 silence_end → 开头有语音，之后变静音
+                return 0
+            }
+        }
+
+        // 无任何 silencedetect 输出 → 全片有语音
+        return 0
     }
 
     /// 转录音频文件
@@ -388,13 +547,15 @@ public enum STTProcessor {
 
     /// 使用最优可用引擎转录音频
     ///
-    /// macOS 26+: 优先使用 Apple SpeechAnalyzer（更快，系统管理模型）
-    /// 较旧 macOS: 回退到 WhisperKit
+    /// 优先级: WhisperKit（高精度，尤其 CJK）→ SpeechAnalyzer（macOS 26+，轻量回退）
+    ///
+    /// WhisperKit 产出句子级 segments，语言检测准确。
+    /// SpeechAnalyzer 速度快（70x 实时）但 CJK 分段为逐字级，仅作为回退。
     ///
     /// - Parameters:
     ///   - audioPath: WAV 音频文件路径
     ///   - language: 语言代码（ISO 639-1），nil = 自动检测
-    ///   - whisperKit: WhisperKit 实例（SpeechAnalyzer 不可用时使用）
+    ///   - whisperKit: WhisperKit 实例（优先使用）
     ///   - config: STT 配置
     ///   - onProgress: 进度回调
     /// - Returns: (segments: 转录片段, engine: 使用的引擎名称)
@@ -402,37 +563,66 @@ public enum STTProcessor {
         audioPath: String,
         language: String?,
         whisperKit: WhisperKit?,
+        sttEngine: STTEngine = .auto,
         config: Config = .default,
         onProgress: (@Sendable (String) -> Void)? = nil
     ) async throws -> (segments: [TranscriptSegment], engine: String) {
-        // macOS 26+: 尝试 SpeechAnalyzer
-        if #available(macOS 26.0, *) {
-            let available = await SpeechAnalyzerBridge.isAvailable(language: language)
-            if available {
-                let segments = try await SpeechAnalyzerBridge.transcribe(
-                    audioPath: audioPath,
-                    language: language,
-                    onProgress: onProgress
+        switch sttEngine {
+        case .whisperKitOnly:
+            guard let whisperKit = whisperKit else {
+                throw STTError.modelLoadFailed(
+                    detail: "STT 引擎设置为 WhisperKit Only，但 WhisperKit 未加载"
                 )
-                if !segments.isEmpty {
-                    return (segments, "SpeechAnalyzer")
-                }
-                // 空结果降级到 WhisperKit
             }
-        }
+            var sttConfig = config
+            sttConfig.language = language
+            let segments = try await transcribe(
+                audioPath: audioPath, whisperKit: whisperKit, config: sttConfig
+            )
+            return (segments, "WhisperKit")
 
-        // 回退到 WhisperKit
-        guard let whisperKit = whisperKit else {
-            throw STTError.modelLoadFailed(detail: "无可用 STT 引擎")
+        case .speechAnalyzerOnly:
+            if #available(macOS 26.0, *) {
+                let available = await SpeechAnalyzerBridge.isAvailable(language: language)
+                if available {
+                    let segments = try await SpeechAnalyzerBridge.transcribe(
+                        audioPath: audioPath, language: language, onProgress: onProgress
+                    )
+                    if !segments.isEmpty {
+                        return (segments, "SpeechAnalyzer")
+                    }
+                }
+            }
+            throw STTError.modelLoadFailed(
+                detail: "STT 引擎设置为 SpeechAnalyzer Only，但 SpeechAnalyzer 不可用"
+            )
+
+        case .auto:
+            // 优先: WhisperKit（高精度，句子级分段）
+            if let whisperKit = whisperKit {
+                var sttConfig = config
+                sttConfig.language = language
+                let segments = try await transcribe(
+                    audioPath: audioPath, whisperKit: whisperKit, config: sttConfig
+                )
+                return (segments, "WhisperKit")
+            }
+            // 回退: SpeechAnalyzer (macOS 26+, WhisperKit 不可用时)
+            if #available(macOS 26.0, *) {
+                let available = await SpeechAnalyzerBridge.isAvailable(language: language)
+                if available {
+                    let segments = try await SpeechAnalyzerBridge.transcribe(
+                        audioPath: audioPath, language: language, onProgress: onProgress
+                    )
+                    if !segments.isEmpty {
+                        return (segments, "SpeechAnalyzer")
+                    }
+                }
+            }
+            throw STTError.modelLoadFailed(
+                detail: "无可用 STT 引擎（WhisperKit 未加载，SpeechAnalyzer 不可用）"
+            )
         }
-        var sttConfig = config
-        sttConfig.language = language
-        let segments = try await transcribe(
-            audioPath: audioPath,
-            whisperKit: whisperKit,
-            config: sttConfig
-        )
-        return (segments, "WhisperKit")
     }
 
     /// 将 WhisperKit TranscriptionSegment 转换为内部 TranscriptSegment
@@ -527,7 +717,7 @@ public enum STTProcessor {
     ///
     /// - Parameter segments: 转录片段数组
     /// - Returns: SRT 格式字符串
-    static func generateSRT(from segments: [TranscriptSegment]) -> String {
+    public static func generateSRT(from segments: [TranscriptSegment]) -> String {
         guard !segments.isEmpty else { return "" }
 
         var lines: [String] = []
@@ -621,23 +811,27 @@ public enum STTProcessor {
     /// 写入 SRT 文件，遵循 ADR-012 降级策略
     ///
     /// 先尝试写入视频同目录，失败后降级到 App Support 目录。
+    /// 写入成功后根据 `hidden` 参数设置 Finder 可见性。
     ///
     /// - Parameters:
     ///   - content: SRT 内容
     ///   - videoPath: 原始视频路径（用于路径解析）
+    ///   - hidden: 是否在 Finder 中隐藏（默认 true）
     /// - Returns: 实际写入的路径
-    static func writeSRT(content: String, videoPath: String) throws -> String {
+    public static func writeSRT(content: String, videoPath: String, hidden: Bool = true) throws -> String {
         let paths = resolveSRTPath(videoPath: videoPath)
 
         // 尝试首选路径
         do {
             try content.write(toFile: paths.primary, atomically: true, encoding: .utf8)
+            // 视频同目录的 SRT 受隐藏设置影响
+            try? SRTVisibilityManager.setHidden(paths.primary, hidden: hidden)
             return paths.primary
         } catch {
             // 首选路径写入失败（只读卷、权限等），尝试降级
         }
 
-        // 降级路径
+        // 降级路径（App Support 目录不受隐藏设置影响）
         do {
             let fallbackDir = (paths.fallback as NSString).deletingLastPathComponent
             try FileManager.default.createDirectory(

@@ -1,5 +1,27 @@
 import Foundation
 
+/// STT 引擎偏好
+///
+/// 控制语音转录使用的引擎。WhisperKit 精度最高（尤其 CJK），
+/// SpeechAnalyzer 速度极快（70x 实时）但 CJK 分段为逐字级。
+public enum STTEngine: String, Codable, Sendable, CaseIterable {
+    /// 自动: WhisperKit 优先，SpeechAnalyzer 回退
+    case auto = "auto"
+    /// 强制 WhisperKit（高精度，~1.5GB 模型）
+    case whisperKitOnly = "whisperkit"
+    /// 强制 SpeechAnalyzer（轻量，系统管理模型）
+    case speechAnalyzerOnly = "speechanalyzer"
+
+    /// 用户可见的显示标签
+    public var displayLabel: String {
+        switch self {
+        case .auto: "自动 (WhisperKit 优先)"
+        case .whisperKitOnly: "WhisperKit (高精度)"
+        case .speechAnalyzerOnly: "SpeechAnalyzer (轻量)"
+        }
+    }
+}
+
 /// 索引行为配置
 ///
 /// 控制后台索引的功能开关和性能模式。Settings 页面读写此配置，
@@ -25,6 +47,19 @@ public struct IndexingOptions: Codable, Sendable, Equatable {
     /// 索引性能模式
     public var performanceMode: PerformanceMode
 
+    // MARK: - STT
+
+    /// STT 引擎偏好
+    public var sttEngine: STTEngine
+
+    /// STT 语言提示（ISO 639-1，如 "ja", "zh", "en"），nil = 自动检测
+    public var sttLanguageHint: String?
+
+    // MARK: - SRT 文件
+
+    /// 在 Finder 中隐藏生成的 SRT 文件
+    public var hideSrtFiles: Bool
+
     // MARK: - Orphaned
 
     /// Orphaned 视频保留天数（0 = 禁用软删除，立即硬删除）
@@ -37,6 +72,9 @@ public struct IndexingOptions: Codable, Sendable, Equatable {
         skipVision: false,
         skipEmbedding: false,
         performanceMode: .balanced,
+        sttEngine: .auto,
+        sttLanguageHint: nil,
+        hideSrtFiles: true,
         orphanedRetentionDays: 30
     )
 
@@ -45,12 +83,18 @@ public struct IndexingOptions: Codable, Sendable, Equatable {
         skipVision: Bool = false,
         skipEmbedding: Bool = false,
         performanceMode: PerformanceMode = .balanced,
+        sttEngine: STTEngine = .auto,
+        sttLanguageHint: String? = nil,
+        hideSrtFiles: Bool = true,
         orphanedRetentionDays: Int = 30
     ) {
         self.skipStt = skipStt
         self.skipVision = skipVision
         self.skipEmbedding = skipEmbedding
         self.performanceMode = performanceMode
+        self.sttEngine = sttEngine
+        self.sttLanguageHint = sttLanguageHint
+        self.hideSrtFiles = hideSrtFiles
         self.orphanedRetentionDays = orphanedRetentionDays
     }
 
@@ -62,6 +106,9 @@ public struct IndexingOptions: Codable, Sendable, Equatable {
         skipVision = try c.decodeIfPresent(Bool.self, forKey: .skipVision) ?? false
         skipEmbedding = try c.decodeIfPresent(Bool.self, forKey: .skipEmbedding) ?? false
         performanceMode = try c.decodeIfPresent(PerformanceMode.self, forKey: .performanceMode) ?? .balanced
+        sttEngine = try c.decodeIfPresent(STTEngine.self, forKey: .sttEngine) ?? .auto
+        sttLanguageHint = try c.decodeIfPresent(String.self, forKey: .sttLanguageHint)
+        hideSrtFiles = try c.decodeIfPresent(Bool.self, forKey: .hideSrtFiles) ?? true
         orphanedRetentionDays = try c.decodeIfPresent(Int.self, forKey: .orphanedRetentionDays) ?? 30
     }
 

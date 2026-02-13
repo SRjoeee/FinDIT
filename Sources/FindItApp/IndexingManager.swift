@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import FindItCore
+@preconcurrency import WhisperKit
 
 /// 文件夹索引进度
 struct FolderIndexProgress {
@@ -115,6 +116,12 @@ final class IndexingManager {
 
     /// 共享 CLIP 嵌入提供者（SigLIP2 图像编码，Layer 1 使用）
     private var clipProvider: CLIPEmbeddingProvider?
+
+    /// 共享 WhisperKit 实例（STT 高精度引擎，懒加载）
+    private var whisperKit: WhisperKit?
+
+    /// WhisperKit 加载是否已失败（避免重复尝试）
+    private var whisperKitLoadFailed = false
 
     /// 已解析的 API Key（nil = 尝试过但没找到）
     private var resolvedAPIKey: String?
@@ -358,6 +365,7 @@ final class IndexingManager {
 
         // 懒初始化共享资源
         initSharedResources(options: options)
+        await ensureWhisperKit(options: options)
 
         let globalDB = appState?.globalDB
         let layeredConfig = buildLayeredConfig(options: options)
@@ -467,6 +475,7 @@ final class IndexingManager {
 
         let options = IndexingOptions.load()
         initSharedResources(options: options)
+        await ensureWhisperKit(options: options)
 
         let globalDB = appState?.globalDB
         let layeredConfig = buildLayeredConfig(options: options)
@@ -604,6 +613,27 @@ final class IndexingManager {
         }
     }
 
+    /// 确保 WhisperKit 已初始化（首次调用下载模型 ~1.5GB）
+    ///
+    /// 根据 `IndexingOptions.sttEngine` 决定是否加载 WhisperKit:
+    /// - `.speechAnalyzerOnly`: 不加载
+    /// - `.auto` / `.whisperKitOnly`: 加载（失败时标记，不重试）
+    private func ensureWhisperKit(options: IndexingOptions) async {
+        guard !options.skipStt else { return }
+        guard options.sttEngine != .speechAnalyzerOnly else { return }
+        guard whisperKit == nil, !whisperKitLoadFailed else { return }
+
+        print("[IndexingManager] 初始化 WhisperKit...")
+        do {
+            whisperKit = try await STTProcessor.initializeWhisperKit()
+            print("[IndexingManager] WhisperKit 初始化完成")
+        } catch {
+            whisperKitLoadFailed = true
+            print("[IndexingManager] WhisperKit 加载失败: \(error.localizedDescription)")
+            print("[IndexingManager] 将使用 SpeechAnalyzer 作为回退引擎")
+        }
+    }
+
     /// 构建 LayeredIndexer.Config
     private func buildLayeredConfig(options: IndexingOptions) -> LayeredIndexer.Config {
         var skipLayers: Set<LayeredIndexer.Layer> = []
@@ -618,13 +648,16 @@ final class IndexingManager {
         return LayeredIndexer.Config(
             mediaService: mediaService,
             clipProvider: clipProvider,
-            whisperKit: nil,
+            whisperKit: options.skipStt ? nil : whisperKit,
             vlmContainer: nil,
             embeddingProvider: effectiveEmbedding,
             apiKey: effectiveAPIKey,
             rateLimiter: rateLimiter,
             skipLayers: skipLayers,
-            networkResilience: networkResilience
+            networkResilience: networkResilience,
+            sttLanguageHint: options.sttLanguageHint,
+            sttEngine: options.sttEngine,
+            hideSrtFiles: options.hideSrtFiles
         )
     }
 }

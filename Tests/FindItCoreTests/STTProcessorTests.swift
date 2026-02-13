@@ -382,6 +382,60 @@ final class STTProcessorTests: XCTestCase {
         XCTAssertTrue(ranges[0].startTime >= 30.0) // >= 场景 1
     }
 
+    // MARK: - computeLIDScore
+
+    func testComputeLIDScoreEnglishWordCount() {
+        // 英语按词计数
+        let score = STTProcessor.computeLIDScore(
+            text: "Hello world how are you", language: "en"
+        )
+        XCTAssertEqual(score, 5)
+    }
+
+    func testComputeLIDScoreCJKCharCount() {
+        // 日语按非空白字符计数
+        let ja = STTProcessor.computeLIDScore(
+            text: "こんにちは世界", language: "ja"
+        )
+        XCTAssertEqual(ja, 7)
+
+        // 中文同理
+        let zh = STTProcessor.computeLIDScore(
+            text: "你好世界", language: "zh"
+        )
+        XCTAssertEqual(zh, 4)
+
+        // 韩语同理
+        let ko = STTProcessor.computeLIDScore(
+            text: "안녕하세요", language: "ko"
+        )
+        XCTAssertEqual(ko, 5)
+    }
+
+    func testComputeLIDScoreEmptyReturnsZero() {
+        XCTAssertEqual(STTProcessor.computeLIDScore(text: "", language: "en"), 0)
+        XCTAssertEqual(STTProcessor.computeLIDScore(text: "   ", language: "ja"), 0)
+        XCTAssertEqual(STTProcessor.computeLIDScore(text: "\n\t", language: "zh"), 0)
+    }
+
+    func testComputeLIDScoreBalancedCrossLanguage() {
+        // 同等语义内容，CJK 字符数 ≈ 英语词数 → 分数可比
+        let enScore = STTProcessor.computeLIDScore(
+            text: "This week Shibuya exhibition father also exhibits",
+            language: "en"
+        )
+        let jaScore = STTProcessor.computeLIDScore(
+            text: "今週もその渋谷の展示会な父さんも出店する",
+            language: "ja"
+        )
+        // 英语 7 词 vs 日语 18 字符 → 日语分数更高
+        // 关键：正确语言的转录应产出合理的非零分数
+        XCTAssertGreaterThan(enScore, 0)
+        XCTAssertGreaterThan(jaScore, 0)
+        // 日语正确转录的字符数应 >= 英语词数（CJK 信息密度高）
+        XCTAssertGreaterThanOrEqual(jaScore, enScore)
+    }
+
     // MARK: - majorityVote
 
     func testMajorityVoteClear() {
@@ -426,17 +480,4 @@ final class STTProcessorTests: XCTestCase {
         XCTAssertEqual(result?.language, "ja")
     }
 
-    // MARK: - detectLanguageViaNL
-
-    func testDetectLanguageViaNLAvailableOnMacOS26() async {
-        // 仅验证方法存在且不崩溃（实际检测需要音频文件）
-        if #available(macOS 26.0, *) {
-            let (lang, segs) = await STTProcessor.detectLanguageViaNL(
-                audioPath: "/nonexistent/audio.wav"
-            )
-            // 文件不存在应返回 nil 和空数组
-            XCTAssertNil(lang)
-            XCTAssertTrue(segs.isEmpty)
-        }
-    }
 }

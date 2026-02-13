@@ -70,6 +70,12 @@ public enum LayeredIndexer {
         public let ffmpegConfig: FFmpegConfig
         public let skipLayers: Set<Layer>
         public let networkResilience: NetworkResilience?
+        /// STT 语言提示（ISO 639-1），nil = 自动检测
+        public let sttLanguageHint: String?
+        /// STT 引擎偏好
+        public let sttEngine: STTEngine
+        /// 在 Finder 中隐藏生成的 SRT 文件
+        public let hideSrtFiles: Bool
 
         public init(
             mediaService: (any MediaService)? = nil,
@@ -81,7 +87,10 @@ public enum LayeredIndexer {
             rateLimiter: GeminiRateLimiter? = nil,
             ffmpegConfig: FFmpegConfig = .default,
             skipLayers: Set<Layer> = [],
-            networkResilience: NetworkResilience? = nil
+            networkResilience: NetworkResilience? = nil,
+            sttLanguageHint: String? = nil,
+            sttEngine: STTEngine = .auto,
+            hideSrtFiles: Bool = true
         ) {
             self.mediaService = mediaService
             self.clipProvider = clipProvider
@@ -93,6 +102,9 @@ public enum LayeredIndexer {
             self.ffmpegConfig = ffmpegConfig
             self.skipLayers = skipLayers
             self.networkResilience = networkResilience
+            self.sttLanguageHint = sttLanguageHint
+            self.sttEngine = sttEngine
+            self.hideSrtFiles = hideSrtFiles
         }
     }
 
@@ -265,7 +277,8 @@ public enum LayeredIndexer {
                     needsAudio = false
                 } else {
                     needsAudio = await PipelineManager.isSttAvailable(
-                        whisperKit: config.whisperKit
+                        whisperKit: config.whisperKit,
+                        sttEngine: config.sttEngine
                     )
                 }
                 var audioOutputPath: String?
@@ -521,7 +534,8 @@ public enum LayeredIndexer {
                 sttAvailable = false
             } else {
                 sttAvailable = await PipelineManager.isSttAvailable(
-                    whisperKit: config.whisperKit
+                    whisperKit: config.whisperKit,
+                    sttEngine: config.sttEngine
                 )
             }
             if sttAvailable {
@@ -559,9 +573,14 @@ public enum LayeredIndexer {
 
                     // 语言检测
                     var detectedLanguage: String?
-                    var preTranscribedSegments: [TranscriptSegment]?
 
-                    if let wk = config.whisperKit {
+                    if let hint = config.sttLanguageHint {
+                        // 用户指定语言 → 跳过检测
+                        detectedLanguage = hint
+                        progress("[L2] 语言 (用户指定): \(hint)")
+                    } else if config.sttEngine != .speechAnalyzerOnly,
+                              let wk = config.whisperKit {
+                        // WhisperKit 语言检测（最准确，但 speechAnalyzerOnly 模式跳过）
                         progress("[L2] 检测语言...")
                         let langResult = try await STTProcessor.detectLanguage(
                             audioPath: audioPath,
@@ -571,44 +590,36 @@ public enum LayeredIndexer {
                         detectedLanguage = langResult.language
                         progress("[L2] 语言: \(langResult.language)")
                     } else if #available(macOS 26.0, *) {
-                        progress("[L2] 检测语言 (NL)...")
-                        let (lang, segs) = await STTProcessor.detectLanguageViaNL(
-                            audioPath: audioPath
+                        progress("[L2] 检测语言 (探测)...")
+                        let (lang, segs) = await STTProcessor.detectLanguageViaSpeechProbe(
+                            audioPath: audioPath,
+                            ffmpegConfig: config.ffmpegConfig
                         )
                         detectedLanguage = lang
-                        if lang == "en" {
-                            preTranscribedSegments = segs
-                        }
-                        if let lang {
+                        if let lang, !segs.isEmpty {
+                            // 探测产出的 segments 仅覆盖 15 秒样本，不复用为完整转录
                             progress("[L2] 语言: \(lang)")
                         }
                     }
 
-                    // 转录
-                    let segments: [TranscriptSegment]
-                    let engine: String
-
-                    if let preSegs = preTranscribedSegments, !preSegs.isEmpty {
-                        segments = preSegs
-                        engine = "SpeechAnalyzer"
-                        progress("[L2] 复用检测结果: \(segments.count) 条字幕")
-                    } else {
-                        try Task.checkCancellation()
-                        let result = try await STTProcessor.transcribeWithBestAvailable(
-                            audioPath: audioPath,
-                            language: detectedLanguage,
-                            whisperKit: config.whisperKit,
-                            onProgress: onProgress
-                        )
-                        segments = result.segments
-                        engine = result.engine
-                        progress("[L2] 转录完成 [\(engine)]: \(segments.count) 条字幕")
-                    }
+                    // 转录（使用检测到的语言）
+                    try Task.checkCancellation()
+                    let result = try await STTProcessor.transcribeWithBestAvailable(
+                        audioPath: audioPath,
+                        language: detectedLanguage,
+                        whisperKit: config.whisperKit,
+                        sttEngine: config.sttEngine,
+                        onProgress: onProgress
+                    )
+                    let segments = result.segments
+                    let engine = result.engine
+                    progress("[L2] 转录完成 [\(engine)]: \(segments.count) 条字幕")
 
                     // SRT + 映射
                     let srtContent = STTProcessor.generateSRT(from: segments)
                     let generatedSrtPath = try STTProcessor.writeSRT(
-                        content: srtContent, videoPath: videoPath
+                        content: srtContent, videoPath: videoPath,
+                        hidden: config.hideSrtFiles
                     )
                     srtPath = generatedSrtPath
 

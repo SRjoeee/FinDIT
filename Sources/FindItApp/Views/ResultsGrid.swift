@@ -13,11 +13,7 @@ struct ResultsGrid: View {
     let resultCount: Int
     let offlineFolders: Set<String>
     var globalDB: DatabasePool?
-    @Binding var selectedClipIds: Set<Int64>
-    @Binding var focusedClipId: Int64?
-    @Binding var selectionAnchorId: Int64?
-    @Binding var columnsPerRow: Int
-    @Binding var scrollOnSelect: Bool
+    var selectionManager: SelectionManager
 
     private let columns = [
         GridItem(.adaptive(minimum: 200, maximum: 400), spacing: 12)
@@ -30,22 +26,22 @@ struct ResultsGrid: View {
                     ForEach(results, id: \.clipId) { result in
                         ClipCard(
                             result: result,
-                            isSelected: selectedClipIds.contains(result.clipId),
-                            multiSelectCount: selectedClipIds.count,
+                            isSelected: selectionManager.selectedClipIds.contains(result.clipId),
+                            isMultiSelect: selectionManager.selectedClipIds.count > 1,
                             isOffline: offlineFolders.contains(result.sourceFolder),
                             globalDB: globalDB,
                             onSelect: { modifiers in
-                                handleClick(clipId: result.clipId, modifiers: modifiers)
+                                selectionManager.handleClick(clipId: result.clipId, modifiers: modifiers)
                             },
-                            selectedResults: selectedResults
+                            selectedResultsProvider: { selectionManager.selectedResults }
                         )
                         .id(result.clipId)
                     }
                 }
                 .padding(16)
-                .onChange(of: focusedClipId) {
-                    guard scrollOnSelect, let id = focusedClipId else { return }
-                    scrollOnSelect = false
+                .onChange(of: selectionManager.focusedClipId) {
+                    guard selectionManager.scrollOnSelect, let id = selectionManager.focusedClipId else { return }
+                    selectionManager.scrollOnSelect = false
                     withAnimation(.easeInOut(duration: 0.15)) {
                         proxy.scrollTo(id, anchor: .center)
                     }
@@ -55,10 +51,10 @@ struct ResultsGrid: View {
         .background {
             GeometryReader { geo in
                 Color.clear
-                    .onAppear { columnsPerRow = Self.calculateColumns(width: geo.size.width) }
+                    .onAppear { selectionManager.columnsPerRow = Self.calculateColumns(width: geo.size.width) }
                     .onChange(of: geo.size.width) {
                         let cols = Self.calculateColumns(width: geo.size.width)
-                        if cols != columnsPerRow { columnsPerRow = cols }
+                        if cols != selectionManager.columnsPerRow { selectionManager.columnsPerRow = cols }
                     }
             }
         }
@@ -68,8 +64,8 @@ struct ResultsGrid: View {
                     .font(.caption2)
                     .foregroundStyle(.quaternary)
 
-                if selectedClipIds.count > 1 {
-                    Text("已选 \(selectedClipIds.count) 个")
+                if selectionManager.selectedClipIds.count > 1 {
+                    Text("已选 \(selectionManager.selectedClipIds.count) 个")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -79,49 +75,6 @@ struct ResultsGrid: View {
             .padding(.horizontal, 16)
             .padding(.top, 4)
         }
-    }
-
-    // MARK: - Click Handling
-
-    /// Finder 风格的点击选中逻辑
-    private func handleClick(clipId: Int64, modifiers: NSEvent.ModifierFlags) {
-        if modifiers.contains(.command) {
-            // ⌘+Click: toggle
-            if selectedClipIds.contains(clipId) {
-                selectedClipIds.remove(clipId)
-                if focusedClipId == clipId {
-                    focusedClipId = selectedClipIds.first
-                }
-            } else {
-                selectedClipIds.insert(clipId)
-                focusedClipId = clipId
-            }
-            selectionAnchorId = clipId
-        } else if modifiers.contains(.shift), let anchorId = selectionAnchorId {
-            // ⇧+Click: 范围选中
-            guard let anchorIndex = results.firstIndex(where: { $0.clipId == anchorId }),
-                  let clickIndex = results.firstIndex(where: { $0.clipId == clipId }) else {
-                // Fallback: 单选
-                selectedClipIds = [clipId]
-                focusedClipId = clipId
-                selectionAnchorId = clipId
-                return
-            }
-            let range = min(anchorIndex, clickIndex)...max(anchorIndex, clickIndex)
-            selectedClipIds = Set(results[range].map(\.clipId))
-            focusedClipId = clipId
-            // Shift+Click 不更新 anchor (Finder 行为)
-        } else {
-            // 普通点击: 单选
-            selectedClipIds = [clipId]
-            focusedClipId = clipId
-            selectionAnchorId = clipId
-        }
-    }
-
-    /// 当前选中的 SearchResult 集合（供批量上下文菜单使用）
-    private var selectedResults: [SearchEngine.SearchResult] {
-        results.filter { selectedClipIds.contains($0.clipId) }
     }
 
     /// 根据容器宽度计算自适应列数

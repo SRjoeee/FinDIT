@@ -119,12 +119,18 @@ struct ContentView: View {
                     window?.makeFirstResponder(nil)
                 }
             }
-            // QL 面板已打开时，焦点变更自动更新预览
+            // 预览面板已打开时，焦点变更自动更新预览
             guard let clipId = focusedClipId,
                   let result = searchState.visibleResults.first(where: { $0.clipId == clipId }),
                   let path = result.filePath,
                   FileManager.default.fileExists(atPath: path) else { return }
-            qlCoordinator.updateIfVisible(url: URL(fileURLWithPath: path))
+            let info = ClipPreviewInfo(
+                url: URL(fileURLWithPath: path),
+                startTime: result.startTime,
+                endTime: result.endTime,
+                isVideo: FileScanner.isVideoFile(path)
+            )
+            qlCoordinator.updateIfVisible(info: info)
         }
         .onChange(of: searchState.query) {
             // 搜索词变更时清空选中
@@ -253,13 +259,22 @@ struct ContentView: View {
 
     // MARK: - Keyboard Actions
 
-    /// 空格键：切换 Quick Look 预览（使用焦点 clip）
+    /// 空格键：切换预览（使用焦点 clip）
+    ///
+    /// 视频文件 → VideoPreviewPanel（seek 到 startTime），
+    /// 其他文件 → QLPreviewPanel。
     private func handleSpaceKey() {
         guard let clipId = focusedClipId,
               let result = searchState.visibleResults.first(where: { $0.clipId == clipId }),
               let path = result.filePath,
               FileManager.default.fileExists(atPath: path) else { return }
-        qlCoordinator.toggle(url: URL(fileURLWithPath: path))
+        let info = ClipPreviewInfo(
+            url: URL(fileURLWithPath: path),
+            startTime: result.startTime,
+            endTime: result.endTime,
+            isVideo: FileScanner.isVideoFile(path)
+        )
+        qlCoordinator.toggle(info: info)
     }
 
     /// 方向键：网格导航

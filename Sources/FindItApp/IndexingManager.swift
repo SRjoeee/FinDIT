@@ -48,6 +48,12 @@ final class IndexingManager {
     /// 是否正在索引
     var isIndexing: Bool = false
 
+    /// 可升级的视频数量（vision_provider 为 local_vision 或 NULL 且有 API Key 可用）
+    var upgradeableVideoCount: Int = 0
+
+    /// 是否正在执行增强升级
+    var isEnhancing: Bool = false
+
     /// 当前正在索引的文件夹路径
     var currentFolder: String?
 
@@ -239,6 +245,148 @@ final class IndexingManager {
                     }
                 }
             }
+        }
+    }
+
+    // MARK: - 视觉描述升级
+
+    /// 检查可升级的视频数量
+    ///
+    /// 查询所有文件夹中 `vision_provider IN ('local_vision', NULL)` 且已完成索引的视频。
+    /// 在 API Key 可用时调用，结果写入 `upgradeableVideoCount` 供 UI 显示。
+    func checkUpgradeableClips() async {
+        guard let appState = appState else { return }
+        let folders = appState.folders.filter(\.isAvailable)
+        guard !folders.isEmpty else {
+            upgradeableVideoCount = 0
+            return
+        }
+
+        var total = 0
+        for folder in folders {
+            guard let folderDB = try? await runBlockingIO({
+                try DatabaseManager.openFolderDatabase(at: folder.folderPath)
+            }) else { continue }
+
+            let count = try? await folderDB.read { db -> Int in
+                try Int.fetchOne(db, sql: """
+                    SELECT COUNT(DISTINCT v.video_id)
+                    FROM videos v
+                    JOIN clips c ON c.video_id = v.video_id
+                    WHERE v.index_status = 'completed'
+                      AND (c.vision_provider = 'local_vision' OR c.vision_provider IS NULL)
+                    """) ?? 0
+            }
+            total += count ?? 0
+        }
+
+        upgradeableVideoCount = total
+    }
+
+    /// 执行视觉描述升级
+    ///
+    /// 将所有 `vision_provider IN ('local_vision', NULL)` 的已完成视频
+    /// 回退到 Layer 2，使用 Gemini 重跑 Layer 3。
+    func enhanceUpgradeableClips() {
+        guard !isEnhancing, upgradeableVideoCount > 0 else { return }
+        isEnhancing = true
+
+        Task { [weak self] in
+            guard let self = self else { return }
+            guard let appState = self.appState else {
+                self.isEnhancing = false
+                return
+            }
+
+            let options = IndexingOptions.load()
+            self.initSharedResources(options: options)
+
+            guard self.resolvedAPIKey != nil else {
+                print("[IndexingManager] 无 API Key，无法执行升级")
+                self.isEnhancing = false
+                return
+            }
+
+            let layeredConfig = self.buildLayeredConfig(options: options)
+            // 覆盖 skipLayers: 只跑 Layer 3
+            let enhanceConfig = LayeredIndexer.Config(
+                mediaService: layeredConfig.mediaService,
+                clipProvider: nil,
+                whisperKit: nil,
+                vlmContainer: nil,
+                embeddingProvider: layeredConfig.embeddingProvider,
+                apiKey: layeredConfig.apiKey,
+                rateLimiter: layeredConfig.rateLimiter,
+                skipLayers: [.metadata, .clipVector, .stt],
+                networkResilience: layeredConfig.networkResilience,
+                hideSrtFiles: options.hideSrtFiles
+            )
+
+            let folders = appState.folders.filter(\.isAvailable)
+            var totalEnhanced = 0
+
+            for folder in folders {
+                guard let folderDB = try? await self.runBlockingIO({
+                    try DatabaseManager.openFolderDatabase(at: folder.folderPath)
+                }) else { continue }
+
+                // 查询该文件夹中可升级的视频
+                let videos: [(videoId: Int64, filePath: String)] = (try? await folderDB.read { db in
+                    let rows = try Row.fetchAll(db, sql: """
+                        SELECT DISTINCT v.video_id, v.file_path
+                        FROM videos v
+                        JOIN clips c ON c.video_id = v.video_id
+                        WHERE v.index_status = 'completed'
+                          AND (c.vision_provider = 'local_vision' OR c.vision_provider IS NULL)
+                        """)
+                    return rows.compactMap { row -> (Int64, String)? in
+                        let vid: Int64? = row["video_id"]
+                        let fp: String? = row["file_path"]
+                        guard let v = vid, let f = fp else { return nil }
+                        return (v, f)
+                    }
+                }) ?? []
+
+                for video in videos {
+                    guard !Task.isCancelled else { break }
+                    guard FileManager.default.fileExists(atPath: video.filePath) else { continue }
+
+                    // 回退到 Layer 2
+                    try? await folderDB.write { db in
+                        try db.execute(sql: """
+                            UPDATE videos
+                            SET index_layer = 2, index_status = 'stt_done', last_processed_clip = NULL
+                            WHERE video_id = ?
+                            """, arguments: [video.videoId])
+                    }
+
+                    do {
+                        let _ = try await LayeredIndexer.indexVideo(
+                            videoPath: video.filePath,
+                            folderPath: folder.folderPath,
+                            folderDB: folderDB,
+                            globalDB: appState.globalDB,
+                            config: enhanceConfig
+                        )
+                        totalEnhanced += 1
+                    } catch {
+                        // 恢复原状
+                        try? await folderDB.write { db in
+                            try db.execute(sql: """
+                                UPDATE videos
+                                SET index_layer = 3, index_status = 'completed'
+                                WHERE video_id = ?
+                                """, arguments: [video.videoId])
+                        }
+                        print("[IndexingManager] 升级失败: \((video.filePath as NSString).lastPathComponent) - \(error)")
+                    }
+                }
+            }
+
+            print("[IndexingManager] 升级完成: \(totalEnhanced) 个视频")
+            self.upgradeableVideoCount = 0
+            self.isEnhancing = false
+            self.searchState?.invalidateVectorStore()
         }
     }
 

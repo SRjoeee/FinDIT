@@ -183,6 +183,13 @@ public enum Migrations {
             }
         }
 
+        // 视觉分析引擎追踪 — 记录每个 clip 的 vision 分析来源
+        migrator.registerMigration("v12_addVisionProvider") { db in
+            try db.alter(table: "clips") { t in
+                t.add(column: "vision_provider", .text)
+            }
+        }
+
         return migrator
     }
 
@@ -548,6 +555,13 @@ public enum Migrations {
                 WHERE index_layer = 0
                   AND video_id IN (SELECT DISTINCT video_id FROM clips)
             """)
+        }
+
+        // 视觉分析引擎追踪 — 记录每个 clip 的 vision 分析来源
+        migrator.registerMigration("v16_addVisionProvider") { db in
+            try db.alter(table: "clips") { t in
+                t.add(column: "vision_provider", .text)
+            }
         }
 
         return migrator

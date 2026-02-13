@@ -444,6 +444,13 @@ public enum LayeredIndexer {
                         try PipelineManager.updateClipVision(
                             clipId: clipId, result: localResult, folderDB: folderDB
                         )
+                        // 标记视觉分析来源
+                        try await folderDB.write { db in
+                            try db.execute(
+                                sql: "UPDATE clips SET vision_provider = ? WHERE clip_id = ?",
+                                arguments: ["local_vision", clipId]
+                            )
+                        }
                         localAnalyzed += 1
                     } catch {
                         progress("[L1] 场景 \(index + 1) 本地分析失败: \(error.localizedDescription)")
@@ -741,6 +748,16 @@ public enum LayeredIndexer {
                         )
                         pendingUpdates.append((clipId: clipId, result: merged))
                         clipsAnalyzed += 1
+
+                        // 标记视觉分析来源
+                        let provider = config.apiKey != nil ? "gemini" : "local_vlm"
+                        try await folderDB.write { db in
+                            try db.execute(
+                                sql: "UPDATE clips SET vision_provider = ? WHERE clip_id = ?",
+                                arguments: [provider, clipId]
+                            )
+                        }
+
                         progress("[L3] 场景 \(index + 1)/\(clips.count)")
 
                         if pendingUpdates.count >= visionBatchSize {

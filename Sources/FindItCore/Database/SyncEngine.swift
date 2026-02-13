@@ -206,12 +206,12 @@ public enum SyncEngine {
                        "start_time", "end_time", "thumbnail_path"]
             + visionCols
             + ["tags", "transcript", "embedding", "embedding_model", "user_tags",
-               "rating", "color_label"]
+               "rating", "color_label", "vision_provider"]
         let placeholders = allCols.map { _ in "?" }.joined(separator: ", ")
         let conflictSet = (["video_id", "start_time", "end_time", "thumbnail_path"]
             + visionCols
             + ["tags", "transcript", "embedding", "embedding_model", "user_tags",
-               "rating", "color_label"])
+               "rating", "color_label", "vision_provider"])
             .map { "\($0) = excluded.\($0)" }
             .joined(separator: ",\n                            ")
         let clipSQL = """
@@ -266,6 +266,7 @@ public enum SyncEngine {
                     args.append(userTagsForFTS)
                     args.append(clip.rating)
                     args.append(clip.colorLabel)
+                    args.append(clip.visionProvider)
 
                     do {
                         try clipStmt.execute(arguments: StatementArguments(args))

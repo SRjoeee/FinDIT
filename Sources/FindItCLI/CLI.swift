@@ -46,6 +46,10 @@ struct FindItCLI: AsyncParsableCommand {
             CLIPBackfillCommand.self,
             // Export commands
             ExportCommand.self,
+            // Reset commands
+            ResetCommand.self,
+            // Enhancement commands
+            EnhanceCommand.self,
         ]
     )
 }

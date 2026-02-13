@@ -177,6 +177,7 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
     public var userTags: String?
     public var rating: Int
     public var colorLabel: String?
+    public var visionProvider: String?
     public var createdAt: String
 
     public static let databaseTableName = "clips"
@@ -203,6 +204,7 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
         case userTags = "user_tags"
         case rating
         case colorLabel = "color_label"
+        case visionProvider = "vision_provider"
         case createdAt = "created_at"
     }
 
@@ -228,6 +230,7 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
         userTags: String? = nil,
         rating: Int = 0,
         colorLabel: String? = nil,
+        visionProvider: String? = nil,
         createdAt: String? = nil
     ) {
         self.clipId = clipId
@@ -251,6 +254,7 @@ public struct Clip: Codable, FetchableRecord, MutablePersistableRecord {
         self.userTags = userTags
         self.rating = rating
         self.colorLabel = colorLabel
+        self.visionProvider = visionProvider
         self.createdAt = createdAt ?? Self.sqliteDatetime()
     }
 

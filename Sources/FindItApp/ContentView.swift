@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var sidebarSelection: SidebarSelection = .all
     @State private var folderErrorMessage: String?
     @State private var exportPayload: ExportPayload?
+    @State private var showEnhanceAlert = false
     @AppStorage("FindIt.showOfflineFiles") private var showOfflineFiles = false
 
     var body: some View {
@@ -107,6 +108,14 @@ struct ContentView: View {
                 Text(msg)
             }
         }
+        .alert("可升级视觉描述", isPresented: $showEnhanceAlert) {
+            Button("升级") {
+                indexingManager.enhanceUpgradeableClips()
+            }
+            Button("稍后", role: .cancel) { }
+        } message: {
+            Text("发现 \(indexingManager.upgradeableVideoCount) 个视频使用本地分析，可升级为云端 AI 描述以提升搜索质量。")
+        }
         .onChange(of: selectionManager.focusedClipId) {
             selectionManager.updatePreviewIfNeeded()
         }
@@ -172,6 +181,18 @@ struct ContentView: View {
                 let retention = IndexingOptions.load().orphanedRetentionDays
                 if retention > 0 {
                     await indexingManager.cleanupOrphanedRecords(retentionDays: retention)
+                }
+            }
+            // 检查可升级的视觉描述（延迟 5 秒，等初始化完成）
+            Task(priority: .utility) {
+                try? await Task.sleep(for: .seconds(5))
+                let options = IndexingOptions.load()
+                let hasApiKey = (try? APIKeyManager.resolveAPIKey()) != nil
+                if hasApiKey && !options.skipVision {
+                    await indexingManager.checkUpgradeableClips()
+                    if indexingManager.upgradeableVideoCount > 0 {
+                        showEnhanceAlert = true
+                    }
                 }
             }
         }

@@ -349,7 +349,7 @@ public enum VisionAnalyzer {
         config: Config = .default
     ) throws -> Data {
         switch config.provider {
-        case .gemini:
+        case .gemini, .findItCloud:
             return try buildGeminiRequestBody(imageBase64List: imageBase64List)
         case .openRouter:
             return try buildOpenRouterRequestBody(imageBase64List: imageBase64List, config: config)
@@ -431,7 +431,7 @@ public enum VisionAnalyzer {
     static func parseResponse(_ responseData: Data, provider: APIProvider = .gemini) throws -> AnalysisResult {
         let text: String
         switch provider {
-        case .gemini:
+        case .gemini, .findItCloud:
             text = try parseGeminiResponseText(responseData)
         case .openRouter:
             text = try parseOpenRouterResponseText(responseData)
@@ -509,7 +509,7 @@ public enum VisionAnalyzer {
     ) throws -> URLRequest {
         let urlString: String
         switch config.provider {
-        case .gemini:
+        case .gemini, .findItCloud:
             urlString = "\(config.baseURL)/models/\(config.model):generateContent"
         case .openRouter:
             urlString = "\(config.baseURL)/chat/completions"

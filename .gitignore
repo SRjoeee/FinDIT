@@ -47,3 +47,7 @@ Models/
 
 # Test outputs
 TestOutput/
+
+# Compiled tools (binary)
+tools/braw-tool/braw-tool
+tools/r3d-tool/r3d-tool

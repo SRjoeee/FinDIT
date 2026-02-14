@@ -68,7 +68,7 @@ public enum GeminiEmbedding {
         config: Config = .default
     ) throws -> Data {
         switch config.provider {
-        case .gemini:
+        case .gemini, .findItCloud:
             return try buildGeminiEmbedBody(text: text, config: config)
         case .openRouter:
             return try buildOpenRouterEmbedBody(texts: [text], config: config)
@@ -81,7 +81,7 @@ public enum GeminiEmbedding {
         config: Config = .default
     ) throws -> Data {
         switch config.provider {
-        case .gemini:
+        case .gemini, .findItCloud:
             return try buildGeminiBatchBody(texts: texts, config: config)
         case .openRouter:
             return try buildOpenRouterEmbedBody(texts: texts, config: config)
@@ -132,7 +132,7 @@ public enum GeminiEmbedding {
     /// 解析单文本嵌入响应（按 provider 分支）
     static func parseEmbedResponse(_ data: Data, provider: APIProvider = .gemini) throws -> [Float] {
         switch provider {
-        case .gemini:
+        case .gemini, .findItCloud:
             return try parseGeminiEmbedResponse(data)
         case .openRouter:
             let results = try parseOpenRouterEmbedResponse(data)
@@ -146,7 +146,7 @@ public enum GeminiEmbedding {
     /// 解析批量嵌入响应（按 provider 分支）
     static func parseBatchResponse(_ data: Data, provider: APIProvider = .gemini) throws -> [[Float]] {
         switch provider {
-        case .gemini:
+        case .gemini, .findItCloud:
             return try parseGeminiBatchResponse(data)
         case .openRouter:
             return try parseOpenRouterEmbedResponse(data)
@@ -242,7 +242,7 @@ public enum GeminiEmbedding {
     ) throws -> URLRequest {
         let urlString: String
         switch config.provider {
-        case .gemini:
+        case .gemini, .findItCloud:
             urlString = "\(config.baseURL)/models/\(config.model):\(endpoint)"
         case .openRouter:
             urlString = "\(config.baseURL)/embeddings"

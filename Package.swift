@@ -39,6 +39,8 @@ let package = Package(
         .package(url: "https://github.com/jkrukowski/swift-sentencepiece.git", from: "0.0.3"),
         // Stage R2b: USearch HNSW 向量索引
         .package(url: "https://github.com/unum-cloud/usearch", from: "2.0.0"),
+        // SaaS: Supabase Auth + Edge Functions (仅 App target)
+        .package(url: "https://github.com/supabase-community/supabase-swift.git", from: "2.41.0"),
     ],
     targets: [
         // xxHash C 库（嵌入官方 v0.8.3 源码，BSD 2-Clause）
@@ -81,6 +83,7 @@ let package = Package(
             dependencies: [
                 "FindItCore",
                 .product(name: "GRDB", package: "GRDB.swift"),
+                .product(name: "Supabase", package: "supabase-swift"),
             ]
         ),
         .testTarget(

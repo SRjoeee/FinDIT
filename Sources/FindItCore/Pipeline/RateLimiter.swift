@@ -1,9 +1,16 @@
 import Foundation
 
+/// 限速器错误
+public enum RateLimitError: Error, Sendable {
+    /// 今日 API 请求配额已耗尽
+    case dailyLimitReached(used: Int, limit: Int)
+}
+
 /// Gemini API 限速器
 ///
 /// 使用滑动窗口算法控制请求速率 (默认 9 RPM)，
 /// 并通过 429 反馈动态降速 + 成功反馈缓慢恢复。
+/// 同时支持 RPD (每日请求数) 上限，超过后抛出 `RateLimitError.dailyLimitReached`。
 ///
 /// 用法：
 /// ```swift
@@ -24,21 +31,26 @@ public actor GeminiRateLimiter {
         public var windowDuration: TimeInterval
         /// 429 退避后降速的最小 RPM
         public var minRequestsPerWindow: Int
+        /// 每日请求数上限（0 = 不限制）
+        public var maxRequestsPerDay: Int
 
         public static let `default` = Config(
             maxRequestsPerWindow: 9,   // Gemini 10 RPM - 1 安全余量
             windowDuration: 60.0,
-            minRequestsPerWindow: 3
+            minRequestsPerWindow: 3,
+            maxRequestsPerDay: 0       // 默认不限制
         )
 
         public init(
             maxRequestsPerWindow: Int = 9,
             windowDuration: TimeInterval = 60.0,
-            minRequestsPerWindow: Int = 3
+            minRequestsPerWindow: Int = 3,
+            maxRequestsPerDay: Int = 0
         ) {
             self.maxRequestsPerWindow = maxRequestsPerWindow
             self.windowDuration = windowDuration
             self.minRequestsPerWindow = minRequestsPerWindow
+            self.maxRequestsPerDay = maxRequestsPerDay
         }
     }
 
@@ -74,6 +86,16 @@ public actor GeminiRateLimiter {
     /// 检查滑动窗口和 429 退避状态。如果窗口已满或在退避期内，
     /// 异步等待直到可以发送。支持 Task 取消。
     public func waitForPermission() async throws {
+        // 0. 检查 RPD (每日配额)
+        if config.maxRequestsPerDay > 0 {
+            let today = Self.todayString()
+            if dailyCountDate == today && dailyCount >= config.maxRequestsPerDay {
+                throw RateLimitError.dailyLimitReached(
+                    used: dailyCount, limit: config.maxRequestsPerDay
+                )
+            }
+        }
+
         // 1. 检查 429 退避期
         let now = Date()
         if now < backoffUntil {
@@ -145,6 +167,18 @@ public actor GeminiRateLimiter {
     /// 是否处于 429 退避期
     public var isInBackoff: Bool {
         Date() < backoffUntil
+    }
+
+    /// 每日配额上限（0 = 不限制）
+    public var dailyLimit: Int {
+        config.maxRequestsPerDay
+    }
+
+    /// 今日是否已达 RPD 上限
+    public var isDailyLimitReached: Bool {
+        guard config.maxRequestsPerDay > 0 else { return false }
+        let today = Self.todayString()
+        return dailyCountDate == today && dailyCount >= config.maxRequestsPerDay
     }
 
     // MARK: - 内部方法

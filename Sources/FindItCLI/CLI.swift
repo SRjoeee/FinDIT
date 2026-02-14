@@ -978,8 +978,11 @@ struct IndexCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "跳过语音转录")
     var skipStt: Bool = false
 
-    @Flag(name: .long, help: "跳过视觉分析")
-    var skipVision: Bool = false
+    @Option(name: .long, help: "索引模式: local (纯本地), cloud (云端增强). 默认 local")
+    var cloudMode: String = "local"
+
+    @Flag(name: .long, help: "启用 LocalVLM 深度分析 (纯本地模式下)")
+    var localVlm: Bool = false
 
     @Flag(name: .long, help: "强制重新索引已完成的视频")
     var force: Bool = false
@@ -1077,17 +1080,21 @@ struct IndexCommand: AsyncParsableCommand {
             }
         }
 
-        // 5. 解析 API Key（如需 Vision）
+        // 5. 解析云端/本地模式
+        let useCloud = (cloudMode == "cloud")
         let providerConfig = ProviderConfig.load()
         var resolvedApiKey: String? = nil
-        if !skipVision {
+
+        if useCloud {
             do {
                 resolvedApiKey = try APIKeyManager.resolveAPIKey(override: apiKey, provider: providerConfig.provider)
-                print("✓ \(providerConfig.provider.displayName) API Key 已就绪")
+                print("✓ \(providerConfig.provider.displayName) API Key 已就绪 (云端模式)")
             } catch {
                 print("警告: \(error.localizedDescription)")
-                print("  将跳过视觉分析 (可用 --api-key 或 \(providerConfig.provider.keyFilePath))")
+                print("  将降级为本地模式 (可用 --api-key 或 \(providerConfig.provider.keyFilePath))")
             }
+        } else {
+            print("纯本地模式\(localVlm ? " (LocalVLM 深度分析)" : "")")
         }
 
         // 6. 创建限速器 + 嵌入 provider
@@ -1099,7 +1106,13 @@ struct IndexCommand: AsyncParsableCommand {
         if let key = resolvedApiKey {
             embeddingProvider = GeminiEmbeddingProvider(apiKey: key, config: providerConfig.toEmbeddingConfig())
         } else {
-            embeddingProvider = nil
+            // 本地模式: 尝试 EmbeddingGemma
+            let gemma = EmbeddingGemmaProvider()
+            if gemma.isAvailable() {
+                embeddingProvider = gemma
+            } else {
+                embeddingProvider = nil
+            }
         }
         if let ep = embeddingProvider {
             print("✓ 嵌入 provider: \(ep.name)")
@@ -1146,7 +1159,9 @@ struct IndexCommand: AsyncParsableCommand {
 
             var skipLayers = Set<LayeredIndexer.Layer>()
             if skipStt { skipLayers.insert(.stt) }
-            if skipVision { skipLayers.insert(.textDescription) }
+            if !useCloud && !localVlm && embeddingProvider == nil {
+                skipLayers.insert(.textDescription)
+            }
 
             let mediaService = CompositeMediaService.makeDefault()
             let parallelConfig = LayeredIndexer.Config(
@@ -1154,7 +1169,7 @@ struct IndexCommand: AsyncParsableCommand {
                 whisperKit: whisperKit,
                 embeddingProvider: embeddingProvider,
                 apiKey: resolvedApiKey,
-                rateLimiter: rateLimiter,
+                rateLimiter: useCloud ? rateLimiter : nil,
                 skipLayers: skipLayers
             )
 
@@ -1199,7 +1214,9 @@ struct IndexCommand: AsyncParsableCommand {
             // 串行模式：使用分层索引器（支持 BRAW 等非 FFmpeg 格式）
             var skipLayers = Set<LayeredIndexer.Layer>()
             if skipStt { skipLayers.insert(.stt) }
-            if skipVision { skipLayers.insert(.textDescription) }
+            if !useCloud && !localVlm && embeddingProvider == nil {
+                skipLayers.insert(.textDescription)
+            }
 
             let mediaService = CompositeMediaService.makeDefault()
             let layeredConfig = LayeredIndexer.Config(
@@ -1207,7 +1224,7 @@ struct IndexCommand: AsyncParsableCommand {
                 whisperKit: whisperKit,
                 embeddingProvider: embeddingProvider,
                 apiKey: resolvedApiKey,
-                rateLimiter: rateLimiter,
+                rateLimiter: useCloud ? rateLimiter : nil,
                 skipLayers: skipLayers
             )
 

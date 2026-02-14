@@ -9,6 +9,8 @@ import Foundation
 public enum APIProvider: String, Codable, Sendable, CaseIterable, Identifiable {
     case gemini
     case openRouter
+    /// FindIt 代理 API（预留，需后端服务上线后启用）
+    case findItCloud
 
     public var id: String { rawValue }
 
@@ -17,6 +19,7 @@ public enum APIProvider: String, Codable, Sendable, CaseIterable, Identifiable {
         switch self {
         case .gemini: return "https://generativelanguage.googleapis.com/v1beta"
         case .openRouter: return "https://openrouter.ai/api/v1"
+        case .findItCloud: return "https://proxy.findit.app/v1"
         }
     }
 
@@ -24,7 +27,7 @@ public enum APIProvider: String, Codable, Sendable, CaseIterable, Identifiable {
     public var authHeaderName: String {
         switch self {
         case .gemini: return "x-goog-api-key"
-        case .openRouter: return "Authorization"
+        case .openRouter, .findItCloud: return "Authorization"
         }
     }
 
@@ -32,7 +35,7 @@ public enum APIProvider: String, Codable, Sendable, CaseIterable, Identifiable {
     public func authHeaderValue(apiKey: String) -> String {
         switch self {
         case .gemini: return apiKey
-        case .openRouter: return "Bearer \(apiKey)"
+        case .openRouter, .findItCloud: return "Bearer \(apiKey)"
         }
     }
 
@@ -41,6 +44,7 @@ public enum APIProvider: String, Codable, Sendable, CaseIterable, Identifiable {
         switch self {
         case .gemini: return "Google Gemini"
         case .openRouter: return "OpenRouter"
+        case .findItCloud: return "FindIt Cloud"
         }
     }
 
@@ -49,6 +53,7 @@ public enum APIProvider: String, Codable, Sendable, CaseIterable, Identifiable {
         switch self {
         case .gemini: return "~/.config/findit/gemini-api-key.txt"
         case .openRouter: return "~/.config/findit/openrouter-api-key.txt"
+        case .findItCloud: return "~/.config/findit/findit-cloud-token.txt"
         }
     }
 
@@ -57,6 +62,7 @@ public enum APIProvider: String, Codable, Sendable, CaseIterable, Identifiable {
         switch self {
         case .gemini: return "GEMINI_API_KEY"
         case .openRouter: return "OPENROUTER_API_KEY"
+        case .findItCloud: return "FINDIT_CLOUD_TOKEN"
         }
     }
 }

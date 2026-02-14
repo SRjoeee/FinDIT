@@ -203,8 +203,9 @@ final class ProviderConfigTests: XCTestCase {
     }
 
     func testAllCases() {
-        XCTAssertEqual(APIProvider.allCases.count, 2)
+        XCTAssertEqual(APIProvider.allCases.count, 3)
         XCTAssertTrue(APIProvider.allCases.contains(.gemini))
         XCTAssertTrue(APIProvider.allCases.contains(.openRouter))
+        XCTAssertTrue(APIProvider.allCases.contains(.findItCloud))
     }
 }

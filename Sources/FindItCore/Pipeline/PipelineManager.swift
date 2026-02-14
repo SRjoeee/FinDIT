@@ -71,6 +71,8 @@ public enum PipelineManager {
         public let requiresForceSync: Bool
         /// 是否因无音轨而跳过 STT（非致命降级）
         public let sttSkippedNoAudio: Bool
+        /// 是否因 API 日配额耗尽而中断 Layer 3（下次自动继续）
+        public let dailyLimitReached: Bool
 
         public init(
             videoId: Int64,
@@ -80,7 +82,8 @@ public enum PipelineManager {
             srtPath: String?,
             syncResult: SyncEngine.SyncResult?,
             requiresForceSync: Bool = false,
-            sttSkippedNoAudio: Bool = false
+            sttSkippedNoAudio: Bool = false,
+            dailyLimitReached: Bool = false
         ) {
             self.videoId = videoId
             self.clipsCreated = clipsCreated
@@ -90,6 +93,7 @@ public enum PipelineManager {
             self.syncResult = syncResult
             self.requiresForceSync = requiresForceSync
             self.sttSkippedNoAudio = sttSkippedNoAudio
+            self.dailyLimitReached = dailyLimitReached
         }
     }
 

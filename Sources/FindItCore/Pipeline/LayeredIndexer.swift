@@ -663,6 +663,7 @@ public enum LayeredIndexer {
         }
 
         // ── Layer 3: VLM 描述 + 文本嵌入 ──
+        var dailyLimitHit = false
         if shouldRunLayer(.textDescription, currentLayer: currentLayer, config: config) {
             // 网络容错: Gemini API 调用前等待网络恢复
             if config.apiKey != nil, let net = config.networkResilience {
@@ -677,6 +678,7 @@ public enum LayeredIndexer {
             // 3a. Vision 分析 (Gemini > LocalVLM > skip)
             let hasVisionEngine = config.apiKey != nil || config.vlmContainer != nil
             if hasVisionEngine {
+              do {
                 progress("[L3] 视觉分析中...")
                 let clips = try await folderDB.read { db in
                     try Clip.fetchAll(forVideo: videoId, in: db)
@@ -766,6 +768,11 @@ public enum LayeredIndexer {
                     } catch is CancellationError {
                         try? flushPendingUpdates()
                         throw CancellationError()
+                    } catch let rpdError as RateLimitError {
+                        // RPD 配额耗尽 — 中断 Vision 循环，保留已完成的更新
+                        try? flushPendingUpdates()
+                        progress("[L3] 今日 API 额度已用完，已分析 \(clipsAnalyzed) 个场景")
+                        throw rpdError
                     } catch {
                         if let limiter = config.rateLimiter,
                            let visionErr = error as? VisionAnalyzerError,
@@ -776,10 +783,15 @@ public enum LayeredIndexer {
                     }
                 }
                 try flushPendingUpdates()
+              } catch let rpdError as RateLimitError {
+                // RPD 配额耗尽 — 保留已完成的 Vision 更新，跳过 Embedding
+                dailyLimitHit = true
+                progress("[L3] API 日配额耗尽，已分析 \(clipsAnalyzed) 个场景")
+              }
             }
 
-            // 3b. 文本嵌入
-            if let provider = config.embeddingProvider {
+            // 3b. 文本嵌入 (RPD 耗尽时跳过)
+            if let provider = config.embeddingProvider, !dailyLimitHit {
                 try Task.checkCancellation()
                 progress("[L3] 文本嵌入中...")
                 let allClips = try await folderDB.read { db in
@@ -797,9 +809,16 @@ public enum LayeredIndexer {
                 if !clipTexts.isEmpty {
                     do {
                         try Task.checkCancellation()
+                        // Embedding 也消耗 API 配额，需要限速
+                        if let limiter = config.rateLimiter {
+                            try await limiter.waitForPermission()
+                        }
                         let vectors = try await provider.embedBatch(
                             texts: clipTexts.map(\.text)
                         )
+                        if let limiter = config.rateLimiter {
+                            await limiter.reportSuccess()
+                        }
                         for (index, vector) in vectors.enumerated()
                             where index < clipTexts.count {
                             try Task.checkCancellation()
@@ -835,10 +854,13 @@ public enum LayeredIndexer {
                 progress("[L3] 嵌入完成: \(clipsEmbedded)/\(allClips.count)")
             }
 
-            try updateVideoLayer(
-                folderDB: folderDB, videoId: videoId,
-                layer: .textDescription, stage: .completed
-            )
+            if !dailyLimitHit {
+                try updateVideoLayer(
+                    folderDB: folderDB, videoId: videoId,
+                    layer: .textDescription, stage: .completed
+                )
+            }
+            // dailyLimitHit 时保留 index_layer=2/stt_done，下次继续
         }
 
         // 最终同步
@@ -860,7 +882,8 @@ public enum LayeredIndexer {
             clipsEmbedded: clipsEmbedded,
             srtPath: srtPath,
             syncResult: syncResult,
-            sttSkippedNoAudio: skipSttBecauseNoAudio
+            sttSkippedNoAudio: skipSttBecauseNoAudio,
+            dailyLimitReached: dailyLimitHit
         )
     }
 

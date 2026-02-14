@@ -52,6 +52,16 @@ final class AppState {
     /// FileWatcherManager 引用（由 ContentView 注入）
     weak var fileWatcherManager: FileWatcherManager?
 
+    /// Auth/Subscription 引用（由 ContentView 注入）
+    weak var authManager: AuthManager?
+    weak var subscriptionManager: SubscriptionManager?
+
+    /// 便捷属性：是否已登录
+    var isAuthenticated: Bool { authManager?.isAuthenticated ?? false }
+
+    /// 便捷属性：云端功能是否可用
+    var isCloudEnabled: Bool { subscriptionManager?.isCloudEnabled ?? false }
+
     /// 卷信息缓存（避免每次 reloadFolders 都做文件系统调用）
     private var volumeInfoCache: [String: VolumeResolver.VolumeInfo] = [:]
 

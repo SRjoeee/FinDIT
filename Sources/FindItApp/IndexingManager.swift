@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 import FindItCore
 @preconcurrency import WhisperKit
+@preconcurrency import MLXLMCommon
 
 /// 文件夹索引进度
 struct FolderIndexProgress {
@@ -114,8 +115,11 @@ final class IndexingManager {
     /// 网络连通性监控
     private var networkResilience: NetworkResilience?
 
-    /// 共享嵌入 provider
-    private var embeddingProvider: (any EmbeddingProvider)?
+    /// 云端嵌入 provider（Gemini Embedding API）
+    private var geminiEmbeddingProvider: (any EmbeddingProvider)?
+
+    /// 本地嵌入 provider（EmbeddingGemma 离线模型）
+    private var localEmbeddingProvider: (any EmbeddingProvider)?
 
     /// 共享媒体服务（CompositeMediaService: AVFoundation + FFmpeg 路由）
     private var mediaService: (any MediaService)?
@@ -129,11 +133,24 @@ final class IndexingManager {
     /// WhisperKit 加载是否已失败（避免重复尝试）
     private var whisperKitLoadFailed = false
 
+    /// LocalVLM 模型容器（Qwen3-VL-4B，本地深度分析）
+    private var vlmContainer: ModelContainer?
+
+    /// LocalVLM 加载是否已失败（避免重复尝试）
+    private var vlmLoadFailed = false
+
     /// 已解析的 API Key（nil = 尝试过但没找到）
     private var resolvedAPIKey: String?
 
     /// 是否已尝试解析 API Key
     private var hasResolvedAPIKey = false
+
+    /// 是否使用的是订阅分配的 Key（控制 ProviderConfig 覆盖）
+    private var isUsingSubscriptionKey = false
+
+    /// Auth/Subscription 引用（由 ContentView 注入）
+    weak var authManager: AuthManager?
+    weak var subscriptionManager: SubscriptionManager?
 
     // MARK: - 公开方法
 
@@ -202,6 +219,19 @@ final class IndexingManager {
         currentFolder = nil
         currentVideoName = nil
         currentStage = nil
+    }
+
+    /// 重置 API Key 缓存
+    ///
+    /// 登录/退出后调用，强制下次索引时重新解析 Key 来源。
+    func resetAPIKeyCache() {
+        hasResolvedAPIKey = false
+        resolvedAPIKey = nil
+        isUsingSubscriptionKey = false
+        // 重置依赖 API Key 的共享资源
+        rateLimiter = nil
+        networkResilience = nil
+        geminiEmbeddingProvider = nil
     }
 
     /// 恢复未完成的索引
@@ -514,11 +544,12 @@ final class IndexingManager {
         // 懒初始化共享资源
         initSharedResources(options: options)
         await ensureWhisperKit(options: options)
+        await ensureLocalVLM(options: options)
 
         let globalDB = appState?.globalDB
         let layeredConfig = buildLayeredConfig(options: options)
 
-        print("[IndexingManager] 开始并行索引: \(videoFiles.count) 个视频 (模式: \(options.performanceMode.displayName))")
+        print("[IndexingManager] 开始并行索引: \(videoFiles.count) 个视频 (模式: \(options.performanceMode.displayName), 云端: \(options.cloudMode == .cloud))")
 
         // 确保 scheduler 存在
         let currentScheduler = ensureScheduler(mode: options.performanceMode)
@@ -624,6 +655,7 @@ final class IndexingManager {
         let options = IndexingOptions.load()
         initSharedResources(options: options)
         await ensureWhisperKit(options: options)
+        await ensureLocalVLM(options: options)
 
         let globalDB = appState?.globalDB
         let layeredConfig = buildLayeredConfig(options: options)
@@ -710,42 +742,40 @@ final class IndexingManager {
 
     /// 懒初始化共享资源
     private func initSharedResources(options: IndexingOptions) {
-        let config = ProviderConfig.load()
-
-        // API Key
+        // API Key: 订阅优先 → Keychain → 文件回退
         if !hasResolvedAPIKey {
             hasResolvedAPIKey = true
-            resolvedAPIKey = try? APIKeyManager.resolveAPIKey()
+            resolvedAPIKey = resolveAPIKeyForCurrentUser()
         }
+
+        // 根据 Key 来源选择 ProviderConfig
+        let config = effectiveProviderConfig()
 
         // RateLimiter（使用 ProviderConfig 的 RPM 设置）
         if rateLimiter == nil, resolvedAPIKey != nil {
             rateLimiter = GeminiRateLimiter(config: config.toRateLimiterConfig())
         }
 
-        // NetworkResilience: Gemini API 调用前等待网络恢复
+        // NetworkResilience: API 调用前等待网络恢复
         if networkResilience == nil, resolvedAPIKey != nil {
             let net = NetworkResilience()
             Task { await net.start() }
             networkResilience = net
         }
 
-        // EmbeddingProvider: 仅在未跳过时初始化
-        // 策略: Gemini (768d, 云端) → EmbeddingGemma (768d, 离线) → nil
-        if embeddingProvider == nil, !options.skipEmbedding {
-            if let apiKey = resolvedAPIKey {
-                embeddingProvider = GeminiEmbeddingProvider(
-                    apiKey: apiKey,
-                    config: config.toEmbeddingConfig()
-                )
-            } else {
-                // 无 API Key → 尝试 EmbeddingGemma 本地模型
-                let gemmaProvider = EmbeddingGemmaProvider()
-                if gemmaProvider.isAvailable() {
-                    embeddingProvider = gemmaProvider
-                } else {
-                    print("[IndexingManager] 无 Gemini API Key 且 EmbeddingGemma 模型未安装，跳过文本嵌入（CLIP 离线索引不受影响）")
-                }
+        // 云端 EmbeddingProvider
+        if geminiEmbeddingProvider == nil, let apiKey = resolvedAPIKey {
+            geminiEmbeddingProvider = GeminiEmbeddingProvider(
+                apiKey: apiKey,
+                config: config.toEmbeddingConfig()
+            )
+        }
+
+        // 本地 EmbeddingProvider (EmbeddingGemma 768d)
+        if localEmbeddingProvider == nil {
+            let gemmaProvider = EmbeddingGemmaProvider()
+            if gemmaProvider.isAvailable() {
+                localEmbeddingProvider = gemmaProvider
             }
         }
 
@@ -759,6 +789,60 @@ final class IndexingManager {
             let provider = CLIPEmbeddingProvider()
             clipProvider = provider
         }
+    }
+
+    /// 解析当前用户的 API Key
+    ///
+    /// 优先级: 订阅 Key (Keychain) → 旧版文件 Key (CLI / 高级用户)
+    /// 如果订阅激活但 Keychain 无 Key（重装/新设备），触发后台重新分配。
+    private func resolveAPIKeyForCurrentUser() -> String? {
+        // 1. 订阅 Key (Keychain)
+        if let subMgr = subscriptionManager, subMgr.isCloudEnabled,
+           let userId = authManager?.currentUserId {
+            if let key = CloudKeyManager.retrieveKey(for: userId) {
+                isUsingSubscriptionKey = true
+                return key
+            }
+            // Keychain 无 Key → 后台触发重新分配
+            Task { [weak self] in
+                guard let auth = self?.authManager else { return }
+                do {
+                    let response: GetCloudKeyResponse = try await auth.client.functions
+                        .invoke("get-cloud-key")
+                    if let key = response.openrouter_key, !key.isEmpty {
+                        try CloudKeyManager.storeKey(key, for: userId)
+                        print("[IndexingManager] Key 重新分配成功")
+                        // 重置缓存，下次索引时使用新 Key
+                        self?.hasResolvedAPIKey = false
+                    }
+                } catch {
+                    print("[IndexingManager] Key 重新分配失败: \(error)")
+                }
+            }
+        }
+        // 2. 旧版文件 Key (CLI / 高级用户)
+        isUsingSubscriptionKey = false
+        return try? APIKeyManager.resolveAPIKey()
+    }
+
+    /// 根据 Key 来源决定 ProviderConfig
+    ///
+    /// 订阅 Key → 固定使用 OpenRouter 配置
+    /// 文件 Key → 使用用户保存的 ProviderConfig
+    private func effectiveProviderConfig() -> ProviderConfig {
+        if isUsingSubscriptionKey {
+            return ProviderConfig(
+                provider: .openRouter,
+                visionModel: "google/gemini-2.5-flash",
+                visionMaxImages: 10,
+                visionTimeout: 60.0,
+                visionMaxRetries: 3,
+                embeddingModel: "qwen/qwen3-embedding-8b",
+                embeddingDimensions: 768,
+                rateLimitRPM: 30
+            )
+        }
+        return ProviderConfig.load()
     }
 
     /// 确保 WhisperKit 已初始化（首次调用下载模型 ~1.5GB）
@@ -782,27 +866,68 @@ final class IndexingManager {
         }
     }
 
+    /// 确保 LocalVLM 已加载（纯本地模式 + useLocalVLM 时调用）
+    ///
+    /// 首次调用下载 ~3GB 模型。加载失败后标记，不重复尝试。
+    private func ensureLocalVLM(options: IndexingOptions) async {
+        guard options.cloudMode == .local, options.useLocalVLM else { return }
+        guard vlmContainer == nil, !vlmLoadFailed else { return }
+
+        guard LocalVLMAnalyzer.isModelDownloaded() else {
+            print("[IndexingManager] LocalVLM 模型未下载，跳过深度分析")
+            return
+        }
+
+        print("[IndexingManager] 加载 LocalVLM 模型...")
+        do {
+            vlmContainer = try await LocalVLMAnalyzer.loadModel()
+            print("[IndexingManager] LocalVLM 加载完成")
+        } catch {
+            vlmLoadFailed = true
+            print("[IndexingManager] LocalVLM 加载失败: \(error.localizedDescription)")
+        }
+    }
+
     /// 构建 LayeredIndexer.Config
+    ///
+    /// 根据 `cloudMode` 决定 L3 使用云端还是本地引擎：
+    /// - `.cloud` + API Key → Gemini Vision + Gemini Embedding
+    /// - `.cloud` + 无 API Key → 自动降级为 local 行为
+    /// - `.local` + `useLocalVLM` → LocalVLM 9/9 + EmbeddingGemma
+    /// - `.local` + 无 VLM → LocalVision 6/9 (由 LayeredIndexer 自动 fallback)
     private func buildLayeredConfig(options: IndexingOptions) -> LayeredIndexer.Config {
         var skipLayers: Set<LayeredIndexer.Layer> = []
         if options.skipStt { skipLayers.insert(.stt) }
-        if options.skipVision && options.skipEmbedding {
-            skipLayers.insert(.textDescription)
+
+        let useCloud = (options.cloudMode == .cloud && resolvedAPIKey != nil)
+
+        // L3 引擎配置
+        let effectiveAPIKey: String? = useCloud ? resolvedAPIKey : nil
+        let effectiveVLM: ModelContainer? = (!useCloud && options.useLocalVLM) ? vlmContainer : nil
+        let effectiveEmbedding: (any EmbeddingProvider)?
+
+        if useCloud {
+            effectiveEmbedding = geminiEmbeddingProvider
+        } else {
+            // 本地模式: EmbeddingGemma（与 CLIP 维度相同 768d）
+            effectiveEmbedding = localEmbeddingProvider
         }
 
-        let effectiveAPIKey = options.skipVision ? nil : resolvedAPIKey
-        let effectiveEmbedding = options.skipEmbedding ? nil : embeddingProvider
+        // 纯本地且无 VLM 且无本地 Embedding → 跳过整个 L3
+        if !useCloud && effectiveVLM == nil && effectiveEmbedding == nil {
+            skipLayers.insert(.textDescription)
+        }
 
         return LayeredIndexer.Config(
             mediaService: mediaService,
             clipProvider: clipProvider,
             whisperKit: options.skipStt ? nil : whisperKit,
-            vlmContainer: nil,
+            vlmContainer: effectiveVLM,
             embeddingProvider: effectiveEmbedding,
             apiKey: effectiveAPIKey,
-            rateLimiter: rateLimiter,
+            rateLimiter: useCloud ? rateLimiter : nil,
             skipLayers: skipLayers,
-            networkResilience: networkResilience,
+            networkResilience: useCloud ? networkResilience : nil,
             sttLanguageHint: options.sttLanguageHint,
             sttEngine: options.sttEngine,
             hideSrtFiles: options.hideSrtFiles

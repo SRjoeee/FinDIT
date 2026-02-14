@@ -12,8 +12,11 @@ struct ContentView: View {
     @State private var appState = AppState()
     @State private var searchState = SearchState()
     @State private var indexingManager = IndexingManager()
+    @Environment(AuthManager.self) private var authManager
+    @Environment(SubscriptionManager.self) private var subscriptionManager
     @State private var columnVisibility: NavigationSplitViewVisibility = .detailOnly
     @State private var showFolderSheet = false
+    @State private var showLoginSheet = false
     @State private var selectionManager = SelectionManager()
     @State private var qlCoordinator = QuickLookCoordinator()
     @State private var volumeMonitor = VolumeMonitor()
@@ -143,7 +146,38 @@ struct ContentView: View {
                 searchState.pathPrefixFilter = path
             }
         }
+        .onChange(of: authManager.isAuthenticated) {
+            // 登录/退出时重置 API Key 缓存 + 刷新订阅
+            indexingManager.resetAPIKeyCache()
+            if authManager.isAuthenticated {
+                Task { await subscriptionManager.refresh() }
+            } else {
+                subscriptionManager.clearCache()
+            }
+        }
+        .sheet(isPresented: $showLoginSheet) {
+            LoginSheet(authManager: authManager)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showLogin)) { _ in
+            showLoginSheet = true
+        }
         .task {
+            // Auth + Subscription 初始化
+            subscriptionManager.authManager = authManager
+            indexingManager.authManager = authManager
+            indexingManager.subscriptionManager = subscriptionManager
+            appState.authManager = authManager
+            appState.subscriptionManager = subscriptionManager
+
+            // 恢复会话 + 监听 auth 状态变化
+            authManager.startListening()
+            await authManager.restoreSession()
+            if authManager.isAuthenticated {
+                await subscriptionManager.refresh()
+            } else {
+                subscriptionManager.loadCache()
+            }
+
             selectionManager.searchState = searchState
             selectionManager.qlCoordinator = qlCoordinator
             qlCoordinator.selectionManager = selectionManager
@@ -188,7 +222,7 @@ struct ContentView: View {
                 try? await Task.sleep(for: .seconds(5))
                 let options = IndexingOptions.load()
                 let hasApiKey = (try? APIKeyManager.resolveAPIKey()) != nil
-                if hasApiKey && !options.skipVision {
+                if hasApiKey && options.cloudMode == .cloud {
                     await indexingManager.checkUpgradeableClips()
                     if indexingManager.upgradeableVideoCount > 0 {
                         showEnhanceAlert = true
@@ -202,16 +236,72 @@ struct ContentView: View {
             // 周期性文件夹健康检查（30秒间隔）
             await appState.startPeriodicHealthCheck()
         }
+        .task {
+            // 周期性订阅状态刷新（每小时）
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3600))
+                if authManager.isAuthenticated {
+                    await subscriptionManager.refresh()
+                }
+            }
+        }
         .onChange(of: showOfflineFiles) {
             searchState.showOfflineFiles = showOfflineFiles
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             // App 从后台切回时立即检查（用户可能在 Finder 中操作了文件夹）
             appState.checkFolderHealth()
+            // Stripe 支付/管理后用户回到 App → 自动刷新订阅状态
+            if authManager.isAuthenticated {
+                Task { await subscriptionManager.refresh() }
+            }
         }
     }
 
     // MARK: - Detail Content
+
+    /// Trial 到期或付款失败时显示横幅
+    @ViewBuilder
+    private var subscriptionBanner: some View {
+        if subscriptionManager.isPastDue {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                Text("付款失败，云端功能已暂停")
+                Spacer()
+                Button("更新支付方式") {
+                    Task {
+                        if let url = try? await subscriptionManager.billingPortalURL() {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
+                .controlSize(.small)
+            }
+            .font(.caption)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.red.opacity(0.1))
+        } else if let days = subscriptionManager.trialDaysRemaining, days <= 3 {
+            HStack(spacing: 6) {
+                Image(systemName: "clock")
+                Text("试用将在 \(days) 天后到期")
+                Spacer()
+                Button("升级 Pro") {
+                    Task {
+                        if let url = try? await subscriptionManager.checkoutURL() {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+            }
+            .font(.caption)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.orange.opacity(0.1))
+        }
+    }
 
     @ViewBuilder
     private var detailContent: some View {
@@ -224,9 +314,14 @@ struct ContentView: View {
         } else if !appState.isInitialized {
             ProgressView("正在初始化...")
         } else if searchState.query.isEmpty {
-            EmptyStateView()
+            VStack(spacing: 0) {
+                subscriptionBanner
+                EmptyStateView()
+                    .frame(maxHeight: .infinity)
+            }
         } else {
             VStack(spacing: 0) {
+                subscriptionBanner
                 // 过滤栏：有搜索结果或有活跃过滤器时显示
                 if !searchState.results.isEmpty || searchState.hasActiveFilter {
                     FilterBar(

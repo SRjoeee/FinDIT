@@ -40,4 +40,5 @@ extension Notification.Name {
     static let focusSearch = Notification.Name("FindIt.focusSearch")
     static let exportToNLE = Notification.Name("FindIt.exportToNLE")
     static let srtVisibilityChanged = Notification.Name("FindIt.srtVisibilityChanged")
+    static let showLogin = Notification.Name("FindIt.showLogin")
 }

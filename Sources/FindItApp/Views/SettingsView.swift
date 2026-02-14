@@ -7,36 +7,188 @@ import FindItCore
 /// - 通用：API Key 配置 + 索引选项
 /// - 高级：模型参数 + 重置
 struct SettingsView: View {
+    @Environment(AuthManager.self) private var authManager
+    @Environment(SubscriptionManager.self) private var subscriptionManager
+
     var body: some View {
         TabView {
-            GeneralTab()
+            GeneralTab(authManager: authManager, subscriptionManager: subscriptionManager)
                 .tabItem { Label("通用", systemImage: "gear") }
             AdvancedTab()
                 .tabItem { Label("高级", systemImage: "slider.horizontal.3") }
         }
-        .frame(width: 480, height: 420)
+        .frame(width: 480, height: 580)
     }
 }
 
 // MARK: - 通用 Tab
 
 private struct GeneralTab: View {
+    let authManager: AuthManager
+    let subscriptionManager: SubscriptionManager
+
     @State private var apiKey: String = ""
     @State private var apiKeyStatus: APIKeyStatus = .unknown
     @State private var options = IndexingOptions.load()
     @State private var config = ProviderConfig.load()
+    @State private var showLoginSheet = false
+    @State private var isSigningOut = false
     @AppStorage("FindIt.showOfflineFiles") private var showOfflineFiles = false
 
     private var provider: APIProvider { config.provider }
 
+    /// 是否使用订阅 Key（隐藏手动 API Key 配置）
+    private var isUsingSubscription: Bool {
+        authManager.isAuthenticated && subscriptionManager.isCloudEnabled
+    }
+
     var body: some View {
         Form {
-            apiKeySection
+            accountSection
+            cloudModeSection
+            if !isUsingSubscription {
+                apiKeySection
+                    .disabled(options.cloudMode == .local)
+                    .opacity(options.cloudMode == .local ? 0.5 : 1.0)
+            }
             displaySection
-            indexingSection
+            sttSection
+            performanceSection
         }
         .formStyle(.grouped)
         .onAppear { checkAPIKeyStatus() }
+        .sheet(isPresented: $showLoginSheet) {
+            LoginSheet(authManager: authManager)
+        }
+    }
+
+    // MARK: Account
+
+    @ViewBuilder
+    private var accountSection: some View {
+        Section {
+            if authManager.isAuthenticated {
+                // 已登录
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(authManager.currentEmail ?? "已登录")
+                            .font(.body)
+                        HStack(spacing: 6) {
+                            planBadge
+                            if let usage = subscriptionManager.usageText {
+                                Text(usage)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    Spacer()
+                    if subscriptionManager.currentPlan != .pro {
+                        Button("升级 Pro") {
+                            Task { await openCheckout() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                }
+
+                if let days = subscriptionManager.trialDaysRemaining {
+                    HStack(spacing: 4) {
+                        Image(systemName: "clock")
+                            .foregroundStyle(.orange)
+                        Text("试用剩余 \(days) 天")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if subscriptionManager.isPastDue {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                        Text("付款失败，请更新支付方式")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                HStack {
+                    if subscriptionManager.currentPlan == .pro {
+                        Button("管理订阅") {
+                            Task { await openBillingPortal() }
+                        }
+                    }
+                    Spacer()
+                    Button("退出登录") {
+                        Task { await signOut() }
+                    }
+                    .disabled(isSigningOut)
+                }
+            } else {
+                // 未登录
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("未登录")
+                            .font(.body)
+                        Text("登录后享 14 天云端 AI 免费试用")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("登录") { showLoginSheet = true }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
+            }
+        } header: {
+            Text("账户")
+        }
+    }
+
+    @ViewBuilder
+    private var planBadge: some View {
+        let (text, color): (String, Color) = switch subscriptionManager.currentPlan {
+        case .pro: ("Pro", .blue)
+        case .trial: ("Trial", .orange)
+        case .free: ("Free", .secondary)
+        }
+        Text(text)
+            .font(.caption.bold())
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.15))
+            .foregroundStyle(color)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+
+    private func openCheckout() async {
+        do {
+            let url = try await subscriptionManager.checkoutURL()
+            NSWorkspace.shared.open(url)
+        } catch {
+            print("[Settings] Checkout error: \(error)")
+        }
+    }
+
+    private func openBillingPortal() async {
+        do {
+            let url = try await subscriptionManager.billingPortalURL()
+            NSWorkspace.shared.open(url)
+        } catch {
+            print("[Settings] Billing portal error: \(error)")
+        }
+    }
+
+    private func signOut() async {
+        isSigningOut = true
+        do {
+            try await authManager.signOut()
+            subscriptionManager.clearCache()
+            // cloudMode 自动降级：订阅 Key 不再可用，IndexingManager 下次 resolve 会回退到文件 Key
+        } catch {
+            print("[Settings] Sign out error: \(error)")
+        }
+        isSigningOut = false
     }
 
     // MARK: API Key
@@ -57,9 +209,15 @@ private struct GeneralTab: View {
         } header: {
             Text("API Key")
         } footer: {
-            Text("用于视觉分析和向量嵌入。存储在 \(provider.keyFilePath)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if options.cloudMode == .local {
+                Text("纯本地模式无需 API Key")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("用于视觉分析和向量嵌入。存储在 \(provider.keyFilePath)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -124,12 +282,76 @@ private struct GeneralTab: View {
         }
     }
 
-    // MARK: Indexing Options
+    // MARK: Cloud Mode
 
     @ViewBuilder
-    private var indexingSection: some View {
-        Section("索引选项") {
-            Toggle("语音转录 (STT)", isOn: Binding(
+    private var cloudModeSection: some View {
+        Section {
+            if isUsingSubscription {
+                // 订阅用户：云端模式可切换
+                Picker("索引模式", selection: Binding(
+                    get: { options.cloudMode },
+                    set: { options.cloudMode = $0; options.save() }
+                )) {
+                    ForEach(CloudMode.allCases, id: \.self) { mode in
+                        Text(mode.displayLabel).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+            } else if authManager.isAuthenticated && !subscriptionManager.isCloudEnabled {
+                // 已登录但无云端权限（Free/Trial 过期）
+                HStack {
+                    Text("纯本地模式")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("升级解锁云端") {
+                        Task { await openCheckout() }
+                    }
+                    .controlSize(.small)
+                }
+            } else {
+                // 未登录：手动 API Key 模式仍可选
+                Picker("索引模式", selection: Binding(
+                    get: { options.cloudMode },
+                    set: { options.cloudMode = $0; options.save() }
+                )) {
+                    ForEach(CloudMode.allCases, id: \.self) { mode in
+                        Text(mode.displayLabel).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            if options.cloudMode == .local && !isUsingSubscription {
+                Toggle("启用 LocalVLM 深度分析", isOn: Binding(
+                    get: { options.useLocalVLM },
+                    set: { options.useLocalVLM = $0; options.save() }
+                ))
+                Text("使用本地 AI 模型分析视频内容 (需下载 ~3GB 模型，推理 ~5-10s/片段)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("索引模式")
+        } footer: {
+            if isUsingSubscription {
+                Text("订阅已激活，云端模式使用 OpenRouter API 进行视觉分析和文本嵌入。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(options.cloudMode.descriptionText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: STT Options
+
+    @ViewBuilder
+    private var sttSection: some View {
+        Section("语音转录") {
+            Toggle("启用语音转录 (STT)", isOn: Binding(
                 get: { !options.skipStt },
                 set: { options.skipStt = !$0; options.save() }
             ))
@@ -182,17 +404,14 @@ private struct GeneralTab: View {
             Text("SRT 始终生成用于搜索，此选项仅控制 Finder 中是否可见")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
 
-            Toggle("云端视觉分析 (Gemini)", isOn: Binding(
-                get: { !options.skipVision },
-                set: { options.skipVision = !$0; options.save() }
-            ))
+    // MARK: Performance
 
-            Toggle("向量嵌入", isOn: Binding(
-                get: { !options.skipEmbedding },
-                set: { options.skipEmbedding = !$0; options.save() }
-            ))
-
+    @ViewBuilder
+    private var performanceSection: some View {
+        Section("性能与数据") {
             Picker("性能模式", selection: Binding(
                 get: { options.performanceMode },
                 set: { options.performanceMode = $0; options.save() }
@@ -217,7 +436,14 @@ private struct GeneralTab: View {
 // MARK: - 高级 Tab
 
 private struct AdvancedTab: View {
+    @Environment(AuthManager.self) private var authManager
+    @Environment(SubscriptionManager.self) private var subscriptionManager
     @State private var config = ProviderConfig.load()
+
+    /// 订阅模式下禁用手动配置
+    private var isUsingSubscription: Bool {
+        authManager.isAuthenticated && subscriptionManager.isCloudEnabled
+    }
 
     /// 自定义 Base URL 绑定
     private var useCustomURL: Binding<Bool> {
@@ -243,6 +469,17 @@ private struct AdvancedTab: View {
 
     var body: some View {
         Form {
+            if isUsingSubscription {
+                Section {
+                    HStack(spacing: 8) {
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(.blue)
+                        Text("订阅模式下使用 OpenRouter 托管配置，无需手动调整。")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
             providerSection
             visionSection
             embeddingSection
@@ -250,6 +487,8 @@ private struct AdvancedTab: View {
             resetSection
         }
         .formStyle(.grouped)
+        .disabled(isUsingSubscription)
+        .opacity(isUsingSubscription ? 0.6 : 1.0)
     }
 
     // MARK: Provider
